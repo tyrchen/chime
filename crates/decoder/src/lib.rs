@@ -96,6 +96,7 @@ struct LatticeEdge {
 #[derive(Debug, Clone)]
 struct BeamState {
     text: String,
+    prev_content_word: String,
     last_word: String,
     last_is_english: bool,
     score: f32,
@@ -149,10 +150,12 @@ impl LatticeDecoder {
         let edges_by_start = self.build_edges(raw_input, lexicon, user_store, ctx, is_dev_app);
         let n = raw_input.len();
 
+        let (seed_prev_content, seed_last_word) = extract_context_anchors(ctx.left_context);
         let mut beams: Vec<Vec<BeamState>> = vec![Vec::new(); n + 1];
         beams[0].push(BeamState {
             text: String::new(),
-            last_word: extract_tail_word(ctx.left_context),
+            prev_content_word: seed_prev_content,
+            last_word: seed_last_word,
             last_is_english: false,
             score: 0.0,
             kind: MatchKind::CodeSwitch,
@@ -187,12 +190,35 @@ impl LatticeDecoder {
                     } else {
                         combine_beam_kind(st.kind, edge.kind)
                     };
-                    let bigram = lexicon.bigram_bonus(&st.last_word, &edge.surface);
+                    // Combine immediate Bigram, Trigram `(prev_content, last, edge)`, and
+                    // particle-transparent Skip-Bigram `(prev_content -> edge)` across
+                    // `的/了/在/地`!
+                    let direct_bg = lexicon.bigram_bonus(&st.last_word, &edge.surface);
+                    let skip_bg = if is_transparent_particle(&st.last_word) {
+                        lexicon.bigram_bonus(&st.prev_content_word, &edge.surface) * 0.9
+                    } else {
+                        0.0
+                    };
+                    let tg =
+                        lexicon.trigram_bonus(&st.prev_content_word, &st.last_word, &edge.surface);
+                    let next_prev_content = if is_transparent_particle(&edge.surface) {
+                        if is_transparent_particle(&st.last_word) {
+                            st.prev_content_word.clone()
+                        } else {
+                            st.last_word.clone()
+                        }
+                    } else if is_transparent_particle(&st.last_word) {
+                        st.prev_content_word.clone()
+                    } else {
+                        st.last_word.clone()
+                    };
+
                     next_states.push(BeamState {
                         text: composed,
+                        prev_content_word: next_prev_content,
                         last_word: edge.surface.clone(),
                         last_is_english: edge.is_english,
-                        score: st.score + edge.score + bigram - 0.55,
+                        score: st.score + edge.score + direct_bg.max(skip_bg) + tg - 0.55,
                         kind: next_kind,
                     });
                 }
@@ -268,9 +294,13 @@ impl LatticeDecoder {
         full_candidates.truncate(12);
 
         if let Some(reranker) = &self.reranker {
-            let bonuses =
-                reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &full_candidates);
-            for (cand, bonus) in full_candidates.iter_mut().zip(bonuses) {
+            let rerank_top = full_candidates.len().min(6);
+            let bonuses = reranker.score_batch(
+                ctx.left_context,
+                ctx.app_bundle_id,
+                &full_candidates[..rerank_top],
+            );
+            for (cand, bonus) in full_candidates[..rerank_top].iter_mut().zip(bonuses) {
                 cand.score += bonus;
             }
             full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -556,21 +586,55 @@ const fn merge_match_kind(a: MatchKind, b: MatchKind) -> MatchKind {
     }
 }
 
-fn extract_tail_word(left_context: &str) -> String {
-    let trimmed = left_context.trim_end();
+fn is_transparent_particle(word: &str) -> bool {
+    matches!(
+        word,
+        "的" | "地"
+            | "得"
+            | "了"
+            | "着"
+            | "过"
+            | "在"
+            | "是"
+            | "很"
+            | "太"
+            | "更"
+            | "最"
+            | "被"
+            | "把"
+            | "对"
+    )
+}
+
+fn extract_context_anchors(left_context: &str) -> (String, String) {
+    let trimmed = left_context.trim_end_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | '：' | ',' | '.')
+    });
     if trimmed.is_empty() {
-        return String::new();
+        return (String::new(), String::new());
     }
     if let Some(last_ascii) = trimmed
         .rsplit(|c: char| !c.is_ascii_alphanumeric())
         .next()
         .filter(|s| !s.is_empty())
     {
-        return last_ascii.to_string();
+        return (String::new(), last_ascii.to_string());
     }
+
     let chars: Vec<char> = trimmed.chars().collect();
-    let start = chars.len().saturating_sub(2);
-    chars[start..].iter().collect()
+    let n = chars.len();
+    let last_ch = chars[n - 1].to_string();
+    if is_transparent_particle(&last_ch) && n >= 3 {
+        let prev_content: String = chars[n - 3..n - 1].iter().collect();
+        return (prev_content, last_ch);
+    }
+    let last_two: String = chars[n.saturating_sub(2)..].iter().collect();
+    let prev_two: String = if n >= 4 {
+        chars[n - 4..n - 2].iter().collect()
+    } else {
+        String::new()
+    };
+    (prev_two, last_two)
 }
 
 /// Applies the 60ms Anti-Jitter Freeze Window when an asynchronous Stage-2 rerank arrives.

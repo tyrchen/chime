@@ -1,5 +1,5 @@
 //! Chime CLI: dictionary compiler (`build-base`, `compile`, `inspect`), personal Colab `LoRA`
-//! corpus synthesizer (`corpus-export`), `.imepack` manager, neural model bootstrapper, and 20-case
+//! corpus synthesizer (`corpus-export`), `.imepack` manager, neural model bootstrapper, and 25-case
 //! benchmark.
 
 #![forbid(unsafe_code)]
@@ -21,7 +21,7 @@ use chime_lexicon::{
     CompiledDict, CompiledDictBuilder, Lexicon, build_comprehensive_lexicon, parse_bdict_bytes,
     parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict,
 };
-use chime_neural::{SafetensorsReranker, TinyModelBuilder};
+use chime_neural::{AsyncRerankHandle, TinyModelBuilder};
 use chime_phonetics::ShuangpinScheme;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -86,6 +86,9 @@ enum Commands {
         /// present).
         #[arg(long)]
         english_words: Option<PathBuf>,
+        /// Optional teacher-scored Bigram/Trigram TSV (`dist/ngrams.tsv`).
+        #[arg(long)]
+        ngrams: Option<PathBuf>,
         /// Minimum frequency filter for multi-character Jieba words.
         #[arg(long, default_value_t = 25)]
         min_freq: u64,
@@ -140,12 +143,16 @@ enum Commands {
         /// Optional compiled `core.imedict` to mount during evaluation.
         #[arg(long)]
         dict: Option<PathBuf>,
+        /// Optional neural reranker directory (`dist/base_neural`) to evaluate real Qwen2.5 Metal
+        /// SLM.
+        #[arg(long)]
+        neural: Option<PathBuf>,
     },
 }
 
 #[derive(Debug)]
 struct SyncNeuralAdapter {
-    inner: SafetensorsReranker,
+    inner: AsyncRerankHandle,
 }
 
 impl NeuralReranker for SyncNeuralAdapter {
@@ -156,7 +163,7 @@ impl NeuralReranker for SyncNeuralAdapter {
         candidates: &[Candidate],
     ) -> Vec<f32> {
         let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
-        self.inner.score_candidates(left_context, &texts)
+        self.inner.score_sync(left_context, &texts)
     }
 }
 
@@ -201,6 +208,7 @@ fn main() -> Result<()> {
             output,
             jieba_dict,
             english_words,
+            ngrams,
             min_freq,
         } => {
             let jieba_text = if let Some(p) = jieba_dict {
@@ -218,7 +226,13 @@ fn main() -> Result<()> {
             });
 
             let t0 = Instant::now();
-            let lex = build_comprehensive_lexicon(&jieba_text, eng_ref, min_freq);
+            let mut lex = build_comprehensive_lexicon(&jieba_text, eng_ref, min_freq);
+            if let Some(ng_path) = ngrams
+                && ng_path.exists()
+            {
+                let ng_text = fs::read_to_string(&ng_path)?;
+                let _ = lex.load_ngram_tsv(&ng_text);
+            }
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -227,13 +241,14 @@ fn main() -> Result<()> {
             let mapped = CompiledDict::open_mmap(&output)?;
             writeln!(
                 stdout,
-                "Built {} in {} ms: pinyin_groups={}, word_records={}, english_terms={}, size={} \
-                 KB",
+                "Built {} in {} ms: pinyin_groups={}, word_records={}, english_terms={}, \
+                 ngrams={}, size={} KB",
                 output.display(),
                 t0.elapsed().as_millis(),
                 mapped.pinyin_group_count(),
                 mapped.word_record_count(),
                 mapped.english_count(),
+                mapped.ngram_count(),
                 fs::metadata(&output)?.len() / 1024
             )?;
         }
@@ -338,7 +353,9 @@ fn main() -> Result<()> {
                 out_dir.display()
             )?;
         }
-        Commands::Eval { dict } => run_golden_eval(&mut stdout, dict.as_deref())?,
+        Commands::Eval { dict, neural } => {
+            run_golden_eval(&mut stdout, dict.as_deref(), neural.as_deref())?;
+        }
     }
     Ok(())
 }
@@ -373,7 +390,11 @@ fn default_app_support_dir() -> PathBuf {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_golden_eval(out: &mut impl Write, dict_path: Option<&Path>) -> Result<()> {
+fn run_golden_eval(
+    out: &mut impl Write,
+    dict_path: Option<&Path>,
+    neural_path: Option<&Path>,
+) -> Result<()> {
     struct Case {
         category: &'static str,
         scheme: ShuangpinScheme,
@@ -528,6 +549,46 @@ fn run_golden_eval(out: &mut impl Write, dict_path: Option<&Path>) -> Result<()>
             keys: "udpn",
             expected_top1: "双拼",
         },
+        Case {
+            category: "semantic-quanli-1",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "法庭依法保障公民的",
+            app: "md.obsidian",
+            keys: "quanli",
+            expected_top1: "权利",
+        },
+        Case {
+            category: "semantic-quanli-2",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "严禁滥用国家的",
+            app: "md.obsidian",
+            keys: "quanli",
+            expected_top1: "权力",
+        },
+        Case {
+            category: "semantic-fanying",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "群众向上级如实地",
+            app: "md.obsidian",
+            keys: "fanying",
+            expected_top1: "反映",
+        },
+        Case {
+            category: "legal-syl-typo-lr",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "shulufa",
+            expected_top1: "输入法",
+        },
+        Case {
+            category: "legal-syl-typo-gf",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "shuruga",
+            expected_top1: "输入法",
+        },
     ];
 
     let base_lex = if let Some(dp) = dict_path {
@@ -538,11 +599,16 @@ fn run_golden_eval(out: &mut impl Write, dict_path: Option<&Path>) -> Result<()>
         build_comprehensive_lexicon("", None, 25)
     };
 
-    // Attach real Safetensors Stage-2 neural reranker via temporary demo bundle to verify full
-    // Stage1+Stage2 path!
-    let tmp_neural_dir = std::env::temp_dir().join("chime_eval_neural");
-    TinyModelBuilder::write_demo_bundle(&tmp_neural_dir, &[("端侧", "量化"), ("这个", "PR")])?;
-    let slm = SafetensorsReranker::load_dir(&tmp_neural_dir)?;
+    let slm = if let Some(np) = neural_path
+        && np.join("model.safetensors").exists()
+    {
+        AsyncRerankHandle::spawn_from_dir(np)?
+    } else {
+        let tmp_neural_dir = std::env::temp_dir().join("chime_eval_neural");
+        TinyModelBuilder::write_demo_bundle(&tmp_neural_dir, &[("端侧", "量化"), ("这个", "PR")])?;
+        AsyncRerankHandle::spawn_from_dir(&tmp_neural_dir)?
+    };
+    let cfg = slm.config().clone();
     let decoder = LatticeDecoder::new().with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
     let user_store = chime_lexicon::UserStore::new();
 
@@ -551,8 +617,12 @@ fn run_golden_eval(out: &mut impl Write, dict_path: Option<&Path>) -> Result<()>
 
     writeln!(
         out,
-        "Running Chime Complete Benchmark Suite ({} decode + 2 interactive state cases)...",
-        cases.len()
+        "Running Chime Complete Benchmark Suite ({} decode + 2 interactive cases | MLX Metal SLM: \
+         layers={}, hidden={}, vocab={})...",
+        cases.len(),
+        cfg.num_hidden_layers,
+        cfg.hidden_size,
+        cfg.vocab_size
     )?;
     for c in &cases {
         let ctx = DecodeContext {
@@ -674,5 +744,9 @@ fn run_golden_eval(out: &mut impl Write, dict_path: Option<&Path>) -> Result<()>
         "Summary: {passed}/{total_cases} Top-1 passed | Stage1+Stage2 Latency p50={p50} us, \
          p99={p99} us (budget: < 10000 us)"
     )?;
+    anyhow::ensure!(
+        passed == total_cases,
+        "benchmark suite failed: only {passed}/{total_cases} Top-1 cases passed"
+    );
     Ok(())
 }

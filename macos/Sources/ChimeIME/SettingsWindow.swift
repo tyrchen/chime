@@ -117,7 +117,7 @@ struct ChimeSettingsView: View {
                     LabeledContent("已学习个人习惯", value: "\(status.learned_habits)")
                     LabeledContent(
                         "Stage-2 端侧神经重排",
-                        value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded) ? "已就绪" : "统计双轨模式"
+                        value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded) ? "MLX Metal / ANE 已就绪" : "统计双轨模式"
                     )
                 }
 

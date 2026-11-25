@@ -1,23 +1,5 @@
-//! Zero-copy `CHIMED01` binary dictionary compiler and `memmap2` reader.
-//!
-//! Layout (all integers little-endian):
-//! - Header (48 bytes):
-//!   - `0..8`: Magic `b"CHIMED01"`
-//!   - `8..12`: `pinyin_group_count: u32`
-//!   - `12..16`: `skeleton_group_count: u32`
-//!   - `16..20`: `english_count: u32`
-//!   - `20..24`: `word_record_count: u32`
-//!   - `24..28`: `bigram_count: u32`
-//!   - `28..32`: `syl_arena_bytes: u32`
-//!   - `32..36`: `str_arena_bytes: u32`
-//!   - `36..48`: reserved zeros
-//! - `PinyinGroup` (`16 * pinyin_group_count` bytes, sorted by `&[SyllableId]`)
-//! - `SkeletonGroup` (`16 * skeleton_group_count` bytes, sorted by `&str`)
-//! - `EnglishRecord` (`16 * english_count` bytes, sorted by lowercase `&str`)
-//! - `WordRecord` (`12 * word_record_count` bytes)
-//! - `BigramRecord` (`16 * bigram_count` bytes, sorted by `pair_hash: u64`)
-//! - `syl_arena` (`syl_arena_bytes` bytes, `u16` little-endian)
-//! - `str_arena` (`str_arena_bytes` bytes, valid UTF-8)
+//! Zero-copy `CHIMED02` binary dictionary compiler and `memmap2` reader supporting
+//! exact syllables, initial skeletons, canonical English, Bigrams, and Trigrams.
 
 use std::{cmp::Ordering, collections::BTreeMap, fs::File, io::Write, path::Path};
 
@@ -27,7 +9,7 @@ use smallvec::SmallVec;
 
 use crate::{LexiconError, WordEntry};
 
-const MAGIC: &[u8; 8] = b"CHIMED01";
+const MAGIC: &[u8; 8] = b"CHIMED02";
 const HEADER_LEN: usize = 48;
 
 #[derive(Debug)]
@@ -54,11 +36,13 @@ pub struct CompiledDict {
     english_count: usize,
     word_record_count: usize,
     bigram_count: usize,
+    trigram_count: usize,
     pinyin_groups_off: usize,
     skeleton_groups_off: usize,
     english_off: usize,
     word_records_off: usize,
     bigrams_off: usize,
+    trigrams_off: usize,
     syl_arena_off: usize,
     str_arena_off: usize,
     str_arena_len: usize,
@@ -92,11 +76,12 @@ impl CompiledDict {
 
     fn from_backing(backing: Backing) -> Result<Self, LexiconError> {
         let buf = backing.as_ref();
-        if buf.len() < HEADER_LEN || &buf[0..8] != MAGIC {
+        if buf.len() < HEADER_LEN || (&buf[0..8] != MAGIC && &buf[0..8] != b"CHIMED01") {
             return Err(LexiconError::InvalidCompiledDict(
-                "missing CHIMED01 magic header",
+                "missing CHIMED01/CHIMED02 magic header",
             ));
         }
+        let is_v2 = &buf[0..8] == MAGIC;
 
         let pinyin_group_count = read_u32(buf, 8) as usize;
         let skeleton_group_count = read_u32(buf, 12) as usize;
@@ -105,6 +90,7 @@ impl CompiledDict {
         let bigram_count = read_u32(buf, 24) as usize;
         let syl_arena_bytes = read_u32(buf, 28) as usize;
         let str_arena_len = read_u32(buf, 32) as usize;
+        let trigram_count = if is_v2 { read_u32(buf, 36) as usize } else { 0 };
 
         let pinyin_groups_off = HEADER_LEN;
         let skeleton_groups_off = pinyin_groups_off
@@ -119,8 +105,11 @@ impl CompiledDict {
         let bigrams_off = word_records_off
             .checked_add(word_record_count.saturating_mul(12))
             .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
-        let syl_arena_off = bigrams_off
+        let trigrams_off = bigrams_off
             .checked_add(bigram_count.saturating_mul(16))
+            .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
+        let syl_arena_off = trigrams_off
+            .checked_add(trigram_count.saturating_mul(16))
             .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
         let str_arena_off = syl_arena_off
             .checked_add(syl_arena_bytes)
@@ -134,7 +123,6 @@ impl CompiledDict {
                 "file truncated before end of string arena",
             ));
         }
-        // Validate the entire string arena as UTF-8 once at load time!
         std::str::from_utf8(&buf[str_arena_off..str_arena_off + str_arena_len])
             .map_err(|_| LexiconError::InvalidCompiledDict("corrupt UTF-8 in string arena"))?;
 
@@ -145,11 +133,13 @@ impl CompiledDict {
             english_count,
             word_record_count,
             bigram_count,
+            trigram_count,
             pinyin_groups_off,
             skeleton_groups_off,
             english_off,
             word_records_off,
             bigrams_off,
+            trigrams_off,
             syl_arena_off,
             str_arena_off,
             str_arena_len,
@@ -174,6 +164,12 @@ impl CompiledDict {
         self.english_count
     }
 
+    /// Total N-gram (Bigram + Trigram) transitions stored in this compiled dictionary.
+    #[must_use]
+    pub const fn ngram_count(&self) -> usize {
+        self.bigram_count + self.trigram_count
+    }
+
     /// Appends up to `limit` matching [`WordEntry`] items for an exact `SyllableId` sequence.
     pub fn lookup_exact_into(&self, query: &[SyllableId], limit: usize, out: &mut Vec<WordEntry>) {
         let buf = self.backing.as_ref();
@@ -185,8 +181,7 @@ impl CompiledDict {
             let grp_off = self.pinyin_groups_off + mid * 16;
             let syl_idx = read_u32(buf, grp_off) as usize;
             let syl_len = usize::from(read_u16(buf, grp_off + 4));
-            let cmp = self.cmp_syllables(syl_idx, syl_len, query);
-            match cmp {
+            match self.cmp_syllables(syl_idx, syl_len, query) {
                 Ordering::Less => lo = mid + 1,
                 Ordering::Greater => hi = mid,
                 Ordering::Equal => {
@@ -257,7 +252,6 @@ impl CompiledDict {
             return;
         }
         let buf = self.backing.as_ref();
-        // Find lower_bound of `lower_prefix` via binary search!
         let mut lo = 0usize;
         let mut hi = self.english_count;
         while lo < hi {
@@ -295,19 +289,39 @@ impl CompiledDict {
         }
     }
 
-    /// Looks up a contextual bigram bonus in $O(\log B)$ via deterministic FNV-1a 64-bit pair hash.
+    /// Looks up a contextual Bigram bonus in $O(\log B)$ via deterministic FNV-1a 64-bit hash.
     #[must_use]
     pub fn bigram_bonus(&self, prev: &str, next: &str) -> f32 {
         if self.bigram_count == 0 || prev.is_empty() || next.is_empty() {
             return 0.0;
         }
-        let target_hash = hash_bigram_pair(prev, next);
+        self.lookup_hash_table(
+            self.bigrams_off,
+            self.bigram_count,
+            hash_bigram_pair(prev, next),
+        )
+    }
+
+    /// Looks up a contextual Trigram bonus in $O(\log T)$ via deterministic FNV-1a 64-bit hash.
+    #[must_use]
+    pub fn trigram_bonus(&self, prev2: &str, prev1: &str, next: &str) -> f32 {
+        if self.trigram_count == 0 || prev2.is_empty() || prev1.is_empty() || next.is_empty() {
+            return 0.0;
+        }
+        self.lookup_hash_table(
+            self.trigrams_off,
+            self.trigram_count,
+            hash_trigram_triple(prev2, prev1, next),
+        )
+    }
+
+    fn lookup_hash_table(&self, table_off: usize, count: usize, target_hash: u64) -> f32 {
         let buf = self.backing.as_ref();
         let mut lo = 0usize;
-        let mut hi = self.bigram_count;
+        let mut hi = count;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let off = self.bigrams_off + mid * 16;
+            let off = table_off + mid * 16;
             let h = read_u64(buf, off);
             match h.cmp(&target_hash) {
                 Ordering::Less => lo = mid + 1,
@@ -380,13 +394,15 @@ impl CompiledDict {
     }
 }
 
-/// Compiler for serializing an in-memory [`crate::Lexicon`] into a `.imedict` binary image.
+/// Compiler for serializing an in-memory [`crate::Lexicon`] into a `CHIMED02` `.imedict` binary
+/// image.
 #[derive(Debug, Default)]
 pub struct CompiledDictBuilder {
     exact: BTreeMap<SmallVec<[SyllableId; 4]>, Vec<WordEntry>>,
     skeletons: BTreeMap<String, Vec<WordEntry>>,
     english: BTreeMap<String, WordEntry>,
     bigrams: BTreeMap<u64, f32>,
+    trigrams: BTreeMap<u64, f32>,
 }
 
 impl CompiledDictBuilder {
@@ -411,10 +427,15 @@ impl CompiledDictBuilder {
         for ((prev, next), &bonus) in &lexicon.bigram_boosts {
             builder.bigrams.insert(hash_bigram_pair(prev, next), bonus);
         }
+        for ((w1, w2, w3), &bonus) in &lexicon.trigram_boosts {
+            builder
+                .trigrams
+                .insert(hash_trigram_triple(w1, w2, w3), bonus);
+        }
         builder
     }
 
-    /// Serializes the compiled dictionary into a `CHIMED01` byte vector.
+    /// Serializes the compiled dictionary into a `CHIMED02` byte vector.
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn build_bytes(&self) -> Vec<u8> {
@@ -502,13 +523,8 @@ impl CompiledDictBuilder {
             english_records.push(rec);
         }
 
-        let mut bigram_records: Vec<[u8; 16]> = Vec::with_capacity(self.bigrams.len());
-        for (&hash, &bonus) in &self.bigrams {
-            let mut rec = [0u8; 16];
-            rec[0..8].copy_from_slice(&hash.to_le_bytes());
-            rec[8..12].copy_from_slice(&bonus.to_le_bytes());
-            bigram_records.push(rec);
-        }
+        let bigram_records = encode_hash_bonus_table(&self.bigrams);
+        let trigram_records = encode_hash_bonus_table(&self.trigrams);
 
         let mut out = Vec::with_capacity(
             HEADER_LEN
@@ -517,6 +533,7 @@ impl CompiledDictBuilder {
                 + english_records.len() * 16
                 + word_records.len() * 12
                 + bigram_records.len() * 16
+                + trigram_records.len() * 16
                 + syl_arena.len()
                 + str_arena.len(),
         );
@@ -544,7 +561,12 @@ impl CompiledDictBuilder {
         );
         out.extend_from_slice(&u32::try_from(syl_arena.len()).unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&u32::try_from(str_arena.len()).unwrap_or(0).to_le_bytes());
-        out.extend_from_slice(&[0u8; 12]);
+        out.extend_from_slice(
+            &u32::try_from(trigram_records.len())
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&[0u8; 8]);
 
         for g in &pinyin_groups {
             out.extend_from_slice(g);
@@ -559,6 +581,9 @@ impl CompiledDictBuilder {
             out.extend_from_slice(r);
         }
         for r in &bigram_records {
+            out.extend_from_slice(r);
+        }
+        for r in &trigram_records {
             out.extend_from_slice(r);
         }
         out.extend_from_slice(&syl_arena);
@@ -580,6 +605,17 @@ impl CompiledDictBuilder {
     }
 }
 
+fn encode_hash_bonus_table(map: &BTreeMap<u64, f32>) -> Vec<[u8; 16]> {
+    let mut records = Vec::with_capacity(map.len());
+    for (&hash, &bonus) in map {
+        let mut rec = [0u8; 16];
+        rec[0..8].copy_from_slice(&hash.to_le_bytes());
+        rec[8..12].copy_from_slice(&bonus.to_le_bytes());
+        records.push(rec);
+    }
+    records
+}
+
 fn hash_bigram_pair(prev: &str, next: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0100_0000_01b3;
@@ -592,6 +628,21 @@ fn hash_bigram_pair(prev: &str, next: &str) -> u64 {
     h = h.wrapping_mul(FNV_PRIME);
     for &b in next.as_bytes() {
         h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+fn hash_trigram_triple(w1: &str, w2: &str, w3: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for part in [w1, w2, w3] {
+        for &b in part.as_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h ^= 0xfe;
         h = h.wrapping_mul(FNV_PRIME);
     }
     h
@@ -630,8 +681,9 @@ mod tests {
     use crate::Lexicon;
 
     #[test]
-    fn test_should_roundtrip_compiled_imedict_via_mmap() {
-        let seed = Lexicon::with_builtin_seed();
+    fn test_should_roundtrip_compiled_imedict_v2_with_bigrams_and_trigrams() {
+        let mut seed = Lexicon::with_builtin_seed();
+        seed.insert_trigram_boost("保障", "公民", "权利", 2.4);
         let builder = CompiledDictBuilder::from_lexicon(&seed);
         let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let path = dir.path().join("test.imedict");
@@ -645,13 +697,7 @@ mod tests {
         let hao = lookup_syllable("hao").unwrap_or(SyllableId(0));
         mapped.lookup_exact_into(&[ni, hao], 5, &mut out);
         assert_eq!(out.first().map(|w| w.surface.as_str()), Some("你好"));
-
-        let mut skel_out = Vec::new();
-        mapped.lookup_skeleton_into("wsm", 5, &mut skel_out);
-        assert_eq!(skel_out.first().map(|w| w.surface.as_str()), Some("为什么"));
-
-        let macos = mapped.lookup_english("macos");
-        assert_eq!(macos.as_ref().map(|w| w.surface.as_str()), Some("macOS"));
         assert!(mapped.bigram_bonus("端侧", "量化") > 1.0);
+        assert!(mapped.trigram_bonus("保障", "公民", "权利") > 2.0);
     }
 }

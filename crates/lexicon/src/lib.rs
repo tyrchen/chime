@@ -63,6 +63,7 @@ pub struct Lexicon {
     pub(crate) skeleton_map: HashMap<String, Vec<WordEntry>>,
     pub(crate) english_casing: HashMap<String, WordEntry>,
     pub(crate) bigram_boosts: HashMap<(String, String), f32>,
+    pub(crate) trigram_boosts: HashMap<(String, String, String), f32>,
 }
 
 impl Lexicon {
@@ -192,6 +193,46 @@ impl Lexicon {
             .insert((left_word.into(), right_word.into()), bonus);
     }
 
+    /// Inserts a contextual trigram transition bonus `log P(w3 | w1, w2)` boost.
+    pub fn insert_trigram_boost(
+        &mut self,
+        w1: impl Into<String>,
+        w2: impl Into<String>,
+        w3: impl Into<String>,
+        bonus: f32,
+    ) {
+        self.trigram_boosts
+            .insert((w1.into(), w2.into(), w3.into()), bonus);
+    }
+
+    /// Loads newline-delimited N-gram TSV rows (`2\tprev\tnext\tbonus` or `3\tw1\tw2\tw3\tbonus`).
+    pub fn load_ngram_tsv(&mut self, tsv_content: &str) -> usize {
+        let mut added = 0usize;
+        for raw_line in tsv_content.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split('\t').collect();
+            match parts.as_slice() {
+                ["2", w1, w2, score_str] => {
+                    if let Ok(bonus) = score_str.parse::<f32>() {
+                        self.insert_bigram_boost(*w1, *w2, bonus);
+                        added += 1;
+                    }
+                }
+                ["3", w1, w2, w3, score_str] => {
+                    if let Ok(bonus) = score_str.parse::<f32>() {
+                        self.insert_trigram_boost(*w1, *w2, *w3, bonus);
+                        added += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        added
+    }
+
     /// Queries both the mutable overlay and all mounted `mmap` `.imedict` layers for `syllables`.
     #[must_use]
     pub fn lookup_exact(&self, syllables: &[SyllableId]) -> Vec<WordEntry> {
@@ -265,6 +306,24 @@ impl Lexicon {
         }
         for layer in &self.compiled_layers {
             let b = layer.bigram_bonus(prev, next);
+            if b.abs() > f32::EPSILON {
+                return b;
+            }
+        }
+        0.0
+    }
+
+    /// Returns the strongest contextual trigram transition bonus across overlay and `mmap` layers.
+    #[must_use]
+    pub fn trigram_bonus(&self, prev2: &str, prev1: &str, next: &str) -> f32 {
+        if let Some(&b) =
+            self.trigram_boosts
+                .get(&(prev2.to_string(), prev1.to_string(), next.to_string()))
+        {
+            return b;
+        }
+        for layer in &self.compiled_layers {
+            let b = layer.trigram_bonus(prev2, prev1, next);
             if b.abs() > f32::EPSILON {
                 return b;
             }

@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 flume = { workspace = true }
+mlx-rs = { workspace = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

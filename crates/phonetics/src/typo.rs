@@ -105,7 +105,7 @@ pub fn generate_typo_variants(token: &str) -> SmallVec<[(SyllableId, TypoEdit); 
         buf.swap(i, i + 1);
     }
 
-    // 2. Single-key physical QWERTY neighbor substitution (`no` -> `ni`, `hso` -> `hao`).
+    // 2. Single-key physical QWERTY neighbor substitution (`no` -> `ni`, `shuruga` -> `shurufa`).
     for i in 0..bytes.len() {
         let orig = buf[i];
         for cand_key in b'a'..=b'z' {
@@ -122,6 +122,24 @@ pub fn generate_typo_variants(token: &str) -> SmallVec<[(SyllableId, TypoEdit); 
                 }
                 buf[i] = orig;
             }
+        }
+    }
+
+    // 3. Common initial phonetic slip (`l` <-> `r`, e.g. `shulufa` -> `shurufa`) for multi-syllable
+    //    rescue.
+    if let Some(rest) = token.strip_prefix('l') {
+        let alt = format!("r{rest}");
+        if let Some(id) = lookup_syllable(&alt)
+            && !out.iter().any(|(existing, _)| *existing == id)
+        {
+            out.push((id, TypoEdit::NeighborKey { cost: 1.25 }));
+        }
+    } else if let Some(rest) = token.strip_prefix('r') {
+        let alt = format!("l{rest}");
+        if let Some(id) = lookup_syllable(&alt)
+            && !out.iter().any(|(existing, _)| *existing == id)
+        {
+            out.push((id, TypoEdit::NeighborKey { cost: 1.25 }));
         }
     }
 

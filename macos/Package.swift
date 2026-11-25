@@ -22,11 +22,15 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("chime_ffi"),
                 .linkedLibrary("sqlite3"),
+                .linkedLibrary("c++"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("InputMethodKit"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreML"),
+                .linkedFramework("Metal"),
+                .linkedFramework("Accelerate"),
+                .linkedFramework("Foundation"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
         )

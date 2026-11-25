@@ -12,7 +12,6 @@ pub mod sanitize;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Instant,
 };
 
@@ -23,7 +22,7 @@ use chime_lexicon::{
     CompiledDictBuilder, Lexicon, TypingSample, UserStore, import_macos_text_replacements,
     parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, RerankJob, SafetensorsReranker};
+use chime_neural::{AsyncRerankHandle, RerankJob};
 use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -304,11 +303,17 @@ impl ChimeEngine {
                 }
             }
 
-            let neural_dir = dir.join("neural");
-            if neural_dir.join("model.safetensors").exists()
-                && let Ok(reranker) = SafetensorsReranker::load_dir(&neural_dir)
+            let user_neural_dir = dir.join("neural");
+            let bundle_neural_dir = self.bundle_resources_dir.as_ref().map(|r| r.join("neural"));
+            let chosen_neural = if user_neural_dir.join("model.safetensors").exists() {
+                Some(user_neural_dir)
+            } else {
+                bundle_neural_dir.filter(|b| b.join("model.safetensors").exists())
+            };
+            if let Some(n_dir) = chosen_neural
+                && let Ok(worker) = AsyncRerankHandle::spawn_from_dir(&n_dir)
             {
-                self.async_reranker = Some(AsyncRerankHandle::spawn(Arc::new(reranker)));
+                self.async_reranker = Some(worker);
             }
         }
         self.lexicon = lex;
