@@ -160,6 +160,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var page_size: Int
     public var candidate_font_size: Int
     public var candidate_layout: String
+    public var auto_check_updates: Bool
 
     public static let `default` = ChimeConfigDTO(
         scheme: "full",
@@ -178,8 +179,17 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         anti_jitter_ms: 60,
         page_size: 5,
         candidate_font_size: 15,
-        candidate_layout: "horizontal"
+        candidate_layout: "horizontal",
+        auto_check_updates: true
     )
+}
+
+/// Summary of a mounted `.imepack` cartridge reported by `chime_get_status_json`.
+public struct ChimeInstalledPackDTO: Decodable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let version: String
+    public let has_lora: Bool
 }
 
 /// Live engine diagnostic metrics displayed in SwiftUI Settings.
@@ -191,6 +201,7 @@ public struct ChimeStatusDTO: Decodable, Sendable, Equatable {
     public let neural_loaded: Bool
     public let installed_packs: Int?
     public let active_loras: Int?
+    public let pack_details: [ChimeInstalledPackDTO]?
 }
 
 /// MainActor-isolated coordinator owning the persistent Rust `ChimeEngineHandle` and lightweight
@@ -579,6 +590,14 @@ public final class ChimeEngineBridge {
         guard let handle else { return -1 }
         return url.path.withCString { cStr in
             chime_import_asset(handle, cStr)
+        }
+    }
+
+    @discardableResult
+    public func removePack(id: String) -> Bool {
+        guard let handle else { return false }
+        return id.withCString { cStr in
+            chime_remove_pack(handle, cStr)
         }
     }
 

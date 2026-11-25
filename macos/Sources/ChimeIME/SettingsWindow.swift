@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Native macOS SwiftUI 4-Tab Preferences Window controller for Chime IME (aligned with Sogou &
-/// Doubao usability conventions).
+/// Doubao usability conventions, with integrated zero-telemetry updater and `.imepack` store).
 @MainActor
 public final class ChimeSettingsWindowController {
     public static let shared = ChimeSettingsWindowController()
@@ -21,7 +21,7 @@ public final class ChimeSettingsWindowController {
 
         let hosting = NSHostingController(rootView: ChimeSettingsView())
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -53,6 +53,7 @@ struct ChimeSettingsView: View {
     @State private var config: ChimeConfigDTO = ChimeEngineBridge.shared.getConfig() ?? .default
     @State private var status: ChimeStatusDTO? = ChimeEngineBridge.shared.getStatus()
     @State private var confirmClearHabits = false
+    @ObservedObject private var updater = ChimeUpdateManager.shared
 
     var body: some View {
         TabView {
@@ -76,7 +77,11 @@ struct ChimeSettingsView: View {
                     Label("词库与 AI", systemImage: "cpu")
                 }
         }
-        .frame(minWidth: 550, minHeight: 500)
+        .frame(minWidth: 590, minHeight: 540)
+        .onAppear {
+            status = ChimeEngineBridge.shared.getStatus()
+            updater.ensureManifestLoadedQuietly()
+        }
         .onChange(of: config) { _, newValue in
             ChimeEngineBridge.shared.setConfig(newValue)
             status = ChimeEngineBridge.shared.getStatus()
@@ -124,6 +129,36 @@ struct ChimeSettingsView: View {
                 Toggle("使用左 / 右方括号（[ / ]）翻页", isOn: $config.bracket_paging)
                 Toggle("使用逗号 / 句号（, / .）翻页（多页候选时生效）", isOn: $config.comma_period_paging)
                 Toggle("使用分号 / 单引号（; / '）快速选择第 2 / 第 3 候选词", isOn: $config.semicolon_apostrophe_select)
+            }
+
+            Section("版本与自动更新（零遥测 · SHA-256 + Apple 公证校验）") {
+                HStack {
+                    Text("当前版本：v\(updater.currentVersion)")
+                        .fontWeight(.medium)
+                    Spacer()
+                    if updater.isChecking || updater.isUpdatingApp {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    if let upd = updater.availableAppUpdate {
+                        Button("立即升级至 v\(upd.version)") {
+                            updater.installAvailableAppUpdate()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(updater.isUpdatingApp)
+                    } else {
+                        Button("检查更新") {
+                            updater.checkForUpdatesInteractive(openSettingsWindow: false)
+                        }
+                        .disabled(updater.isChecking || updater.isUpdatingApp)
+                    }
+                }
+                Toggle("自动检查更新（每 24 小时仅只读拉取静态版本号，零设备指纹与按键上传）", isOn: $config.auto_check_updates)
+                if !updater.statusMessage.isEmpty {
+                    Text(updater.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -229,11 +264,80 @@ struct ChimeSettingsView: View {
                 }
             }
 
-            Section("词库导入与个人数据管理（100% 本地离线）") {
+            Section("官方扩展卡带一键安装与更新（SHA-256 校验 · 热挂载免重启）") {
+                ForEach(OfficialPackCatalogItem.catalog) { item in
+                    let installed = status?.pack_details?.first(where: { $0.id == item.id })
+                    let remoteVer = updater.latestManifest?.version
+                    let hasPackUpdate = if let inst = installed, let rVer = remoteVer {
+                        ChimeUpdateManager.isVersionNewer(rVer, than: inst.version)
+                    } else {
+                        false
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .center, spacing: 8) {
+                            Text(item.title)
+                                .fontWeight(.semibold)
+                            Text(item.routingBadge)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.accentColor.opacity(0.12))
+                                .clipShape(Capsule())
+                            Spacer()
+                            if updater.activePackDownloadId == item.id {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("下载中…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if let inst = installed {
+                                if hasPackUpdate, let rVer = remoteVer {
+                                    Button("更新至 v\(rVer)") {
+                                        updater.installOrUpdateOfficialPack(packId: item.id) {
+                                            status = ChimeEngineBridge.shared.getStatus()
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                } else {
+                                    Text("已挂载 v\(inst.version)")
+                                        .font(.caption)
+                                        .foregroundStyle(.green)
+                                }
+                                Button("卸载") {
+                                    _ = ChimeEngineBridge.shared.removePack(id: item.id)
+                                    status = ChimeEngineBridge.shared.getStatus()
+                                }
+                                .controlSize(.small)
+                            } else {
+                                Button("一键安装 (\(item.approxSize))") {
+                                    updater.installOrUpdateOfficialPack(packId: item.id) {
+                                        status = ChimeEngineBridge.shared.getStatus()
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        }
+                        Text(item.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+                if !updater.statusMessage.isEmpty {
+                    Text(updater.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("本地词库导入与个人数据管理") {
                 Toggle("记录本地打字训练样本（仅存本机 SQLite，供导出 Colab 微调个人 LoRA）", isOn: $config.record_training_samples)
 
                 HStack(spacing: 10) {
-                    Button("导入词库或 .imepack 模型包…") {
+                    Button("导入词库或 .imepack…") {
                         ChimeSettingsWindowController.shared.presentImportOpenPanel()
                         status = ChimeEngineBridge.shared.getStatus()
                     }

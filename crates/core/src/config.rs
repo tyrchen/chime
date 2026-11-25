@@ -118,6 +118,10 @@ pub struct ChimeConfig {
     /// Candidate window layout orientation.
     #[serde(default)]
     pub candidate_layout: CandidateLayout,
+    /// Automatically check static `releases-manifest.json` once every 24h for app/pack updates
+    /// (read-only HTTPS GET, zero telemetry or device identifiers).
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
 }
 
 const fn default_true() -> bool {
@@ -156,6 +160,7 @@ impl Default for ChimeConfig {
             page_size: 5,
             candidate_font_size: 15,
             candidate_layout: CandidateLayout::Horizontal,
+            auto_check_updates: true,
         }
     }
 }

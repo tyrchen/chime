@@ -16,28 +16,29 @@ It combines a **$< 0.8\text{ ms}$ zero-copy `mmap` dual-track lattice decoder (`
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.8.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.9.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.8.0`)
+## Download & Installation (`v0.9.0`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.8.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | Installs to `/Library/Input Methods/Chime.app`, registers TIS without logout & opens Input Sources |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.8.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.9.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | Installs to `/Library/Input Methods/Chime.app`, registers TIS without logout & opens Input Sources |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.9.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
 | **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` classical entries + `231,593` `Tab` chains + Q4 Rank-8 LoRA |
 | **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + Q4 Rank-8 LoRA |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | Release integrity checksums |
 
-> **Apple Signed & Notarized (`Notarized Developer ID`)**: Both the `.pkg` installer and `.zip` app bundle are signed with **Apple Developer ID (Hardened Runtime + Secure Timestamp), notarized by Apple Notary Service, and offline-stapled**—double-click to install with zero macOS Gatekeeper warnings. After installation, open **System Settings -> Keyboard -> Input Sources -> Edit -> `+` -> Simplified Chinese** to confirm **Chime 拼音** is enabled.
+> **Apple Signed, Notarized & Built-In Verified Auto-Update**: Both the `.pkg` installer and `.zip` app bundle are signed with **Apple Developer ID (Hardened Runtime + Secure Timestamp), notarized by Apple Notary Service, and offline-stapled**, paired with a built-in zero-telemetry updater (`SHA-256` + `Developer ID` signature verification, user-configurable in Preferences).
 
 ### Installing `.imepack` Cartridges
 
-You can hot-mount downloaded `.imepack.zip` cartridges with **zero restart**:
-- **Via Menu Bar UI**: Click `[中]` in the macOS menu bar -> **Settings (`偏好设置`)** -> **Import Dictionary or `.imepack`**, and select `classics-poetry.imepack.zip` or `tech-developer.imepack.zip`.
+You can hot-mount `.imepack` cartridges with **zero restart**:
+- **1-Click Built-In Store (Recommended)**: Click `[中]` in the macOS menu bar -> **Settings (`偏好设置…`)** -> **Lexicon & AI (`词库与 AI`)**, and click **Install / Update** next to `classics-poetry` or `tech-developer`.
+- **Local File Import**: Click **Import Dictionary or `.imepack`…** in Settings to import local `.imepack.zip`, `.scel`, or `.dict.yaml` files.
 - **Via CLI**:
   ```bash
   chime pack install ~/Downloads/classics-poetry.imepack.zip

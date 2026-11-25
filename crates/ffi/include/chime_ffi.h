@@ -45,6 +45,7 @@ char *chime_select_candidate(ChimeEngineHandle *engine, uint64_t session_id, siz
 char *chime_poll_async_rerank(ChimeEngineHandle *engine, uint64_t session_id);
 
 int64_t chime_import_asset(ChimeEngineHandle *engine, const char *asset_path);
+bool chime_remove_pack(ChimeEngineHandle *engine, const char *pack_id);
 void chime_reload_assets(ChimeEngineHandle *engine);
 void chime_clear_user_habits(ChimeEngineHandle *engine);
 char *chime_get_config_json(ChimeEngineHandle *engine);

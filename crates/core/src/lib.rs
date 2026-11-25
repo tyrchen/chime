@@ -115,6 +115,19 @@ pub struct EngineResponse {
     pub generation_id: u64,
 }
 
+/// Summary of a single mounted `.imepack` cartridge reported to the `macOS` Preferences window.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledPackSummary {
+    /// Canonical cartridge slug (`"classics-poetry"`, `"tech-developer"`, …).
+    pub id: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Installed cartridge version string.
+    pub version: String,
+    /// True if this cartridge mounts a `LoRA` adapter onto Metal GPU.
+    pub has_lora: bool,
+}
+
 /// Runtime status summary displayed in the `macOS` Preferences window.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineStatus {
@@ -134,6 +147,9 @@ pub struct EngineStatus {
     /// Number of active `Multi-LoRA` sidecar adapters mounted on Metal GPU.
     #[serde(default)]
     pub active_loras: usize,
+    /// Detailed metadata for each mounted `.imepack` cartridge.
+    #[serde(default)]
+    pub pack_details: Vec<InstalledPackSummary>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +246,7 @@ pub struct ChimeEngine {
     decoder: LatticeDecoder,
     async_reranker: Option<AsyncRerankHandle>,
     installed_packs_count: usize,
+    installed_packs_meta: Vec<InstalledPackSummary>,
     sessions: VecDeque<InputSession>,
     next_session_id: u64,
 }
@@ -254,6 +271,7 @@ impl ChimeEngine {
             decoder: LatticeDecoder::new(),
             async_reranker: None,
             installed_packs_count: 0,
+            installed_packs_meta: Vec::new(),
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         }
@@ -289,6 +307,7 @@ impl ChimeEngine {
             decoder: LatticeDecoder::new(),
             async_reranker: None,
             installed_packs_count: 0,
+            installed_packs_meta: Vec::new(),
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         };
@@ -320,6 +339,7 @@ impl ChimeEngine {
         }
         let mut lora_specs: Vec<LoraMountSpec> = Vec::new();
         self.installed_packs_count = 0;
+        self.installed_packs_meta.clear();
 
         if let Some(dir) = &self.app_support_dir {
             let dicts_dir = dir.join("dicts");
@@ -338,12 +358,19 @@ impl ChimeEngine {
             let packs = discover_installed_packs(dir);
             self.installed_packs_count = packs.len();
             for pack in packs {
+                let eff_id = pack.manifest.effective_id();
+                self.installed_packs_meta.push(InstalledPackSummary {
+                    id: eff_id.clone(),
+                    name: pack.manifest.name.clone(),
+                    version: pack.manifest.version.clone(),
+                    has_lora: pack.lora_path.is_some(),
+                });
                 if let Some(dp) = pack.dict_path {
                     let _ = lex.mount_compiled_mmap(&dp);
                 }
                 if let Some(lp) = pack.lora_path {
                     lora_specs.push(LoraMountSpec {
-                        id: pack.manifest.effective_id(),
+                        id: eff_id,
                         path: lp,
                         scale: pack.manifest.lora_scale,
                         routing: pack.manifest.routing,
@@ -415,6 +442,33 @@ impl ChimeEngine {
                 .async_reranker
                 .as_ref()
                 .map_or(0, AsyncRerankHandle::lora_count),
+            pack_details: self.installed_packs_meta.clone(),
+        }
+    }
+
+    /// Removes an installed `.imepack` cartridge directory by slug (`packs/<slug>.imepack`) and
+    /// hot-reloads active lexicons and `LoRA` adapters.
+    pub fn remove_installed_pack(&mut self, pack_id: &str) -> bool {
+        let slug = pack_id.trim();
+        if slug.is_empty()
+            || !slug
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return false;
+        }
+        let Some(dir) = &self.app_support_dir else {
+            return false;
+        };
+        let target = dir.join("packs").join(format!("{slug}.imepack"));
+        if !target.exists() {
+            return false;
+        }
+        if std::fs::remove_dir_all(&target).is_ok() {
+            self.reload_assets();
+            true
+        } else {
+            false
         }
     }
 
@@ -1844,5 +1898,49 @@ mod tests {
         assert!(engine.status().learned_habits > 0);
         engine.clear_user_habits();
         assert_eq!(engine.status().learned_habits, 0);
+        assert!(engine.config().auto_check_updates);
+    }
+
+    #[test]
+    fn test_should_report_and_remove_installed_imepack_safely() {
+        let support_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let pack_build_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let pack_src = pack_build_dir.path().join("demo-pack.imepack");
+        let _ = crate::personalize::build_imepack_v2(
+            &crate::personalize::PackBuildOptions {
+                id: "demo-pack",
+                name: "Demo Pack",
+                description: "Unit test pack",
+                version: "0.9.0",
+                routing: chime_neural::LoraRouting::Developer,
+                lora_scale: 1.0,
+                lexicon_tsv: None,
+                continuations_tsv: None,
+                ngrams_tsv: None,
+                lora_safetensors: None,
+                neural_dir: None,
+                private_pack: false,
+            },
+            &pack_src,
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        let mut engine = ChimeEngine::with_data_dir(support_dir.path(), None)
+            .unwrap_or_else(|_| std::process::abort());
+        let _ = engine
+            .import_external_asset(&pack_src)
+            .unwrap_or_else(|_| std::process::abort());
+
+        let st = engine.status();
+        assert_eq!(st.installed_packs, 1);
+        assert_eq!(st.pack_details.len(), 1);
+        assert_eq!(st.pack_details[0].id, "demo-pack");
+        assert_eq!(st.pack_details[0].version, "0.9.0");
+
+        // Reject path-traversal attempts cleanly
+        assert!(!engine.remove_installed_pack("../etc"));
+        assert!(engine.remove_installed_pack("demo-pack"));
+        assert_eq!(engine.status().installed_packs, 0);
+        assert_eq!(engine.status().pack_details.len(), 0);
     }
 }

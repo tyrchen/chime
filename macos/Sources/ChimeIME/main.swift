@@ -114,6 +114,7 @@ enum ChimeBootstrap {
         let bundleId = Bundle.main.bundleIdentifier ?? ChimeInputSourceRegistrar.bundleId
         server = IMKServer(name: "Chime_1_Connection", bundleIdentifier: bundleId)
         ChimeInputSourceRegistrar.scheduleDaemonRegistration(tryAutoEnable: tryAutoEnable)
+        ChimeUpdateManager.shared.startBackgroundScheduler()
         app.run()
     }
 }

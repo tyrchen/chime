@@ -36,10 +36,11 @@ public final class ChimeInputController: IMKInputController {
 
     override public func menu() -> NSMenu! {
         let key = ObjectIdentifier(self)
-        let (cfg, isEng): (ChimeConfigDTO, Bool) = MainActor.assumeIsolated {
+        let (cfg, isEng, pendingUpdate): (ChimeConfigDTO, Bool, ChimeReleaseManifest?) = MainActor.assumeIsolated {
             (
                 ChimeEngineBridge.shared.getConfig() ?? .default,
-                ChimeEngineBridge.shared.isInlineEnglish(controllerKey: key)
+                ChimeEngineBridge.shared.isInlineEnglish(controllerKey: key),
+                ChimeUpdateManager.shared.availableAppUpdate
             )
         }
 
@@ -83,6 +84,19 @@ public final class ChimeInputController: IMKInputController {
         )
         prefsItem.target = self
         menu.addItem(prefsItem)
+
+        let updateTitle = if let upd = pendingUpdate {
+            "发现新版本 v\(upd.version) — 立即升级…"
+        } else {
+            "检查更新…"
+        }
+        let updateItem = NSMenuItem(
+            title: updateTitle,
+            action: #selector(checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
 
         let importItem = NSMenuItem(
             title: "导入词库或个人模型包 (.scel / .dict.yaml / .imepack)…",
@@ -138,6 +152,17 @@ public final class ChimeInputController: IMKInputController {
     @objc public func openPreferences(_ sender: Any?) {
         MainActor.assumeIsolated {
             ChimeSettingsWindowController.shared.showWindow()
+        }
+    }
+
+    @objc public func checkForUpdates(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            if ChimeUpdateManager.shared.availableAppUpdate != nil {
+                ChimeSettingsWindowController.shared.showWindow()
+                ChimeUpdateManager.shared.installAvailableAppUpdate()
+            } else {
+                ChimeUpdateManager.shared.checkForUpdatesInteractive(openSettingsWindow: true)
+            }
         }
     }
 

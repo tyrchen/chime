@@ -16,27 +16,28 @@
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.8.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **最新发布版本（`v0.9.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.8.0`）
+## 下载与安装（`v0.9.0`）
 
 系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.8.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.8.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.9.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.9.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
 | **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + Q4 Rank-8 LoRA |
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + Q4 Rank-8 LoRA |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | 安装包与卡带完整性哈希校验值 |
 
-> **Apple 官方签名与公证（Notarized Developer ID）**：`.pkg` 安装器与 `.zip` 应用包均已通过 **Apple Developer ID 正式签名、Hardened Runtime 硬化运行时与 Apple Notary Service 官方公证并离线钉票（Stapled）**，下载后可直接双击安装，不会触发 macOS Gatekeeper 恶意软件拦截弹窗。安装后前往 **系统设置 -> 键盘 -> 输入法 -> 编辑 -> `+` -> 简体中文**，确认勾选启用 **Chime 拼音**。
+> **Apple 官方签名与公证（Notarized Developer ID）+ 内置安全自动更新**：`.pkg` 安装器与 `.zip` 应用包均已通过 **Apple Developer ID 正式签名与 Apple Notary Service 官方公证装订**；内置零遥测自动更新器（双重校验 `SHA-256` 与 `Developer ID` 证书链，支持随时关闭），安装后前往 **系统设置 -> 键盘 -> 输入法 -> 编辑 -> `+` -> 简体中文** 启用 **Chime 拼音**。
 
 ### 挂载 `.imepack` 领域扩展卡带（免重启热加载）
 
-- **图形界面导入**：点击右上角菜单栏 `[中]` 图标 -> **偏好设置** -> **导入词库或 `.imepack` 扩展包**，直接选择下载好的 `.imepack.zip` 即可。
+- **偏好设置一键在线安装（推荐）**：点击右上角菜单栏 `[中]` -> **偏好设置…** -> **词库与 AI**，直接点击 **「一键安装」** 或 **「更新」** 即可自动完成下载、`SHA-256` 校验与免重启热挂载。
+- **本地文件导入**：在偏好设置中点击 **导入词库或 `.imepack`…**，选择本地 `.imepack.zip` 或搜狗 `.scel` / Rime `.dict.yaml`。
 - **命令行导入**：
   ```bash
   chime pack install ~/Downloads/classics-poetry.imepack.zip

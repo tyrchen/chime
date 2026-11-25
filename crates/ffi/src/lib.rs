@@ -362,6 +362,27 @@ pub unsafe extern "C" fn chime_import_asset(
         .unwrap_or(-1)
 }
 
+/// Removes an installed `.imepack` cartridge by slug (`"classics-poetry"`, `"tech-developer"`, …)
+/// and hot-reloads active lexicons and `LoRA` adapters.
+///
+/// # Safety
+///
+/// `engine` and `pack_id` must be valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_remove_pack(
+    engine: *mut ChimeEngineHandle,
+    pack_id: *const c_char,
+) -> bool {
+    if engine.is_null() || pack_id.is_null() {
+        return false;
+    }
+    // SAFETY: `pack_id` is a valid NUL-terminated UTF-8 string.
+    let slug = unsafe { CStr::from_ptr(pack_id) }.to_string_lossy();
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    eng.inner.remove_installed_pack(&slug)
+}
+
 /// Reloads `config.toml`, dictionaries, and neural models from disk.
 ///
 /// # Safety
