@@ -6,7 +6,7 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall started at $(date) ==="
+    echo "=== Chime postinstall v0.7.3 started at $(date) ==="
     if [ -d "$APP_PATH" ]; then
         chown -R root:wheel "$APP_PATH" 2>&1 || true
         chmod -R u+rwX,go+rX "$APP_PATH" 2>&1 || true
@@ -15,11 +15,9 @@ LOG_FILE="/tmp/chime-install.log"
 
         "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
 
-        # Stop any old Chime daemon and refresh macOS input source & Keyboard Settings agents FIRST,
-        # BEFORE launching the new long-lived Chime IMKServer daemon in the user's Aqua session.
+        # 1. Stop any old Chime process and refresh background IMK agents first
         pkill -x Chime 2>&1 || true
         killall imklaunchagent TextInputMenuAgent 2>&1 || true
-        killall -9 "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>&1 || true
         sleep 1
 
         CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
@@ -28,12 +26,10 @@ LOG_FILE="/tmp/chime-install.log"
             CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
             echo "Detected console uid: '$CONSOLE_UID'"
             if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
-                # Also register in LaunchServices inside the console user's domain
                 /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
 
-                # Launch Chime.app as a persistent background IMKServer inside the user's Aqua GUI session.
-                # Keeping Chime alive in the user's session ensures TISRegisterInputSource + TISEnableInputSource
-                # remain permanently bound without requiring logout!
+                # 2. Launch Chime.app as a persistent IMKServer daemon in the console user's Aqua session
+                # so TISRegisterInputSource stays permanently bound without requiring logout.
                 /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$APP_PATH" --args --activate-on-install 2>&1 || true
 
                 for _ in 1 2 3 4 5 6; do
@@ -41,14 +37,30 @@ LOG_FILE="/tmp/chime-install.log"
                         echo "Chime IMKServer daemon is running under uid $CONSOLE_UID"
                         break
                     fi
-                    sleep 0.5
+                    sleep 0.4
                 done
+
+                # Wait 1.5s for Chime's Aqua RunLoop registration pass to complete BEFORE flushing System Settings cache!
+                sleep 1.5
+
+                # 3. Flush System Settings -> Keyboard extension (`KeyboardSettings.appex` -> process `KeyboardSettings`)
+                # AFTER Chime has registered with TIS so an already-open System Settings window reloads fresh!
+                killall KeyboardSettings "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>&1 || true
+                pkill -f "KeyboardSettings.appex" 2>&1 || true
+                sleep 0.4
+
+                # 4. If Chime is not yet enabled in HIToolbox (fresh install on macOS 15+), open System Settings -> Input Sources
+                # directly (matching Doubao / Sogou UX) so the user can click '+' -> 'Chinese, Simplified' -> 'Chime 拼音' -> 'Add'.
+                USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+                if [ -n "$USER_HOME" ] && ! /usr/bin/plutil -p "$USER_HOME/Library/Preferences/com.apple.HIToolbox.plist" 2>/dev/null | /usr/bin/grep -q "app.tyrchen.inputmethod.Chime"; then
+                    /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?InputSources" 2>&1 || true
+                fi
             fi
         fi
     else
         echo "ERROR: $APP_PATH not found!"
     fi
-    echo "=== Chime postinstall finished at $(date) ==="
+    echo "=== Chime postinstall v0.7.3 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true

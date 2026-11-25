@@ -5,56 +5,74 @@ import InputMethodKit
 enum ChimeInputSourceRegistrar {
     static let bundleId = "app.tyrchen.inputmethod.Chime"
     static let canonicalModeId = "app.tyrchen.inputmethod.Chime.Pinyin"
-    static let initialAutoEnableDefaultsKey = "chime.didInitialAutoEnable.v1"
 
-    /// Registers `bundleURL` with TextInputSources and optionally enables/selects `Chime 拼音`.
-    /// Must be called from the long-lived `Chime` IMKServer process so macOS keeps the dynamic
-    /// TIS registration bound across the session without requiring logout.
+    private static func isSourceEnabled(_ source: TISInputSource) -> Bool {
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled) else {
+            return false
+        }
+        let flag = Unmanaged<CFBoolean>.fromOpaque(ptr).takeUnretainedValue()
+        return CFBooleanGetValue(flag)
+    }
+
+    /// Registers `bundleURL` with TextInputSources and synchronizes parent/mode state cleanly.
+    ///
+    /// On macOS 15+, system anti-keylogger policy keeps a newly installed third-party IME's parent
+    /// `TISTypeKeyboardInputMethodModeEnabled` disabled (`IsEnabled = false`) until the user clicks
+    /// `Add` once in `System Settings -> Keyboard -> Input Sources -> +`. Crucially, if we enabled
+    /// the child mode while the parent stayed disabled, macOS would leave the IME in a half-enabled
+    /// zombie state (`parent=false, mode=true`). We explicitly heal/avoid that state so `Chime 拼音`
+    /// always appears cleanly and immediately in `+ -> Chinese, Simplified` without logout.
     @discardableResult
-    static func registerStep(bundleURL: URL, enableAndSelect: Bool) -> Bool {
+    static func registerStep(bundleURL: URL, tryAutoEnable: Bool) -> Bool {
         let regStatus = TISRegisterInputSource(bundleURL as CFURL)
         if regStatus != noErr {
             NSLog("Chime: TISRegisterInputSource returned %d for %@", regStatus, bundleURL.path)
         }
 
         let parentFilter = [kTISPropertyInputSourceID as String: bundleId] as CFDictionary
-        if let parents = TISCreateInputSourceList(parentFilter, true)?.takeRetainedValue() as? [TISInputSource],
-           let parent = parents.first
-        {
-            if enableAndSelect {
-                _ = TISEnableInputSource(parent)
-            }
-        }
-
         let modeFilter = [kTISPropertyInputSourceID as String: canonicalModeId] as CFDictionary
-        guard let modes = TISCreateInputSourceList(modeFilter, true)?.takeRetainedValue() as? [TISInputSource],
+
+        guard let parents = TISCreateInputSourceList(parentFilter, true)?.takeRetainedValue() as? [TISInputSource],
+              let parent = parents.first,
+              let modes = TISCreateInputSourceList(modeFilter, true)?.takeRetainedValue() as? [TISInputSource],
               let mode = modes.first
         else {
             return false
         }
 
-        if enableAndSelect {
-            let enStatus = TISEnableInputSource(mode)
-            let selStatus = TISSelectInputSource(mode)
-            NSLog("Chime: enabled=%d selected=%d for %@", enStatus, selStatus, canonicalModeId)
-            if enStatus == noErr {
-                UserDefaults.standard.set(true, forKey: initialAutoEnableDefaultsKey)
-            }
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name(kTISNotifyEnabledKeyboardInputSourcesChanged as String),
-                object: nil,
-                deliverImmediately: true
-            )
-            return enStatus == noErr
+        var parentEnabled = isSourceEnabled(parent)
+        if !parentEnabled && tryAutoEnable {
+            _ = TISEnableInputSource(parent)
+            parentEnabled = isSourceEnabled(parent)
         }
 
+        if parentEnabled {
+            if !isSourceEnabled(mode) || tryAutoEnable {
+                _ = TISEnableInputSource(mode)
+            }
+            if tryAutoEnable {
+                _ = TISSelectInputSource(mode)
+            }
+        } else if isSourceEnabled(mode) {
+            // Heal half-enabled zombie state from any prior failed programmatic enablement so
+            // System Settings -> Keyboard -> Input Sources -> + -> Simplified Chinese shows
+            // Chime 拼音 cleanly (`enabled=0, grayOut=0, allow=1`) without requiring logout.
+            _ = TISDisableInputSource(mode)
+            NSLog("Chime: reset child mode while parent awaits user approval in System Settings")
+        }
+
+        DistributedNotificationCenter.default().postNotificationName(
+            NSNotification.Name(kTISNotifyEnabledKeyboardInputSourcesChanged as String),
+            object: nil,
+            deliverImmediately: true
+        )
         return true
     }
 
     @discardableResult
     static func registerBlockingCLI(bundleURL: URL, selectMode: Bool) -> Bool {
         for _ in 0..<15 {
-            if registerStep(bundleURL: bundleURL, enableAndSelect: selectMode) {
+            if registerStep(bundleURL: bundleURL, tryAutoEnable: selectMode) {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.2)
@@ -63,21 +81,14 @@ enum ChimeInputSourceRegistrar {
     }
 
     @MainActor
-    static func scheduleDaemonRegistration(forceEnable: Bool) {
+    static func scheduleDaemonRegistration(tryAutoEnable: Bool) {
         let bundleURL = Bundle.main.bundleURL
-        let shouldEnable = forceEnable || !UserDefaults.standard.bool(forKey: initialAutoEnableDefaultsKey)
+        _ = registerStep(bundleURL: bundleURL, tryAutoEnable: tryAutoEnable)
 
-        // Immediate pass before RunLoop spins, followed by staggered passes on the active Aqua RunLoop
-        // so HIServices / TextInputMenuAgent / System Settings always index and retain the bundle.
-        if registerStep(bundleURL: bundleURL, enableAndSelect: shouldEnable), !shouldEnable {
-            return
-        }
-
-        let delays: [TimeInterval] = [0.25, 0.9, 2.0, 4.0]
+        let delays: [TimeInterval] = [0.3, 1.0, 2.2]
         for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                let stillNeedsEnable = forceEnable || !UserDefaults.standard.bool(forKey: initialAutoEnableDefaultsKey)
-                _ = registerStep(bundleURL: bundleURL, enableAndSelect: stillNeedsEnable)
+                _ = registerStep(bundleURL: bundleURL, tryAutoEnable: tryAutoEnable)
             }
         }
     }
@@ -96,13 +107,13 @@ enum ChimeBootstrap {
             exit(0)
         }
 
-        let forceEnable = args.contains("--activate-on-install")
+        let tryAutoEnable = args.contains("--activate-on-install")
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let bundleId = Bundle.main.bundleIdentifier ?? ChimeInputSourceRegistrar.bundleId
         server = IMKServer(name: "Chime_1_Connection", bundleIdentifier: bundleId)
-        ChimeInputSourceRegistrar.scheduleDaemonRegistration(forceEnable: forceEnable)
+        ChimeInputSourceRegistrar.scheduleDaemonRegistration(tryAutoEnable: tryAutoEnable)
         app.run()
     }
 }

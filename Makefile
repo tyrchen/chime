@@ -171,9 +171,13 @@ release-artifacts: macos-bundle build-public-packs
 		pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"; \
 	fi
 	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@cp "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg" "$(RELEASE_DIR)/Chime-macos-arm64.pkg"
+	@cp "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip" "$(RELEASE_DIR)/Chime-macos-arm64.zip"
 	@cd "$(RELEASE_DIR)" && shasum -a 256 \
 		"Chime-v$(VERSION)-macos-arm64.pkg" \
 		"Chime-v$(VERSION)-macos-arm64.zip" \
+		"Chime-macos-arm64.pkg" \
+		"Chime-macos-arm64.zip" \
 		"classics-poetry.imepack.zip" \
 		"tech-developer.imepack.zip" > SHA256SUMS.txt
 	@echo "Packaged release artifacts in $(RELEASE_DIR):"
@@ -202,9 +206,13 @@ release-notarize: macos-bundle build-public-packs
 	@xcrun stapler staple "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
 	@xcrun stapler validate "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
 	@spctl --assess --type install --verbose=4 "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@cp "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg" "$(RELEASE_DIR)/Chime-macos-arm64.pkg"
+	@cp "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip" "$(RELEASE_DIR)/Chime-macos-arm64.zip"
 	@cd "$(RELEASE_DIR)" && shasum -a 256 \
 		"Chime-v$(VERSION)-macos-arm64.pkg" \
 		"Chime-v$(VERSION)-macos-arm64.zip" \
+		"Chime-macos-arm64.pkg" \
+		"Chime-macos-arm64.zip" \
 		"classics-poetry.imepack.zip" \
 		"tech-developer.imepack.zip" > SHA256SUMS.txt
 	@echo "Successfully signed, notarized, and stapled all Chime v$(VERSION) release artifacts!"

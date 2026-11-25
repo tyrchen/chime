@@ -153,7 +153,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chime-cli"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "chime-core",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "chime-core"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "chime-decoder",
  "chime-lexicon",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "chime-decoder"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "chime-lexicon",
  "chime-phonetics",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "chime-ffi"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "chime-core",
  "serde",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "chime-lexicon"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "cedarwood",
  "chime-phonetics",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "chime-neural"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "flume",
  "mlx-rs",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "chime-phonetics"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "rstest",
  "serde",
