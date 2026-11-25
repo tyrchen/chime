@@ -1,0 +1,1259 @@
+# category	scheme	app	left_ctx	keys	expected
+daily_spoken	full	com.tencent.xinWeChat		jintiantianqizhenbucuo	今天天气真不错
+daily_spoken	full	com.tencent.xinWeChat		nichifanlemeiyou	你吃饭了没有
+daily_spoken	full	com.tencent.xinWeChat		wowanshangyoudianshi	我晚上有点事
+daily_spoken	full	com.tencent.xinWeChat		mingtianzaoshangbadianjian	明天早上八点见
+daily_spoken	full	com.tencent.xinWeChat		zuijingongzuomangbumang	最近工作忙不忙
+daily_spoken	full	com.tencent.xinWeChat		zhoumodasuanqunaliwan	周末打算去哪里玩
+daily_spoken	full	com.tencent.xinWeChat		waimianhaoxiangxiayule	外面好像下雨了
+daily_spoken	full	com.tencent.xinWeChat		jidechumendaibasan	记得出门带把伞
+daily_spoken	full	com.tencent.xinWeChat		womashangjiudaolouxiale	我马上就到楼下了
+daily_spoken	full	com.tencent.xinWeChat		shaoweidengwowufenzhong	稍微等我五分钟
+daily_spoken	full	com.tencent.xinWeChat		zhejianshijiaogeiwoba	这件事交给我吧
+daily_spoken	full	com.tencent.xinWeChat		buyongtaidanxinzhegewenti	不用太担心这个问题
+daily_spoken	full	com.tencent.xinWeChat		nijuedezhegezhuyizenmeyang	你觉得这个主意怎么样
+daily_spoken	full	com.tencent.xinWeChat		wowanquantongyinidekanfa	我完全同意你的看法
+daily_spoken	full	com.tencent.xinWeChat		lushangzhuyianquan	路上注意安全
+daily_spoken	full	com.tencent.xinWeChat		daolegeiwofagexiaoxi	到了给我发个消息
+daily_spoken	full	com.tencent.xinWeChat		zuowanshuidehaihaoma	昨晚睡得还好吗
+daily_spoken	full	com.tencent.xinWeChat		jintianxiawuyougehuiyi	今天下午有个会议
+daily_spoken	full	com.tencent.xinWeChat		woyijingbawenjianfageinile	我已经把文件发给你了
+daily_spoken	full	com.tencent.xinWeChat		mafanbangwoshunbiandaibeikafei	麻烦帮我顺便带杯咖啡
+daily_spoken	full	com.tencent.xinWeChat		zhejiacantingdeweidaozhenbucuo	这家餐厅的味道真不错
+daily_spoken	full	com.tencent.xinWeChat		xiaciwomenzaiquchiyici	下次我们再去吃一次
+daily_spoken	full	com.tencent.xinWeChat		haojiubujianzuijinhaihaoma	好久不见最近还好吗
+daily_spoken	full	com.tencent.xinWeChat		shijianguodezhenkuaia	时间过得真快啊
+daily_spoken	full	com.tencent.xinWeChat		yizhuanyanyoudaoniandile	一转眼又到年底了
+daily_spoken	full	com.tencent.xinWeChat		jinnianguoniandasuanhuijiama	今年过年打算回家吗
+daily_spoken	full	com.tencent.xinWeChat		chepiaoyijingmaihaole	车票已经买好了
+daily_spoken	full	com.tencent.xinWeChat		gaosushangjintianyoudianduche	高速上今天有点堵车
+daily_spoken	full	com.tencent.xinWeChat		zuoditieguoquhuigengkuaiyixie	坐地铁过去会更快一些
+daily_spoken	full	com.tencent.xinWeChat		shoujikuaiyaomeidianle	手机快要没电了
+daily_spoken	full	com.tencent.xinWeChat		niyoudaichongdianbaoma	你有带充电宝吗
+daily_spoken	full	com.tencent.xinWeChat		bangwokanyixiajidianle	帮我看一下几点了
+daily_spoken	full	com.tencent.xinWeChat		xianzaichabuduokuaishidianle	现在差不多快十点了
+daily_spoken	full	com.tencent.xinWeChat		zaodianxiuxibieaoyele	早点休息别熬夜了
+daily_spoken	full	com.tencent.xinWeChat		shenticaishizuizhongyaode	身体才是最重要的
+daily_spoken	full	com.tencent.xinWeChat		zuijinjiangwenyaozhuyibaonuan	最近降温要注意保暖
+daily_spoken	full	com.tencent.xinWeChat		duohedianreshuixiuxiyixia	多喝点热水休息一下
+daily_spoken	full	com.tencent.xinWeChat		zhegezhoumozaijiakanshu	这个周末在家看书
+daily_spoken	full	com.tencent.xinWeChat		shunbianbafangjianzhengliyixia	顺便把房间整理一下
+daily_spoken	full	com.tencent.xinWeChat		chaoshijintianyouhenduoshuiguodazhe	超市今天有很多水果打折
+daily_spoken	full	com.tencent.xinWeChat		womaileyidiancaomeihepingguo	我买了一点草莓和苹果
+daily_spoken	full	com.tencent.xinWeChat		wanshangzijizaijiazuofanchi	晚上自己在家做饭吃
+daily_spoken	full	com.tencent.xinWeChat		zhedaocaizuoqilaiqishihenjiandan	这道菜做起来其实很简单
+daily_spoken	full	com.tencent.xinWeChat		zhiyaofangyidianyanhejiangyou	只要放一点盐和酱油
+daily_spoken	full	com.tencent.xinWeChat		weidaowenqilaizhenxianga	味道闻起来真香啊
+daily_spoken	full	com.tencent.xinWeChat		nipingshixihuanshenmeyundong	你平时喜欢什么运动
+daily_spoken	full	com.tencent.xinWeChat		womeizhoudouhuiqupaobuliangci	我每周都会去跑步两次
+daily_spoken	full	com.tencent.xinWeChat		oueryehuiquyouyongguanyouyong	偶尔也会去游泳馆游泳
+daily_spoken	full	com.tencent.xinWeChat		jianchiduanlianshentihenyouhaochu	坚持锻炼身体很有好处
+daily_spoken	full	com.tencent.xinWeChat		zhebudianyingzhendefeichangganren	这部电影真的非常感人
+daily_spoken	full	com.tencent.xinWeChat		qianglietuijianniyoukongqukankan	强烈推荐你有空去看看
+daily_spoken	full	com.tencent.xinWeChat		dianyingyuandezuoweiyijingxuanhaole	电影院的座位已经选好了
+daily_spoken	full	com.tencent.xinWeChat		womentiqianshifenzhongguoquba	我们提前十分钟过去吧
+daily_spoken	full	com.tencent.xinWeChat		gangcainagedianhuashishuidalaide	刚才那个电话是谁打来的
+daily_spoken	full	com.tencent.xinWeChat		kuaidiyijingfangzaimenkouguizilile	快递已经放在门口柜子里了
+daily_spoken	full	com.tencent.xinWeChat		wodaihuierxialouqunayixia	我待会儿下楼去拿一下
+daily_spoken	full	com.tencent.xinWeChat		yaoshihaoxiangwangzaizhuozishangle	钥匙好像忘在桌子上了
+daily_spoken	full	com.tencent.xinWeChat		haihaojialihaiyouyibabeiyongyaoshi	还好家里还有一把备用钥匙
+daily_spoken	full	com.tencent.xinWeChat		jintianxinqingtebiehao	今天心情特别好
+daily_spoken	full	com.tencent.xinWeChat		yangguangshaizaishenshangnuanyangyangde	阳光晒在身上暖洋洋的
+daily_spoken	full	com.tencent.xinWeChat		gongyuanliyouhenduorenzaisanbu	公园里有很多人在散步
+daily_spoken	full	com.tencent.xinWeChat		chuntianlailehuadoukaile	春天来了花都开了
+daily_spoken	full	com.tencent.xinWeChat		paichulaidezhaopiantebiehaokan	拍出来的照片特别好看
+daily_spoken	full	com.tencent.xinWeChat		fadaopengyouquangeidajiakankan	发到朋友圈给大家看看
+daily_spoken	full	com.tencent.xinWeChat		nishuodezhenshitaiyoudaolile	你说的真是太有道理了
+daily_spoken	full	com.tencent.xinWeChat		wozhiqianzenmemeixiangdaone	我之前怎么没想到呢
+daily_spoken	full	com.tencent.xinWeChat		haishinixiangdebijiaozhoudao	还是你想得比较周到
+daily_spoken	full	com.tencent.xinWeChat		nawomenjiuzhemedingleba	那我们就这么定了吧
+daily_spoken	full	com.tencent.xinWeChat		youshenmebianhuasuishilianxiwo	有什么变化随时联系我
+daily_spoken	full	com.tencent.xinWeChat		buhaoyisirangnijiudengle	不好意思让你久等了
+daily_spoken	full	com.tencent.xinWeChat		meiguanxiwoyegangdaoyihuier	没关系我也刚到一会儿
+daily_spoken	full	com.tencent.xinWeChat		womenzhaogeanjingdedifangliaoliaotian	我们找个安静的地方聊聊天
+daily_spoken	full	com.tencent.xinWeChat		zhefujinyouyijiahenanjingdechaguan	这附近有一家很安静的茶馆
+daily_spoken	full	com.tencent.xinWeChat		niyaohelvchahaishihongcha	你要喝绿茶还是红茶
+daily_spoken	full	com.tencent.xinWeChat		suibianlaiyibeiwenshuijiukeyi	随便来一杯温水就可以
+daily_spoken	full	com.tencent.xinWeChat		zuijinzaixueyimenxindekecheng	最近在学一门新的课程
+daily_spoken	full	com.tencent.xinWeChat		meitianwanshangchouyigexiaoshixuexi	每天晚上抽一个小时学习
+daily_spoken	full	com.tencent.xinWeChat		suiranyoudiannandanshihenyouyisi	虽然有点难但是很有意思
+daily_spoken	full	com.tencent.xinWeChat		manmanlaibuyaogeizijitaidayali	慢慢来不要给自己太大压力
+daily_spoken	full	com.tencent.xinWeChat		xiangxinniyidingkeyizuodaode	相信你一定可以做到的
+daily_spoken	full	com.tencent.xinWeChat		xiexieniyizhiyilaidezhichi	谢谢你一直以来的支持
+daily_spoken	full	com.tencent.xinWeChat		dajiayiqinulibashiqingzuohao	大家一起努力把事情做好
+daily_spoken	full	com.tencent.xinWeChat		zhegewentiqishimeiyounamefuza	这个问题其实没有那么复杂
+daily_spoken	full	com.tencent.xinWeChat		huangejiaoduxiangjiuhuihuorankailang	换个角度想就会豁然开朗
+daily_spoken	full	com.tencent.xinWeChat		nijintiankanqilaijingshenhenhao	你今天看起来精神很好
+daily_spoken	full	com.tencent.xinWeChat		zuotianwanshangzhongyushuilegehaojue	昨天晚上终于睡了个好觉
+daily_spoken	full	com.tencent.xinWeChat		zaoshangqilaiheleyiwanxiaomizhou	早上起来喝了一碗小米粥
+daily_spoken	full	com.tencent.xinWeChat		louxiaxinkaileyijiamianbaodian	楼下新开了一家面包店
+daily_spoken	full	com.tencent.xinWeChat		gangchuludemianbaotebiesongruan	刚出炉的面包特别松软
+daily_spoken	full	com.tencent.xinWeChat		woshunlumailelianggedaihuilai	我顺路买了两个带回来
+daily_spoken	full	com.tencent.xinWeChat		xiawuedeshihoukeyidiandianduzi	下午饿的时候可以垫垫肚子
+daily_spoken	full	com.tencent.xinWeChat		waimianfenghendabachuanghuguanshangba	外面风很大把窗户关上吧
+daily_spoken	full	com.tencent.xinWeChat		kongtiaowendubuyaotiaodetaidi	空调温度不要调得太低
+daily_spoken	full	com.tencent.xinWeChat		ershiliudushizuishufudewendu	二十六度是最舒服的温度
+daily_spoken	full	com.tencent.xinWeChat		zheshougedexuanlvzhenhaoting	这首歌的旋律真好听
+daily_spoken	full	com.tencent.xinWeChat		woyijingxunhuanbofanghaojibianle	我已经循环播放好几遍了
+daily_spoken	full	com.tencent.xinWeChat		gecixiedeyehendadongrenxin	歌词写得也很打动人心
+daily_spoken	full	com.tencent.xinWeChat		niyoukongdeshihoubangwokanyiyan	你有空的时候帮我看一眼
+daily_spoken	full	com.tencent.xinWeChat		buzhaojimingtianhuifuwojiuxing	不着急明天回复我就行
+daily_spoken	full	com.tencent.xinWeChat		xinkunilezaodianxiabanhuijiaba	辛苦你了早点下班回家吧
+daily_spoken	full	com.tencent.xinWeChat		jintianzongsuanbarenwuquanbuwanchengle	今天总算把任务全部完成了
+daily_spoken	full	com.tencent.xinWeChat		keyiananxinxinguogezhoumole	可以安安心心过个周末了
+daily_spoken	full	com.tencent.xinWeChat		mingtianshuidaoziranxingzhenxingfu	明天睡到自然醒真幸福
+daily_spoken	full	com.tencent.xinWeChat		youshenmexuyaobangmangdejinguanshuo	有什么需要帮忙的尽管说
+daily_spoken	full	com.tencent.xinWeChat		dajiadoushilaopengyoubuyongkeqi	大家都是老朋友不用客气
+daily_spoken	full	com.tencent.xinWeChat		zhunishengrikuailexinxiangshicheng	祝你生日快乐心想事成
+daily_spoken	full	com.tencent.xinWeChat		xiwangxindeyinianyiqieshunli	希望新的一年一切顺利
+daily_spoken	full	com.tencent.xinWeChat		pingpingananjiushizuidadefuqi	平平安安就是最大的福气
+daily_spoken	full	com.tencent.xinWeChat		zhejianshishuolaihuazhang	这件事说来话长
+daily_spoken	full	com.tencent.xinWeChat		dengjianmianlewozaimanmangennishuo	等见面了我再慢慢跟你说
+daily_spoken	full	com.tencent.xinWeChat		jintianxianliaodaozheliba	今天先聊到这里吧
+daily_spoken	full	com.tencent.xinWeChat		wananzuogehaomeng	晚安做个好梦
+daily_spoken	full	com.tencent.xinWeChat		mingtianjianbujianbusan	明天见不见不散
+daily_spoken	full	com.tencent.xinWeChat		zhenshiyichangyukuaidelvxing	真是一场愉快的旅行
+daily_spoken	full	com.tencent.xinWeChat		xiaciyoujihuihaiyaozailaiyici	下次有机会还要再来一次
+daily_spoken	full	com.tencent.xinWeChat		fengjingmeiderangrenliulianwangfan	风景美得让人流连忘返
+daily_spoken	full	com.tencent.xinWeChat		kongqiqingxinrangrenxinqingshuchang	空气清新让人心情舒畅
+daily_spoken	full	com.tencent.xinWeChat		shandingshangdeshiyefeichangkaikuo	山顶上的视野非常开阔
+daily_spoken	full	com.tencent.xinWeChat		yuanchukeyikandaolianmiandequnshan	远处可以看到连绵的群山
+daily_spoken	full	com.tencent.xinWeChat		xiaoxilideshuiqingchejiandi	小溪里的水清澈见底
+copula_classifier	full	md.obsidian		woshiyigebing	我是一个兵
+copula_classifier	full	md.obsidian		woshiyigechengxuyuan	我是一个程序员
+copula_classifier	full	md.obsidian		woshiyigexuesheng	我是一个学生
+copula_classifier	full	md.obsidian		woshiyigeputongren	我是一个普通人
+copula_classifier	full	md.obsidian		tashiyigehaoren	他是一个好人
+copula_classifier	full	md.obsidian		tashiyigehenrenzhenderen	他是一个很认真的人
+copula_classifier	full	md.obsidian	我姐姐在医院工作，	tashiyigeyisheng	她是一个医生
+copula_classifier	full	md.obsidian	王阿姨退休前在学校教书，	tashiyigehaolaoshi	她是一个好老师
+copula_classifier	full	md.obsidian		nishishui	你是谁
+copula_classifier	full	md.obsidian		tashishui	他是谁
+copula_classifier	full	md.obsidian		zheshishuideshouji	这是谁的手机
+copula_classifier	full	md.obsidian		nashishenmedongxi	那是什么东西
+copula_classifier	full	md.obsidian		zheshiyigehenhaodejihui	这是一个很好的机会
+copula_classifier	full	md.obsidian		zheshiyigezhongyaodewenti	这是一个重要的问题
+copula_classifier	full	md.obsidian		nashiyiduannanwangdehuiyi	那是一段难忘的回忆
+copula_classifier	full	md.obsidian		tashiyiweijingyanfengfudezhuanjia	他是一位经验丰富的专家
+copula_classifier	full	md.obsidian		laileyiweixintongshi	来了一位新同事
+copula_classifier	full	md.obsidian		jialiyangleyizhixiaomao	家里养了一只小猫
+copula_classifier	full	md.obsidian		yuanziliyouyizhixiaogou	院子里有一只小狗
+copula_classifier	full	md.obsidian		shushangtingzheyizhixiaoniao	树上停着一只小鸟
+copula_classifier	full	md.obsidian		heliyouzheyitiaoyu	河里游着一条鱼
+copula_classifier	full	md.obsidian		jieshangxinkaileyijiashudian	街上新开了一家书店
+copula_classifier	full	md.obsidian		womaileyijianxinyifu	我买了一件新衣服
+copula_classifier	full	md.obsidian		chuanleyijianbaisedechenshan	穿了一件白色的衬衫
+copula_classifier	full	md.obsidian		zhuoshangfangzheyibenshu	桌上放着一本书
+copula_classifier	full	md.obsidian		wozuijinduleyibenhaoshu	我最近读了一本好书
+copula_classifier	full	md.obsidian		qiangshangguazheyizhangditu	墙上挂着一张地图
+copula_classifier	full	md.obsidian		paileyizhangquanjiafuzhaopian	拍了一张全家福照片
+copula_classifier	full	md.obsidian		maileyizhangqubeijingdegaotiepiao	买了一张去北京的高铁票
+copula_classifier	full	md.obsidian		heleyibeireniunai	喝了一杯热牛奶
+copula_classifier	full	md.obsidian		daoleyibeiwenkaishui	倒了一杯温开水
+copula_classifier	full	md.obsidian		chileyiwanniuroumian	吃了一碗牛肉面
+copula_classifier	full	md.obsidian		shengleyiwanmifan	盛了一碗米饭
+copula_classifier	full	md.obsidian		qieleyikuaixigua	切了一块西瓜
+copula_classifier	full	md.obsidian		chileyikuaiqiaokelidangao	吃了一块巧克力蛋糕
+copula_classifier	full	md.obsidian		menkoutingzheyiliangzixingche	门口停着一辆自行车
+copula_classifier	full	md.obsidian		lubiankaiguoyilianggongjiaoche	路边开过一辆公交车
+copula_classifier	full	md.obsidian		xialeyichangdayu	下了一场大雨
+copula_classifier	full	md.obsidian		kanleyichangjingcaidebisai	看了一场精彩的比赛
+copula_classifier	full	md.obsidian		zuoleyichangqiguaidemeng	做了一场奇怪的梦
+copula_classifier	full	md.obsidian		chileyidunfengshengdewancan	吃了一顿丰盛的晚餐
+copula_classifier	full	md.obsidian		maileyishuangpaobuxie	买了一双跑步鞋
+copula_classifier	full	md.obsidian		daizheyifuyanjing	戴着一副眼镜
+copula_classifier	full	md.obsidian		xieleyipianwenzhang	写了一篇文章
+copula_classifier	full	md.obsidian		changleyishoulaoge	唱了一首老歌
+copula_classifier	full	md.obsidian		hualeyifushanshuihua	画了一幅山水画
+copula_classifier	full	md.obsidian		zhongleyikepingguoshu	种了一棵苹果树
+copula_classifier	full	md.obsidian		zhaileyiduoxiaohonghua	摘了一朵小红花
+copula_classifier	full	md.obsidian		chileyikecaomei	吃了一颗草莓
+copula_classifier	full	md.obsidian		fuleyiliganmaoyao	服了一粒感冒药
+copula_classifier	full	md.obsidian		paileyibujilupian	拍了一部纪录片
+copula_classifier	full	md.obsidian		maileyitaibijibendiannao	买了一台笔记本电脑
+copula_classifier	full	md.obsidian		zhuangleyitaoxinjiaju	装了一套新家具
+copula_classifier	full	md.obsidian		qianleyifenhetong	签了一份合同
+copula_classifier	full	md.obsidian		liuleyiduanyuyinxiaoxi	留了一段语音消息
+copula_classifier	full	md.obsidian		xiuleyizuokuahaidaqiao	修了一座跨海大桥
+copula_classifier	full	md.obsidian		gaileyidongjiaoxuelou	盖了一栋教学楼
+copula_classifier	full	md.obsidian		zheshiyizhongzhengchangdexianxiang	这是一种正常的现象
+copula_classifier	full	md.obsidian		meigerendouyouzijidexiangfa	每个人都有自己的想法
+copula_classifier	full	md.obsidian		zhegewentiyoulianggejiejuefangan	这个问题有两个解决方案
+copula_classifier	full	md.obsidian		womensangeyiqiqutushuguan	我们三个一起去图书馆
+copula_classifier	full	md.obsidian		zhejitiantianqidouhenqinglang	这几天天气都很晴朗
+copula_classifier	full	md.obsidian		najigetongxuedouyijingdaole	那几个同学都已经到了
+copula_classifier	full	md.obsidian		bangexiaoshijiunengzouwan	半个小时就能走完
+copula_classifier	full	md.obsidian		zhenggechengshidouanjingxialaile	整个城市都安静下来了
+copula_classifier	full	md.obsidian		chilelianggeshaobing	吃了两个烧饼
+copula_classifier	full	md.obsidian		laoleyizhangcongyoubing	烙了一张葱油饼
+copula_classifier	full	md.obsidian		maileyiheyuebing	买了一盒月饼
+copula_classifier	full	md.obsidian		geiniyikuaibinggan	给你一块饼干
+copula_classifier	full	md.obsidian		shengleyichangdabing	生了一场大病
+copula_classifier	full	md.obsidian		kanwangyiweibingren	看望一位病人
+copula_classifier	full	md.obsidian		fangleliangkuaibing	放了两块冰
+copula_classifier	full	md.obsidian		tashiyiminglaobing	他是一名老兵
+copula_classifier	full	md.obsidian		duiwuliyouhaojigexinbing	队伍里有好几个新兵
+copula_classifier	full	md.obsidian		zhebadaodedaobinghenjieshi	这把刀的刀柄很结实
+copula_classifier	full	md.obsidian		shoulinazheyibayusan	手里拿着一把雨伞
+copula_classifier	full	md.obsidian		banleyibayiziguolai	搬了一把椅子过来
+copula_classifier	full	md.obsidian		duanzheyipanshuiguo	端着一盘水果
+copula_classifier	full	md.obsidian		paoleyihulongjingcha	泡了一壶龙井茶
+copula_classifier	full	md.obsidian		dianleyizhilazhu	点了一支蜡烛
+copula_classifier	full	md.obsidian		nazheyizhigangbi	拿着一支钢笔
+copula_classifier	full	md.obsidian	今天是妈妈生日，	songletayishuxianhua	送了她一束鲜花
+copula_classifier	full	md.obsidian		tizheyilanzijidan	提着一篮子鸡蛋
+copula_classifier	full	md.obsidian		beizheyigeshuangjianbao	背着一个双肩包
+copula_classifier	full	md.obsidian		daizheyidingcaomao	戴着一顶草帽
+copula_classifier	full	md.obsidian		xizheyitiaohonglingjin	系着一条红领巾
+copula_classifier	full	md.obsidian		puleyitiaoganjingdemaojin	铺了一条干净的毛巾
+copula_classifier	full	md.obsidian		xieleyifengganxiexin	写了一封感谢信
+copula_classifier	full	md.obsidian		jileyigekuaidibaoguo	寄了一个快递包裹
+copula_classifier	full	md.obsidian		tichuleyigeguanjianwenti	提出了一个关键问题
+copula_classifier	full	md.obsidian		yangchengleyigehaoxiguan	养成了一个好习惯
+copula_classifier	full	md.obsidian		zhangwoleyimenwaiyu	掌握了一门外语
+copula_classifier	full	md.obsidian		xuedaoleyixiangxinjineng	学到了一项新技能
+copula_classifier	full	md.obsidian		wanchengleyijiandashi	完成了一件大事
+copula_classifier	full	md.obsidian		jiejueleyigedananti	解决了一个大难题
+copula_classifier	full	md.obsidian		zheshiyigequanxindekaishi	这是一个全新的开始
+copula_classifier	full	md.obsidian		nashiyigeyangguangmingmeidezaochen	那是一个阳光明媚的早晨
+copula_classifier	full	md.obsidian		woyouyigexiaoxiaodeyuanwang	我有一个小小的愿望
+copula_classifier	full	md.obsidian		niyoushenmehaodejianyima	你有什么好的建议吗
+copula_classifier	full	md.obsidian		tayouyikeshanliangdexin	他有一颗善良的心
+de_di_de_zai	full	md.obsidian		renzhendetaidurangrenjingpei	认真的态度让人敬佩
+de_di_de_zai	full	md.obsidian		renzhenditinglaoshijiangke	认真地听老师讲课
+de_di_de_zai	full	md.obsidian		jintianzuoyexiedefeichangrenzhen	今天作业写得非常认真
+de_di_de_zai	full	md.obsidian		kaixindexiaorongguazailianshang	开心的笑容挂在脸上
+de_di_de_zai	full	md.obsidian		kaixindixiaoleqilai	开心地笑了起来
+de_di_de_zai	full	md.obsidian		dajiawandefeichangkaixin	大家玩得非常开心
+de_di_de_zai	full	md.obsidian		feikuaidesuduchongguozhongdian	飞快的速度冲过终点
+de_di_de_zai	full	md.obsidian		feikuaidipaoxiangcaochang	飞快地跑向操场
+de_di_de_zai	full	md.obsidian		shijianguodefeikuai	时间过得飞快
+de_di_de_zai	full	md.obsidian		anjingdetushuguanshihekanshu	安静的图书馆适合看书
+de_di_de_zai	full	md.obsidian		anjingdizuozaijiaoluolikanshu	安静地坐在角落里看书
+de_di_de_zai	full	md.obsidian		fangjianlidasaodeganganjingjing	房间里打扫得干干净净
+de_di_de_zai	full	md.obsidian		naixindijiedameiyigewenti	耐心地解答每一个问题
+de_di_de_zai	full	md.obsidian		zaixidijianchaleyibiandaima	仔细地检查了一遍代码
+de_di_de_zai	full	md.obsidian		manmandizouhuiqule	慢慢地走回去了
+de_di_de_zai	full	md.obsidian		qiaoqiaodituikailefangmen	悄悄地推开了房门
+de_di_de_zai	full	md.obsidian		qingqingdifangzaizhuozishang	轻轻地放在桌子上
+de_di_de_zai	full	md.obsidian		jinjindiwozhutadeshuangshou	紧紧地握住他的双手
+de_di_de_zai	full	md.obsidian		jianjiandimingbaileqizhongdedaoli	渐渐地明白了其中的道理
+de_di_de_zai	full	md.obsidian		buduanditigaozijideshuiping	不断地提高自己的水平
+de_di_de_zai	full	md.obsidian		yonggandimianduigezhongtiaozhan	勇敢地面对各种挑战
+de_di_de_zai	full	md.obsidian		shunliditongguoleqimokaoshi	顺利地通过了期末考试
+de_di_de_zai	full	md.obsidian		chenggongdijiejuelejishunanti	成功地解决了技术难题
+de_di_de_zai	full	md.obsidian		qingchudijidenatiandeqingjing	清楚地记得那天的情景
+de_di_de_zai	full	md.obsidian		tashuodefeichangyoudaoli	他说得非常有道理
+de_di_de_zai	full	md.obsidian		zhedunfanzuodezhenhaochi	这顿饭做得真好吃
+de_di_de_zai	full	md.obsidian		hanzixiedefeichangpiaoliang	汉字写得非常漂亮
+de_di_de_zai	full	md.obsidian		gechangdezhenhaoting	歌唱得真好听
+de_di_de_zai	full	md.obsidian		paodebishuidoukuai	跑得比谁都快
+de_di_de_zai	full	md.obsidian		tiaodefeichanggao	跳得非常高
+de_di_de_zai	full	md.obsidian		xiangdetaijiandanle	想得太简单了
+de_di_de_zai	full	md.obsidian		gandepiaoliang	干得漂亮
+de_di_de_zai	full	md.obsidian		leidezhibuqiyaolai	累得直不起腰来
+de_di_de_zai	full	md.obsidian		jidetuantuanzhuan	急得团团转
+de_di_de_zai	full	md.obsidian		xiaodehebulongzui	笑得合不拢嘴
+de_di_de_zai	full	md.obsidian		qideshuobuchuhualai	气得说不出话来
+de_di_de_zai	full	md.obsidian		lengdesesefadou	冷得瑟瑟发抖
+de_di_de_zai	full	md.obsidian		redemantoudahan	热得满头大汗
+de_di_de_zai	full	md.obsidian		mangdebukekaijiao	忙得不可开交
+de_di_de_zai	full	md.obsidian		meidexiangyifuhua	美得像一幅画
+de_di_de_zai	full	md.obsidian		wozaijialikanshune	我在家里看书呢
+de_di_de_zai	full	md.obsidian		qingzaishuoyibianhaoma	请再说一遍好吗
+de_di_de_zai	full	md.obsidian		tazhengzaihuiyishikaihui	他正在会议室开会
+de_di_de_zai	full	md.obsidian		womenxiacizailiaoba	我们下次再聊吧
+de_di_de_zai	full	md.obsidian		wenjianfangzaizhuozishang	文件放在桌子上
+de_di_de_zai	full	md.obsidian		zaijiezailijixunuli	再接再厉继续努力
+de_di_de_zai	full	md.obsidian		buyaozaiyouyubujuele	不要再犹豫不决了
+de_di_de_zai	full	md.obsidian		xianzaizaichufakenenglaibujile	现在再出发可能来不及了
+de_di_de_zai	full	md.obsidian		xianchifanzaiqusanbu	先吃饭再去散步
+de_di_de_zai	full	md.obsidian		jintianbuzaibangongshi	今天不在办公室
+de_di_de_zai	full	md.obsidian		guojitianwozaiqukanwangni	过几天我再去看望你
+de_di_de_zai	full	md.obsidian		yizaiqiangdiaoanquanwenti	一再强调安全问题
+de_di_de_zai	full	md.obsidian		shizaibuhaoyisidaraole	实在不好意思打扰了
+de_di_de_zai	full	md.obsidian		zaisanquerenmeiyouyilou	再三确认没有遗漏
+de_di_de_zai	full	md.obsidian		buzaihubierenzenmekan	不在乎别人怎么看
+de_di_de_zai	full	md.obsidian		zaiguowufenzhongjiudaole	再过五分钟就到了
+de_di_de_zai	full	md.obsidian		nixianzaizainalishangban	你现在在哪里上班
+de_di_de_zai	full	md.obsidian		yihouyoujihuizaihezuo	以后有机会再合作
+de_di_de_zai	full	md.obsidian		cunzaiyidingdejishufengxian	存在一定的技术风险
+de_di_de_zai	full	md.obsidian		bunengzaituoyanxiaqule	不能再拖延下去了
+de_di_de_zai	full	md.obsidian		qingwenxishoujianzainali	请问洗手间在哪里
+de_di_de_zai	full	md.obsidian		bashufangzainalijiuxing	把书放在那里就行
+de_di_de_zai	full	md.obsidian		nishinayinianbiyede	你是哪一年毕业的
+de_di_de_zai	full	md.obsidian		nayiniandongtiantebieleng	那一年冬天特别冷
+de_di_de_zai	full	md.obsidian		nagefangangengheliyixie	哪个方案更合理一些
+de_di_de_zai	full	md.obsidian		nagefanganyijingbeifoujuele	那个方案已经被否决了
+de_di_de_zai	full	md.obsidian		jintianzhongwuqunalichifan	今天中午去哪里吃饭
+de_di_de_zai	full	md.obsidian		woyiqianquguonagechengshi	我以前去过那个城市
+de_di_de_zai	full	md.obsidian		nayouzhemepianyideshiqing	哪有这么便宜的事情
+de_di_de_zai	full	md.obsidian		najiuanzhaonishuodebanba	那就按照你说的办吧
+de_di_de_zai	full	md.obsidian		buguanshinazhongqingkuangdouyaozhunbeihao	不管是哪种情况都要准备好
+de_di_de_zai	full	md.obsidian		naxiewentidouyijingjiejuele	那些问题都已经解决了
+de_di_de_zai	full	md.obsidian		jintianwanshangzaijiazuofan	今天晚上在家做饭
+de_di_de_zai	full	md.obsidian		renzhenwanchengjiatingzuoye	认真完成家庭作业
+de_di_de_zai	full	md.obsidian		zuoyigechengshishouxinderen	做一个诚实守信的人
+de_di_de_zai	full	md.obsidian		zuochuzhengquedejueding	做出正确的决定
+de_di_de_zai	full	md.obsidian		zhejianshiyounilaizuozhu	这件事由你来做主
+de_di_de_zai	full	md.obsidian		meitianjianchizuozaocao	每天坚持做早操
+de_di_de_zai	full	md.obsidian		zheshiyibujingdiandewenxuezuopin	这是一部经典的文学作品
+de_di_de_zai	full	md.obsidian		zaituanduizhongfahuizhongyaozuoyong	在团队中发挥重要作用
+de_di_de_zai	full	md.obsidian		zuoweiyiminggongchengshiyaoyanjin	作为一名工程师要严谨
+de_di_de_zai	full	md.obsidian		shuangfangdachenglezhanlvehezuo	双方达成了战略合作
+de_di_de_zai	full	md.obsidian		gongzuotaidufeichangjiji	工作态度非常积极
+de_di_de_zai	full	md.obsidian		zhuangmozuoyangshimeiyouyongde	装模作样是没有用的
+de_di_de_zai	full	md.obsidian		zhoumoqupengyoujializuoke	周末去朋友家里做客
+de_di_de_zai	full	md.obsidian		tapingshixiezuofenggehenjianjie	他平时写作风格很简洁
+de_di_de_zai	full	md.obsidian		tazhangdehaoxiangtababa	他长得好像他爸爸
+de_di_de_zai	full	md.obsidian		dongwuyuanliyouliangtoudaxiang	动物园里有两头大象
+de_di_de_zai	full	md.obsidian		wowanquanxiangxinnidenengli	我完全相信你的能力
+de_di_de_zai	full	md.obsidian		womenyaohuxiangbangzhugongtongjinbu	我们要互相帮助共同进步
+de_di_de_zai	full	md.obsidian		haoxiangyaoxiayudeyangzi	好像要下雨的样子
+de_di_de_zai	full	md.obsidian		geiquanbantongxuepaiyizhanghezhaoxiangpian	给全班同学拍一张合照相片|给全班同学拍一张合照
+de_di_de_zai	full	md.obsidian		xiangxianglibizhishigengzhongyao	想象力比知识更重要
+de_di_de_zai	full	md.obsidian		shishizhenxiangzhongyushuiluoshichule	事实真相终于水落石出了
+de_di_de_zai	full	md.obsidian		anxufenpeigonggongziyuan	按需分配公共资源
+de_di_de_zai	full	md.obsidian		yuediqianbazhebizhangjieqing	月底前把这笔账结清
+de_di_de_zai	full	md.obsidian		chumenzaiwaiyaobaoguanhaosuishencaiwu	出门在外要保管好随身财物
+de_di_de_zai	full	md.obsidian		tayijingbaqiankuanquanbuhaiqingle	他已经把欠款全部还清了
+de_di_de_zai	full	md.obsidian		zhejianshigentayidianguanxidoumeiyou	这件事跟他一点关系都没有
+de_di_de_zai	full	md.obsidian	我姐姐工作很有条理，	tameitianbarichenganpaidejingjingyoutiao	她每天把日程安排得井井有条
+verbal_complements	full	com.tencent.xinWeChat		woturanxiangqilaiyijianshi	我突然想起来一件事
+verbal_complements	full	com.tencent.xinWeChat		zhejuhuawoshizaitingbudong	这句话我实在听不懂
+verbal_complements	full	com.tencent.xinWeChat		zuotianwanshangyizhishuibuzhao	昨天晚上一直睡不着
+verbal_complements	full	com.tencent.xinWeChat		daochudouzhaobudaowodeyanjing	到处都找不到我的眼镜
+verbal_complements	full	com.tencent.xinWeChat		zaibuzoujiulaibujiganhuochele	再不走就来不及赶火车了
+verbal_complements	full	com.tencent.xinWeChat		zhezhongzaoyinzhenrangrenshoubuliao	这种噪音真让人受不了
+verbal_complements	full	com.tencent.xinWeChat		shizhongxindefangzishizaimaibuqi	市中心的房子实在买不起
+verbal_complements	full	com.tencent.xinWeChat		zhemeduodanciyixiazijibuzhu	这么多单词一下子记不住
+verbal_complements	full	com.tencent.xinWeChat		zitaixiaolegenbenkanbuqingchu	字太小了根本看不清楚
+verbal_complements	full	com.tencent.xinWeChat		bazhegewentichedigaoqingchu	把这个问题彻底搞清楚
+verbal_complements	full	com.tencent.xinWeChat		zhongyubalailongqumainongmingbaile	终于把来龙去脉弄明白了
+verbal_complements	full	com.tencent.xinWeChat		tacongfangjianlizoulechulai	他从房间里走了出来
+verbal_complements	full	com.tencent.xinWeChat		bashoujicongkoudailinachulai	把手机从口袋里拿出来
+verbal_complements	full	com.tencent.xinWeChat		xianbaxinglifangxialaixiuxiyixia	先把行李放下来休息一下
+verbal_complements	full	com.tencent.xinWeChat		kuaidianpaoguoqubangtayiba	快点跑过去帮他一把
+verbal_complements	full	com.tencent.xinWeChat		yibuyibupashangshanding	一步一步爬上山顶
+verbal_complements	full	com.tencent.xinWeChat		bashufanghuiyuanlaidejiazishang	把书放回原来的架子上
+verbal_complements	full	com.tencent.xinWeChat		balajishunshoudaixiaqurengdiao	把垃圾顺手带下去扔掉
+verbal_complements	full	com.tencent.xinWeChat		jianchibazhebenshuduwan	坚持把这本书读完
+verbal_complements	full	com.tencent.xinWeChat		jintianyidingyaobabaogaoxiewan	今天一定要把报告写完
+verbal_complements	full	com.tencent.xinWeChat		bazhuozicaganjingzaichifan	把桌子擦干净再吃饭
+verbal_complements	full	com.tencent.xinWeChat		yifuyijingxiganjingliangqilaile	衣服已经洗干净晾起来了
+verbal_complements	full	com.tencent.xinWeChat		menchuangdouyijingsuohaole	门窗都已经锁好了
+verbal_complements	full	com.tencent.xinWeChat		dongxiquanbushoushituodangle	东西全部收拾妥当了
+verbal_complements	full	com.tencent.xinWeChat		zhedaoshuxuetiwozuochulaile	这道数学题我做出来了
+verbal_complements	full	com.tencent.xinWeChat		xiangbuchugenghaodebanfale	想不出更好的办法了
+verbal_complements	full	com.tencent.xinWeChat		mangleyizhengtianshizaichibuxiao	忙了一整天实在吃不消
+verbal_complements	full	com.tencent.xinWeChat		rentaiduolegenbenjibushangqu	人太多了根本挤不上去
+verbal_complements	full	com.tencent.xinWeChat		zhepinggainingdetaijindabukai	这瓶盖拧得太紧打不开
+verbal_complements	full	com.tencent.xinWeChat		chuanghuguanbuyanyoudianloufeng	窗户关不严有点漏风
+verbal_complements	full	com.tencent.xinWeChat		zhemeduocaiwomenlianggerenchibuwan	这么多菜我们两个人吃不完
+verbal_complements	full	com.tencent.xinWeChat		yigerenshizaimangbuguolai	一个人实在忙不过来
+verbal_complements	full	com.tencent.xinWeChat		wanquancaibudaogushidejieju	完全猜不到故事的结局
+verbal_complements	full	com.tencent.xinWeChat		duobukaiyingmianchuilaidelengfeng	躲不开迎面吹来的冷风
+verbal_complements	full	com.tencent.xinWeChat		fangbuxiaxinlidenafenqiangua	放不下心里的那份牵挂
+verbal_complements	full	com.tencent.xinWeChat		kandechutajintianfeichanggaoxing	看得出他今天非常高兴
+verbal_complements	full	com.tencent.xinWeChat		tingdechutahualiyouhua	听得出他话里有话
+verbal_complements	full	com.tencent.xinWeChat		shuobudingmingtianjiuhuichutaiyang	说不定明天就会出太阳
+verbal_complements	full	com.tencent.xinWeChat		guaibudejintianlushangzhemedu	怪不得今天路上这么堵
+verbal_complements	full	com.tencent.xinWeChat		henbudemashangfeidaohaibianqudujia	恨不得马上飞到海边去度假
+verbal_complements	full	com.tencent.xinWeChat		shebudelikaishenghuoduoniandechengshi	舍不得离开生活多年的城市
+verbal_complements	full	com.tencent.xinWeChat		gubushangchiwufanjiuganqukaihui	顾不上吃午饭就赶去开会
+verbal_complements	full	com.tencent.xinWeChat		tanbushangyouduomejingtong	谈不上有多么精通
+verbal_complements	full	com.tencent.xinWeChat		suandeshangshihangyelidejiaojiaozhe	算得上是行业里的佼佼者
+verbal_complements	full	com.tencent.xinWeChat		bibushangyiqiannamerenaole	比不上以前那么热闹了
+verbal_complements	full	com.tencent.xinWeChat		genbushanglaoshidejiangkejiezou	跟不上老师的讲课节奏
+verbal_complements	full	com.tencent.xinWeChat		peideshangzhefenrongyuhezhangsheng	配得上这份荣誉和掌声
+verbal_complements	full	com.tencent.xinWeChat		duideqizijideliangxin	对得起自己的良心
+verbal_complements	full	com.tencent.xinWeChat		jinbuqishijiandekaoyan	禁不起时间的考验|经不起时间的考验
+verbal_complements	full	com.tencent.xinWeChat		tibuqiyidianjingshenlai	提不起一点精神来
+verbal_complements	full	com.tencent.xinWeChat		dabuqijingshenlaigongzuo	打不起精神来工作
+verbal_complements	full	com.tencent.xinWeChat		qiaobuqirenhenulishenghuoderenshibuduide	瞧不起任何努力生活的人是不对的
+verbal_complements	full	com.tencent.xinWeChat		jiaobuxingyigezhuangshuideren	叫不醒一个装睡的人
+verbal_complements	full	com.tencent.xinWeChat		liubuzhucongcongliushideshiguang	留不住匆匆流逝的时光
+verbal_complements	full	com.tencent.xinWeChat		dangbuzhuchuntiandejiaobu	挡不住春天的脚步
+verbal_complements	full	com.tencent.xinWeChat		cangbuzhulianshangdexiyue	藏不住脸上的喜悦
+verbal_complements	full	com.tencent.xinWeChat		renbuzhuxiaochushenglai	忍不住笑出声来
+verbal_complements	full	com.tencent.xinWeChat		tingbuxiaqianjindejiaobu	停不下前进的脚步
+verbal_complements	full	com.tencent.xinWeChat		wangbulenaduanmeihaodesuiyue	忘不了那段美好的岁月
+verbal_complements	full	com.tencent.xinWeChat		gaidiaotuoyandehuaimaobing	改掉拖延的坏毛病
+verbal_complements	full	com.tencent.xinWeChat		guandiaoshoujianxinshuijiao	关掉手机安心睡觉
+verbal_complements	full	com.tencent.xinWeChat		shandiaoduoyudechongfuwenjian	删掉多余的重复文件
+verbal_complements	full	com.tencent.xinWeChat		tuodiaohouhoudewaitao	脱掉厚厚的外套
+verbal_complements	full	com.tencent.xinWeChat		heguangbeizilideniunai	喝光杯子里的牛奶
+verbal_complements	full	com.tencent.xinWeChat		huaguangleshenshangsuoyoudelinghuaqian	花光了身上所有的零花钱
+verbal_complements	full	com.tencent.xinWeChat		yongwanlezuihouyigedian	用完了最后一格电
+verbal_complements	full	com.tencent.xinWeChat		xuehuidulisikaowenti	学会独立思考问题
+verbal_complements	full	com.tencent.xinWeChat		yangchengzaoshuizaoqidehaoxiguan	养成早睡早起的好习惯
+verbal_complements	full	com.tencent.xinWeChat		xiechengyipianwanzhengdediaochabaogao	写成一篇完整的调查报告
+verbal_complements	full	com.tencent.xinWeChat		fanyichengtongshunliuchangdezhongwen	翻译成通顺流畅的中文
+verbal_complements	full	com.tencent.xinWeChat		badawentichaifenchengxiaorenwu	把大问题拆分成小任务
+verbal_complements	full	com.tencent.xinWeChat		huizongchengyizhangqingxidebiaoge	汇总成一张清晰的表格
+verbal_complements	full	com.tencent.xinWeChat		shengjidaozuixindexitongbanben	升级到最新的系统版本
+verbal_complements	full	com.tencent.xinWeChat		qiehuandaojingyinmoshi	切换到静音模式
+verbal_complements	full	com.tencent.xinWeChat		lianjiedaogongsidewuxianwangluo	连接到公司的无线网络
+verbal_complements	full	com.tencent.xinWeChat		baocundaobendicipanmulu	保存到本地磁盘目录
+verbal_complements	full	com.tencent.xinWeChat		fasonggeixiangmuzudesuoyouchengyuan	发送给项目组的所有成员
+verbal_complements	full	com.tencent.xinWeChat		tijiaogeishangjibumenshenpi	提交给上级部门审批
+verbal_complements	full	com.tencent.xinWeChat		zhuanjiaogeifuzeshouhoufuwudetongshi	转交给负责售后服务的同事
+verbal_complements	full	com.tencent.xinWeChat		fenxianggeishenbiandepengyoumen	分享给身边的朋友们
+verbal_complements	full	com.tencent.xinWeChat		zhanqilaihuodongyixiajingu	站起来活动一下筋骨
+verbal_complements	full	com.tencent.xinWeChat		zuoxialaihaohaoshangliangyixia	坐下来好好商量一下
+verbal_complements	full	com.tencent.xinWeChat		jingxiaxinlairenzhendujiyeshu	静下心来认真读几页书
+verbal_complements	full	com.tencent.xinWeChat		tingxialaixinshanglubiandefengjing	停下来欣赏路边的风景
+verbal_complements	full	com.tencent.xinWeChat		liuxialaiyiqichiwanfanba	留下来一起吃晚饭吧
+verbal_complements	full	com.tencent.xinWeChat		huoxiaqujiuyouwuxianxiwang	活下去就有无限希望
+verbal_complements	full	com.tencent.xinWeChat		jianchixiaquyidingnengkandaochengxiao	坚持下去一定能看到成效
+verbal_complements	full	com.tencent.xinWeChat		bayouliangchuantongchuanchengxiaqu	把优良传统传承下去
+verbal_complements	full	com.tencent.xinWeChat		bahuiyijingshenluoshidaowei	把会议精神落实到位
+verbal_complements	full	com.tencent.xinWeChat		bagexiangzhunbeigongzuozuozhashi	把各项准备工作做扎实
+context_homophones	full	md.obsidian	依法保障公民的合法	quanli	权利
+context_homophones	full	md.obsidian	严禁任何部门滥用公共	quanli	权力
+context_homophones	full	md.obsidian	大家齐心协力竭尽	quanli	全力
+context_homophones	full	md.obsidian	群众向上级部门如实地	fanying	反映
+context_homophones	full	md.obsidian	吃海鲜之后身体出现了过敏	fanying	反应
+context_homophones	full	md.obsidian	空气和水是人类生存所	bixu	必需
+context_homophones	full	md.obsidian	我们每个人都	bixu	必须
+context_homophones	full	md.obsidian	本次统计数据时间	jiezhi	截至
+context_homophones	full	md.obsidian	网上报名通道已经正式	jiezhi	截止
+context_homophones	full	md.obsidian	面对复杂多变的国际	xingshi	形势
+context_homophones	full	md.obsidian	展现出丰富多样的艺术表现	xingshi	形式
+context_homophones	full	md.obsidian	国家立法机关依法	zhiding	制定
+context_homophones	full	md.obsidian	双方经过协商共同	zhiding	制订|制定
+context_homophones	full	md.obsidian	公安机关对这起案件立案	zhencha	侦查
+context_homophones	full	md.obsidian	前线部队派出精锐小分队潜入敌后	zhencha	侦察
+context_homophones	full	md.obsidian	数学家在黑板上推导出新的	gongshi	公式
+context_homophones	full	md.obsidian	前线部队向敌军阵地发起了猛烈	gongshi	攻势
+context_homophones	full	md.obsidian	我明天要去外地出差办点	gongshi	公事
+context_homophones	full	md.obsidian	这位老医生一辈子坚守高尚的	yide	医德
+context_homophones	full	md.obsidian	请调整一下表格里的参数	shuzhi	数值
+context_homophones	full	md.obsidian	春风吹绿了柳树的	shuzhi	树枝
+context_homophones	full	md.obsidian	请输入账号和密码点击	denglu	登录
+context_homophones	full	md.obsidian	台风预计今天傍晚在沿海地区	denglu	登陆
+context_homophones	full	md.obsidian	系统从明天起正式	qiyong	启用
+context_homophones	full	md.obsidian	大胆提拔和	qiyong	起用|启用
+context_homophones	full	md.obsidian	健全社会主义民主与	fazhi	法治
+context_homophones	full	md.obsidian	加强企业内部的规章与	fazhi	法制
+context_homophones	full	md.obsidian	在家人陪伴下愉快地	duguo	度过
+context_homophones	full	md.obsidian	齐心协力帮助受灾群众	duguo	渡过
+context_homophones	full	md.obsidian	出门约会前她对着镜子精心	huazhuang	化妆
+context_homophones	full	md.obsidian	特工人员巧妙地	huazhuang	化装
+context_homophones	full	md.obsidian	火山在沉寂百年之后突然	baofa	爆发
+context_homophones	full	md.obsidian	山洪在暴雨之后突然	baofa	暴发
+context_homophones	full	md.obsidian	这家创业公司今年首次实现了	yingli	盈利
+context_homophones	full	md.obsidian	公立医院是不以赚钱为目的的非	yingli	营利
+context_homophones	full	md.obsidian	春天的阳光让山顶的积雪慢慢	ronghua	融化
+context_homophones	full	md.obsidian	上千度的高温把钢铁彻底	ronghua	熔化
+context_homophones	full	md.obsidian	把一勺白糖放进温水里慢慢	ronghua	溶化|融化
+context_homophones	full	md.obsidian	这在公司发展史上是一个重要的	licheng	里程
+context_homophones	full	md.obsidian	回顾过去几十年艰苦奋斗的光辉	licheng	历程
+context_homophones	full	md.obsidian	必须划清合法与非法的明确	jiexian	界限
+context_homophones	full	md.obsidian	两条跑道之间画着清晰的白色	jiexian	界线
+context_homophones	full	md.obsidian	他为科学事业奋斗了	zhongsheng	终生|终身
+context_homophones	full	md.obsidian	享有这项荣誉称号	zhongshen	终身
+context_homophones	full	md.obsidian	打字的过程中要维护一个上下文窗口，这样才能推荐出来最	heshi	合适
+context_homophones	full	md.obsidian	请问明天的航班	heshi	何时
+context_homophones	full	md.obsidian	不知找我究竟所为何事，到底有	heshi	何事
+context_homophones	full	md.obsidian	感觉第一候选字有时候不那么	kaopu	靠谱
+context_homophones	full	md.obsidian	第四和第五个候选究竟有	duoda	多大
+context_homophones	full	md.obsidian	参加本次大会的代表人数	duoda	多达
+context_homophones	full	md.obsidian	现在的排序算法还有很大的提升	kongjian	空间
+context_homophones	full	md.obsidian	伞兵部队在夜间成功实施了	kongjiang	空降
+context_homophones	full	md.obsidian	界面上摆放了几个交互按钮	kongjian	控件
+context_homophones	full	md.obsidian	端侧神经网络模型的四比特	lianghua	量化
+context_homophones	full	md.obsidian	推进城市夜景照明与街道	lianghua	亮化
+context_homophones	full	md.obsidian	为什么不用更新的软件	banben	版本
+context_homophones	full	md.obsidian	我哥哥平时为人特别热心，	tashiyigehaoren	他是一个好人
+context_homophones	full	md.obsidian	我妹妹平时性格特别温柔，	tashiyigehaoren	她是一个好人
+context_homophones	full	md.obsidian	我家小猫咪特别粘人，	tazhenkeai	它真可爱
+context_homophones	full	md.obsidian	李老师在讲台上讲了三十年课，	tashenshouxueshengaidai	他深受学生爱戴
+context_homophones	full	md.obsidian	张护士每天细心照顾病房里的老人，	tafeichangyounaixin	她非常有耐心
+context_homophones	full	md.obsidian	这件衣服的款式和颜色都很显	pinwei	品味|品位
+context_homophones	full	md.obsidian	细细品尝这道菜独特的	pinwei	品味|味道
+context_homophones	full	md.obsidian	老师耐心地纠正学生的错误	fayin	发音
+context_homophones	full	md.obsidian	法院对这起民事纠纷作出了公正	panjue	判决
+context_homophones	full	md.obsidian	医院为患者安排了全面的身体	jiancha	检查
+context_homophones	full	md.obsidian	检察院依法对犯罪嫌疑人提起	gongsu	公诉
+context_homophones	full	md.obsidian	签署这份商业保密	xieyi	协议
+context_homophones	full	md.obsidian	向灾区人民表达诚挚的	weiwen	慰问
+context_homophones	full	md.obsidian	保持室内空气流通和环境	weisheng	卫生
+context_homophones	full	md.obsidian	在激烈的市场竞争中占据绝对	youshi	优势
+context_homophones	full	md.obsidian	经过长达三年的刻苦	zuanyan	钻研
+context_homophones	full	md.obsidian	取得了令人瞩目的科研	chengguo	成果
+context_homophones	full	md.obsidian	承担起应尽的社会	zeren	责任
+context_homophones	full	md.obsidian	不断完善基础设施	jianshe	建设
+context_homophones	full	md.obsidian	提高全社会的节约环保	yishi	意识
+context_homophones	full	md.obsidian	在关键时刻保持清醒的	tounao	头脑
+context_homophones	full	md.obsidian	仔细阅读产品使用	shuoming	说明
+context_homophones	full	md.obsidian	严格遵守交通规则保障出行	anquan	安全
+context_homophones	full	md.obsidian	提供高质量的客户售后	fuwu	服务
+context_homophones	full	md.obsidian	深入剖析问题产生的根本	yuanyin	原因
+context_homophones	full	md.obsidian	制定切实可行的改进	cuoshi	措施
+context_homophones	full	md.obsidian	充分调动员工的工作	jijixing	积极性
+context_homophones	full	md.obsidian	营造风清气正的良好	fenwei	氛围
+context_homophones	full	md.obsidian	推动传统制造业数字化	zhuanxing	转型
+context_homophones	full	md.obsidian	保护珍稀野生动植物的栖息	huanjing	环境
+context_homophones	full	md.obsidian	传承和弘扬中华优秀传统	wenhua	文化
+context_homophones	full	md.obsidian	培养学生独立思考和解决问题的	nengli	能力
+context_homophones	full	md.obsidian	建立长期稳定的合作伙伴	guanxi	关系
+context_homophones	full	md.obsidian	这场及时雨缓解了农田的严重	hanqing	旱情
+context_homophones	full	md.obsidian	手术进行得非常顺利患者已经脱离	weixian	危险
+context_homophones	full	md.obsidian	火车缓缓驶入北京南站	zhantai	站台
+context_homophones	full	md.obsidian	飞机准时降落在首都国际	jichang	机场
+context_homophones	full	md.obsidian	轮船缓缓靠岸停泊在	matou	码头
+context_homophones	full	md.obsidian	阳光透过茂密的树叶洒下斑驳的	guangying	光影
+context_homophones	full	md.obsidian	秋风吹过金黄色的稻田翻起层层	daolang	稻浪|波浪
+context_homophones	full	md.obsidian	夜空中闪烁着无数颗明亮的	xingxing	星星
+context_homophones	full	md.obsidian	海浪拍打着岸边坚硬的	jiaoshi	礁石
+context_homophones	full	md.obsidian	图书馆里弥漫着淡淡的油墨	shuxiang	书香
+context_homophones	full	md.obsidian	茶杯里飘出一阵清新的茉莉	chaxiang	茶香|花香
+context_homophones	full	md.obsidian	妈妈端上一碗热气腾腾的鸡汤	hundun	混沌|馄饨
+context_homophones	full	md.obsidian	宇宙大爆炸之初处于一片	hundun	混沌
+context_homophones	full	md.obsidian	我们需要认真总结这次失败的	jiaoxun	教训
+context_homophones	full	md.obsidian	吸取前人宝贵的历史	jingyan	经验
+context_homophones	full	md.obsidian	这幅古画保存得相当	wanzheng	完整
+context_homophones	full	md.obsidian	给出了准确无误的标准	daan	答案
+context_homophones	full	md.obsidian	双方在友好坦诚的气氛中交换了	yijian	意见
+context_homophones	full	md.obsidian	对未来的发展前景充满	xinxin	信心
+context_homophones	full	md.obsidian	展现出青年一代昂扬向上的精神	fengmao	风貌
+context_homophones	full	md.obsidian	为实现共同的目标而不懈	fendou	奋斗
+polyphones_heteronyms	full	md.obsidian		woquyinhangbanlicunkuanyewu	我去银行办理存款业务
+polyphones_heteronyms	full	md.obsidian		zhegehangyedefazhanqianjinghenhao	这个行业的发展前景很好
+polyphones_heteronyms	full	md.obsidian		chiyousuoduancunyousuozhang	尺有所短寸有所长|各有所长
+polyphones_heteronyms	full	md.obsidian		haiziyizhuanyanjiuzhangdale	孩子一转眼就长大了
+polyphones_heteronyms	full	md.obsidian		wanlichangchengshishijieqiji	万里长城是世界奇迹
+polyphones_heteronyms	full	md.obsidian		womenduihexindaimajinxinglechonggou	我们对核心代码进行了重构
+polyphones_heteronyms	full	md.obsidian		qingbuyaochongfutijiaoxiangtongdebiaodan	请不要重复提交相同的表单
+polyphones_heteronyms	full	md.obsidian		shentijiankangbishenmedouzhongyao	身体健康比什么都重要
+polyphones_heteronyms	full	md.obsidian		chongqingdehuoguoquanguowenming	重庆的火锅全国闻名
+polyphones_heteronyms	full	md.obsidian		zhoumozaijiatinggudianyinyue	周末在家听古典音乐
+polyphones_heteronyms	full	md.obsidian		taxuehuilesanzhongminzuyueqi	他学会了三种民族乐器
+polyphones_heteronyms	full	md.obsidian		zhudajiajierikuaile	祝大家节日快乐
+polyphones_heteronyms	full	md.obsidian		jiebierendeshuyidingyaoanshiguihuan	借别人的书一定要按时归还
+polyphones_heteronyms	full	md.obsidian		wohaiyoujigewentixiangqingjiao	我还有几个问题想请教
+polyphones_heteronyms	full	md.obsidian		jintianwanshangshidianbanzhunshishuijiao	今天晚上十点半准时睡觉
+polyphones_heteronyms	full	md.obsidian		zhongwuzaibangongshishuileyijiao	中午在办公室睡了一觉
+polyphones_heteronyms	full	md.obsidian		wogerenjuedezhegefanganhenkexing	我个人觉得这个方案很可行
+polyphones_heteronyms	full	md.obsidian		taturanchajuedaoqingkuangyouxiebudui	他突然察觉到情况有些不对
+polyphones_heteronyms	full	md.obsidian		yudaotufaqingkuangqianwanbuyaozhaoji	遇到突发情况千万不要着急
+polyphones_heteronyms	full	md.obsidian		helenongchawanshangfanlaifuqushuibuzhao	喝了浓茶晚上翻来覆去睡不着
+polyphones_heteronyms	full	md.obsidian		tianlenglechumenduochuandianbiezhaoliang	天冷了出门多穿点别着凉
+polyphones_heteronyms	full	md.obsidian		tachuanzheyijianshenlansedewaitao	他穿着一件深蓝色的外套
+polyphones_heteronyms	full	md.obsidian		feijiyijingpingwenzhuolule	飞机已经平稳着陆了
+polyphones_heteronyms	full	md.obsidian		womenxianzaijiuzhuoshouzhunbeicailiao	我们现在就着手准备材料
+polyphones_heteronyms	full	md.obsidian		yudaokunnanyaobaochichenzhuolengjing	遇到困难要保持沉着冷静
+polyphones_heteronyms	full	md.obsidian		beijingshizhongguodeshoudu	北京是中国的首都
+polyphones_heteronyms	full	md.obsidian		dajiadoushilaiziwuhusihaidepengyou	大家都是来自五湖四海的朋友
+polyphones_heteronyms	full	md.obsidian		woxiazhouyaoqushanghaichuchaisantian	我下周要去上海出差三天
+polyphones_heteronyms	full	md.obsidian		zhelianggebanbendexingnengchabuduo	这两个版本的性能差不多
+polyphones_heteronyms	full	md.obsidian		shulinlideshumugaoaicencibuqi	树林里的树木高矮参差不齐
+polyphones_heteronyms	full	md.obsidian		zhangbaishanshengchanyouzhirenshen	长白山盛产优质人参
+polyphones_heteronyms	full	md.obsidian		huanyingdajiayongyuecanjiataolun	欢迎大家踊跃参加讨论
+polyphones_heteronyms	full	md.obsidian		genjufankuiyijianjishitiaozhengjihua	根据反馈意见及时调整计划
+polyphones_heteronyms	full	md.obsidian		gongchengshizhengzaijifangtiaoshishebei	工程师正在机房调试设备
+polyphones_heteronyms	full	md.obsidian		youguanbumenyijingzhankaishenrudiaocha	有关部门已经展开深入调查
+polyphones_heteronyms	full	md.obsidian		tongyidiaoduquanwangdejisuanziyuan	统一调度全网的计算资源
+polyphones_heteronyms	full	md.obsidian		zhejiachaoshideshucaifeichangpianyi	这家超市的蔬菜非常便宜
+polyphones_heteronyms	full	md.obsidian		zuoditiequjichangfeichangfangbian	坐地铁去机场非常方便
+polyphones_heteronyms	full	md.obsidian		qianwanbuyaotantuxiaopianyi	千万不要贪图小便宜
+polyphones_heteronyms	full	md.obsidian	我妹妹学了十年琴，	tazaiyinyuehuishangtangangqin	她在音乐会上弹钢琴
+polyphones_heteronyms	full	md.obsidian		zhezhongxinxingcailiaotanxingfeichanghao	这种新型材料弹性非常好
+polyphones_heteronyms	full	md.obsidian		zhanshimenmaozheqianglindanyuchongfeng	战士们冒着枪林弹雨冲锋
+polyphones_heteronyms	full	md.obsidian		wozuijinzaiduyibenkexuejiazizhuan	我最近在读一本科学家自传
+polyphones_heteronyms	full	md.obsidian		zunlaoaiyoushiyouliangchuantong	尊老爱幼是优良传统
+polyphones_heteronyms	full	md.obsidian		womenmeigerendouyinggaijingchangfanxingziji	我们每个人都应该经常反省自己
+polyphones_heteronyms	full	md.obsidian		yangchengjieyueyongshuijieshengdianlidexiguan	养成节约用水节省电力的习惯
+polyphones_heteronyms	full	md.obsidian		mamabangwochengfan	妈妈帮我盛饭
+polyphones_heteronyms	full	md.obsidian		longzhongjuxingshengdadekaimuyishi	隆重举行盛大的开幕仪式
+polyphones_heteronyms	full	md.obsidian		tacongxiaojiufeichangxihuanxueshuxue	他从小就非常喜欢学数学
+polyphones_heteronyms	full	md.obsidian		tianshangdexingxingduodeshubuqing	天上的星星多得数不清
+polyphones_heteronyms	full	md.obsidian		zhegewentisihumeiyoubiaomiannamejiandan	这个问题似乎没有表面那么简单
+polyphones_heteronyms	full	md.obsidian		woduizhengtiqingkuangyijingjibenliaojiele	我对整体情况已经基本了解了
+polyphones_heteronyms	full	md.obsidian		zhezhenshiyixiangliaobuqideweidachengjiu	这真是一项了不起的伟大成就
+polyphones_heteronyms	full	md.obsidian		yiyanwangqusuoyoushujuyimuliaoran	一眼望去所有数据一目了然
+polyphones_heteronyms	full	md.obsidian		womenxuyaotuoshanchulikehutousu	我们需要妥善处理客户投诉
+polyphones_heteronyms	full	md.obsidian		tongshizhijianpingshixiangchudehenrongqia	同事之间平时相处得很融洽
+polyphones_heteronyms	full	md.obsidian		daxuesinianwomenzhuzaitongyijiansushe	大学四年我们住在同一间宿舍
+polyphones_heteronyms	full	md.obsidian		tazaizhengbudianyinglibanyanzhujue	他在整部电影里扮演主角
+polyphones_heteronyms	full	md.obsidian		congbutongjiaodufenxitongyigewenti	从不同角度分析同一个问题
+polyphones_heteronyms	full	md.obsidian		yongchongfendeshishishujushuofuduifang	用充分的事实数据说服对方
+polyphones_heteronyms	full	md.obsidian		jintianchuletaiyangwuzilizhennuanhuo	今天出了太阳屋子里真暖和
+polyphones_heteronyms	full	md.obsidian		reaihepingfanduizhanzheng	热爱和平反对战争
+polyphones_heteronyms	full	md.obsidian		dianjianniuxiazaizuixinanzhuangbao	点击按钮下载最新安装包
+polyphones_heteronyms	full	md.obsidian		cheduimanzaierguishunlifanhuijidi	车队满载而归顺利返回基地
+polyphones_heteronyms	full	md.obsidian		shehuigejiejiyuledalizhichi	社会各界给予了大力支持
+polyphones_heteronyms	full	md.obsidian		shixianliangshizijizizu	实现粮食自给自足
+polyphones_heteronyms	full	md.obsidian		bazhefenshengriliwusonggeihaopengyou	把这份生日礼物送给好朋友
+polyphones_heteronyms	full	md.obsidian		shijianbuzaolewodeizoule	时间不早了我得走了
+polyphones_heteronyms	full	md.obsidian		bafangjiandasaodeganganjingjing	把房间打扫得干干净净
+polyphones_heteronyms	full	md.obsidian		tashiyanfatuanduilidejishugugan	他是研发团队里的技术骨干
+polyphones_heteronyms	full	md.obsidian		jintianzaiyinhangpailehenchangdedui	今天在银行排了很长的队
+polyphones_heteronyms	full	md.obsidian		bianxieyihangdaimajiejuehexinloudong	编写一行代码解决核心漏洞
+polyphones_heteronyms	full	md.obsidian		gongsideyewubaochiwenbuzengzhang	公司的业务保持稳步增长
+polyphones_heteronyms	full	md.obsidian		tafeichangshanchangjiejuebingfananti	他非常擅长解决并发难题
+polyphones_heteronyms	full	md.obsidian		laopengyouduonianzhihouzaiyixiangchongfeng	老朋友多年之后在异乡重逢
+polyphones_heteronyms	full	md.obsidian		bixuzunzhongkeguankexueguilv	必须尊重客观科学规律
+polyphones_heteronyms	full	md.obsidian		baochileguanjijideshenghuotaidu	保持乐观积极的生活态度
+polyphones_heteronyms	full	md.obsidian		tiqianchanghuanquanbuyinhangdaikuan	提前偿还全部银行贷款
+polyphones_heteronyms	full	md.obsidian		chuangwaixiazhexixililidexiaoyu	窗外下着淅淅沥沥的小雨
+polyphones_heteronyms	full	md.obsidian		yanzhehebiandexiaoluyizhiwangqianzou	沿着河边的小路一直往前走
+polyphones_heteronyms	full	md.obsidian		chengdushiyizuoshenghuojiezoushushidechengshi	成都是一座生活节奏舒适的城市
+polyphones_heteronyms	full	md.obsidian		lixianghexianshizhijiancunzaiyidingchaju	理想和现实之间存在一定差距
+polyphones_heteronyms	full	md.obsidian		zhefenwenxianjuyouhengaodecankaojiazhi	这份文献具有很高的参考价值
+polyphones_heteronyms	full	md.obsidian		xiatianfangjianlikaizhekongtiaohenliangkuai	夏天房间里开着空调很凉快
+polyphones_heteronyms	full	md.obsidian		baogaolifanfuqiangdiaoshujuanquan	报告里反复强调数据安全
+polyphones_heteronyms	full	md.obsidian		shunbianqulouxiabianlidianmaipingshui	顺便去楼下便利店买瓶水
+polyphones_heteronyms	full	md.obsidian		gushizaijinglixiadiezhihouchuxianfantan	股市在经历下跌之后出现反弹
+polyphones_heteronyms	full	md.obsidian		bazhenglihaodewendangshangchuandaofuwuqi	把整理好的文档上传到服务器
+polyphones_heteronyms	full	md.obsidian		shenglvezhongjianfansuodetuidaobuzhou	省略中间繁琐的推导步骤
+polyphones_heteronyms	full	md.obsidian		xiatianhuayuanlidecaomushifenmaosheng	夏天花园里的草木十分茂盛
+hiatus_segmentation	full	md.obsidian		xian	西安|先
+hiatus_segmentation	full	md.obsidian		quxianlvxing	去西安旅行
+hiatus_segmentation	full	md.obsidian		xianzai	现在
+hiatus_segmentation	full	md.obsidian		fangan	方案
+hiatus_segmentation	full	md.obsidian		shejifangan	设计方案
+hiatus_segmentation	full	md.obsidian		fanganzhezhongzuofa	反感这种做法
+hiatus_segmentation	full	md.obsidian		tiananmen	天安门
+hiatus_segmentation	full	md.obsidian		beijingtiananmen	北京天安门
+hiatus_segmentation	full	md.obsidian		changan	长安
+hiatus_segmentation	full	md.obsidian		changanjie	长安街
+hiatus_segmentation	full	md.obsidian		pingan	平安
+hiatus_segmentation	full	md.obsidian		yilupingan	一路平安
+hiatus_segmentation	full	md.obsidian		dangan	档案
+hiatus_segmentation	full	md.obsidian		renshidangan	人事档案
+hiatus_segmentation	full	md.obsidian		beian	备案
+hiatus_segmentation	full	md.obsidian		wangzhanbeian	网站备案
+hiatus_segmentation	full	md.obsidian		minge	名额
+hiatus_segmentation	full	md.obsidian		baomingminge	报名名额
+hiatus_segmentation	full	md.obsidian		jine	金额
+hiatus_segmentation	full	md.obsidian		jiaoyijine	交易金额
+hiatus_segmentation	full	md.obsidian		chae	差额
+hiatus_segmentation	full	md.obsidian		fene	份额
+hiatus_segmentation	full	md.obsidian		shichangfene	市场份额
+hiatus_segmentation	full	md.obsidian		xieyi	协议
+hiatus_segmentation	full	md.obsidian		qianshuxieyi	签署协议
+hiatus_segmentation	full	md.obsidian		fanyi	翻译
+hiatus_segmentation	full	md.obsidian		zhongyingwenfanyi	中英文翻译
+hiatus_segmentation	full	md.obsidian		yuanyi	愿意
+hiatus_segmentation	full	md.obsidian		wohenyuanyi	我很愿意
+hiatus_segmentation	full	md.obsidian		zhuyi	注意|主意
+hiatus_segmentation	full	md.obsidian		zhuyianquan	注意安全
+hiatus_segmentation	full	md.obsidian		haozhuyi	好主意
+hiatus_segmentation	full	md.obsidian		jiaoao	骄傲
+hiatus_segmentation	full	md.obsidian		weinigandaojiaoao	为你感到骄傲
+hiatus_segmentation	full	md.obsidian		haiou	海鸥
+hiatus_segmentation	full	md.obsidian		haishangdehaiou	海上的海鸥
+hiatus_segmentation	full	md.obsidian		nver	女儿
+hiatus_segmentation	full	md.obsidian		tadenver	他的女儿
+hiatus_segmentation	full	md.obsidian		keai	可爱
+hiatus_segmentation	full	md.obsidian		feichangkeai	非常可爱
+hiatus_segmentation	full	md.obsidian		aihao	爱好
+hiatus_segmentation	full	md.obsidian		gerenaihao	个人爱好
+hiatus_segmentation	full	md.obsidian		ouer	偶尔
+hiatus_segmentation	full	md.obsidian		ouerqukandianying	偶尔去看电影
+hiatus_segmentation	full	md.obsidian		erqie	而且
+hiatus_segmentation	full	md.obsidian		budanerqie	不但而且
+hiatus_segmentation	full	md.obsidian		daan	答案
+hiatus_segmentation	full	md.obsidian		biaozhundaan	标准答案
+hiatus_segmentation	full	md.obsidian		tian	天|提案
+hiatus_segmentation	full	md.obsidian		tijiaotian	提交提案
+hiatus_segmentation	full	md.obsidian		jintian	今天
+hiatus_segmentation	full	md.obsidian		jie	姐|借|节|接|街|解|届|界
+hiatus_segmentation	full	md.obsidian		jiejuewenti	解决问题
+hiatus_segmentation	full	md.obsidian		jiekuan	借款
+hiatus_segmentation	full	md.obsidian		renshoujie	忍受饥饿
+hiatus_segmentation	full	md.obsidian		boai	博爱
+hiatus_segmentation	full	md.obsidian		kuai	快|块
+hiatus_segmentation	full	md.obsidian		kuaile	快乐
+hiatus_segmentation	full	md.obsidian		kuaisu	快速
+hiatus_segmentation	full	md.obsidian		liangan	两岸
+hiatus_segmentation	full	md.obsidian		haixialiangan	海峡两岸
+hiatus_segmentation	full	md.obsidian		dingan	定案
+hiatus_segmentation	full	md.obsidian		poan	破案
+hiatus_segmentation	full	md.obsidian		banan	办案
+hiatus_segmentation	full	md.obsidian		yifabanan	依法办案
+hiatus_segmentation	full	md.obsidian		yuanan	原案|冤案
+hiatus_segmentation	full	md.obsidian		xingan	新案|心安
+hiatus_segmentation	full	md.obsidian		xinanlide	心安理得
+hiatus_segmentation	full	md.obsidian		gongan	公安
+hiatus_segmentation	full	md.obsidian		gonganjiguan	公安机关
+hiatus_segmentation	full	md.obsidian		jianan	建安
+hiatus_segmentation	full	md.obsidian		huairou	怀柔
+hiatus_segmentation	full	md.obsidian		xiou	西欧
+hiatus_segmentation	full	md.obsidian		beiou	北欧
+hiatus_segmentation	full	md.obsidian		dongou	东欧
+hiatus_segmentation	full	md.obsidian		chaoe	超额
+hiatus_segmentation	full	md.obsidian		chaoewancheng	超额完成
+hiatus_segmentation	full	md.obsidian		peie	配额
+hiatus_segmentation	full	md.obsidian		xiane	限额
+hiatus_segmentation	full	md.obsidian		quane	全额
+hiatus_segmentation	full	md.obsidian		quanejiaokuan	全额交款|全额缴款
+tech_prose_writing	full	com.mitchellh.ghostty		bendiyuyanmoxing	本地语言模型
+tech_prose_writing	full	com.mitchellh.ghostty		rengongzhinengjishu	人工智能技术
+tech_prose_writing	full	com.mitchellh.ghostty		daguimobingxingjisuan	大规模并行计算
+tech_prose_writing	full	com.mitchellh.ghostty		shenduxuexishenjingwangluo	深度学习神经网络
+tech_prose_writing	full	com.mitchellh.ghostty		ziranyuyanchuli	自然语言处理
+tech_prose_writing	full	com.mitchellh.ghostty		duancetuiliyanchiyouhua	端侧推理延迟优化
+tech_prose_writing	full	com.mitchellh.ghostty		tongyineicunjiagou	统一内存架构
+tech_prose_writing	full	com.mitchellh.ghostty		lingkaobeineicunyingsheciku	零拷贝内存映射词库
+tech_prose_writing	full	com.mitchellh.ghostty		dizhizishiyingweitiao	低秩自适应微调
+tech_prose_writing	full	com.mitchellh.ghostty		sibitequanzhonglianghuayasuo	四比特权重量化压缩
+tech_prose_writing	full	com.mitchellh.ghostty		zhuyilijizhiyuweizhibianma	注意力机制与位置编码
+tech_prose_writing	full	com.mitchellh.ghostty		jianzhihuancunzengliangfuyong	键值缓存增量复用
+tech_prose_writing	full	com.mitchellh.ghostty		fenbushiyizhixingxieyi	分布式一致性协议
+tech_prose_writing	full	com.mitchellh.ghostty		gaobingfadiyanchifuwu	高并发低延迟服务
+tech_prose_writing	full	com.mitchellh.ghostty		shujukushiwugelijibie	数据库事务隔离级别
+tech_prose_writing	full	com.mitchellh.ghostty		suoyinchaxunxingnengyouhua	索引查询性能优化
+tech_prose_writing	full	com.mitchellh.ghostty		neicunanquanyulingchengbenchouxiang	内存安全与零成本抽象
+tech_prose_writing	full	com.mitchellh.ghostty		suoyouquanyushengmingzhouqijiancha	所有权与生命周期检查
+tech_prose_writing	full	com.mitchellh.ghostty		yiburenwudiaoduyinqing	异步任务调度引擎
+tech_prose_writing	full	com.mitchellh.ghostty		wusuobingfashujujiegou	无锁并发数据结构
+tech_prose_writing	full	com.mitchellh.ghostty		bianyiqijingtaileixingjiancha	编译器静态类型检查
+tech_prose_writing	full	com.mitchellh.ghostty		chixujichengyuzidonghuaceshi	持续集成与自动化测试
+tech_prose_writing	full	com.mitchellh.ghostty		rongqibianpaiyutanxingshensuo	容器编排与弹性伸缩
+tech_prose_writing	full	com.mitchellh.ghostty		weifuwuzhiliyulianluzhuizong	微服务治理与链路追踪
+tech_prose_writing	full	com.mitchellh.ghostty		duandaoduanjiamitongxinbaozhangyinsi	端到端加密通信保障隐私
+tech_prose_writing	full	com.mitchellh.ghostty		lingyaocelixianyunxingjiagou	零遥测离线运行架构
+tech_prose_writing	full	com.mitchellh.ghostty		caozuoxitongneihetaiyuyonghutai	操作系统内核态与用户态
+tech_prose_writing	full	com.mitchellh.ghostty		xunineicunyemianzhihuansuanfa	虚拟内存页面置换算法
+tech_prose_writing	full	com.mitchellh.ghostty		wenjianxitongrizhibengkuihuifu	文件系统日志崩溃恢复
+tech_prose_writing	full	com.mitchellh.ghostty		wangluoyongsaikongzhisuanfa	网络拥塞控制算法
+tech_prose_writing	full	com.mitchellh.ghostty		hongguanjingjiyunxingbaochizongtipingwen	宏观经济运行保持总体平稳
+tech_prose_writing	full	com.mitchellh.ghostty		huobizhengcebaochiliudongxinghelichongyu	货币政策保持流动性合理充裕
+tech_prose_writing	full	com.mitchellh.ghostty		gongyinglianxietongxiaolvxianzhutisheng	供应链协同效率显著提升
+tech_prose_writing	full	com.mitchellh.ghostty		kejichuangxinqudonggaozhiliangfazhan	科技创新驱动高质量发展
+tech_prose_writing	full	com.mitchellh.ghostty		zhishichanquanbaohuliduchixujiaqiang	知识产权保护力度持续加强
+tech_prose_writing	full	com.mitchellh.ghostty		yangelvxinghetongyuedingdegexiangyiwu	严格履行合同约定的各项义务
+tech_prose_writing	full	com.mitchellh.ghostty		baohuxiaofeizhehefazhiqingquan	保护消费者合法知情权
+tech_prose_writing	full	com.mitchellh.ghostty		qiyecaiwubaobiaoshenjijieguo	企业财务报表审计结果
+tech_prose_writing	full	com.mitchellh.ghostty		zichanfuzhailvbaochizaijiankangqujian	资产负债率保持在健康区间
+tech_prose_writing	full	com.mitchellh.ghostty		xianjinliuchongpeizhichengchangqiyanfatouru	现金流充沛支撑长期研发投入
+tech_prose_writing	full	com.mitchellh.ghostty		linchuangshiyanshujubiaomingliaoxiaoxianzhu	临床试验数据表明疗效显著
+tech_prose_writing	full	com.mitchellh.ghostty		zaoqishaichayouzhuyuyufangmanxingjibing	早期筛查有助于预防慢性疾病
+tech_prose_writing	full	com.mitchellh.ghostty		baochiguilvzuoxizengqiangjitimianyili	保持规律作息增强机体免疫力
+tech_prose_writing	full	com.mitchellh.ghostty		jiyincexujishuqudelezhongdatupo	基因测序技术取得了重大突破
+tech_prose_writing	full	com.mitchellh.ghostty		kezaishengnengyuanfadianzhanbiwenbutigao	可再生能源发电占比稳步提高
+tech_prose_writing	full	com.mitchellh.ghostty		xinnengyuanqichechanyeliankuaisufazhan	新能源汽车产业链快速发展
+tech_prose_writing	full	com.mitchellh.ghostty		tandafengyutanzhonghezhanlvemubiao	碳达峰与碳中和战略目标
+tech_prose_writing	full	com.mitchellh.ghostty		jiduantianqishijianpinfayinfaguanzhu	极端天气事件频发引发关注
+tech_prose_writing	full	com.mitchellh.ghostty		hangkonghangtiantanceqichenggongjinruyudingguidao	航空航天探测器成功进入预定轨道
+tech_prose_writing	full	com.mitchellh.ghostty		liangzitongxinweixingshixianqiangonglijimiyaofenfa	量子通信卫星实现千公里级密钥分发
+tech_prose_writing	full	com.mitchellh.ghostty		chanpinjiaohutiyanjianjiezhiguan	产品交互体验简洁直观
+tech_prose_writing	full	com.mitchellh.ghostty		jiangdixinyonghudeshangshouxueximenkan	降低新用户的上手学习门槛
+tech_prose_writing	full	com.mitchellh.ghostty		baochishijuepaibancengciqingxiyizhi	保持视觉排版层次清晰一致
+tech_prose_writing	full	com.mitchellh.ghostty		xiangyingshibujushipeiduozhongpingmuchicun	响应式布局适配多种屏幕尺寸
+tech_prose_writing	full	com.mitchellh.ghostty		tongguoyonghufankuichixudiedaichanpingongneng	通过用户反馈持续迭代产品功能
+tech_prose_writing	full	com.mitchellh.ghostty		goujiangaokeyongderongzaibeifentixi	构建高可用的容灾备份体系
+tech_prose_writing	full	com.mitchellh.ghostty		xiaochudandianguzhangbaozhangyewulianxuxing	消除单点故障保障业务连续性
+tech_prose_writing	full	com.mitchellh.ghostty		rizhijiankonggaojingjishidingweixianshangyichang	日志监控告警及时定位线上异常
+tech_prose_writing	full	com.mitchellh.ghostty		daimashenchanenggouyouxiaotishenggongchengzhiliang	代码审查能够有效提升工程质量
+tech_prose_writing	full	com.mitchellh.ghostty		mokuaihuashejijiangdilezujianzhijiandeouhedu	模块化设计降低了组件之间的耦合度
+tech_prose_writing	full	com.mitchellh.ghostty		qingxidejiekoudingyibianyuhouxukuozhanweihu	清晰的接口定义便于后续扩展维护
+tech_prose_writing	full	com.mitchellh.ghostty		danyuanceshifugaihexinyewuluojifenzhi	单元测试覆盖核心业务逻辑分支
+tech_prose_writing	full	com.mitchellh.ghostty		jizhunpingcekeguanhengliangxitongtuntuliang	基准评测客观衡量系统吞吐量
+tech_prose_writing	full	com.mitchellh.ghostty		zaibuxishengzhunquelvdeqiantixiayasuotiji	在不牺牲准确率的前提下压缩体积
+tech_prose_writing	full	com.mitchellh.ghostty		jiehetongjicipinyushangxiawenyuyichongpai	结合统计词频与上下文语义重排
+tech_prose_writing	full	com.mitchellh.ghostty		shuangxiangjianguchangjuzhengjushuruyuduancixiangying	双向兼顾长句整句输入与短词响应
+tech_prose_writing	full	com.mitchellh.ghostty		dongtaitiaozhengbutonglingyudeshipeiqiquanzhong	动态调整不同领域的适配器权重
+tech_prose_writing	full	com.mitchellh.ghostty		bimianduogeshipeiqitongshijihuochanshengpiaoyi	避免多个适配器同时激活产生漂移
+tech_prose_writing	full	com.mitchellh.ghostty		duimingangerenxinxijinxingbendituominguolv	对敏感个人信息进行本地脱敏过滤
+tech_prose_writing	full	com.mitchellh.ghostty		suoyouyonghuxiguanshujujinbaocunzaibendishujuku	所有用户习惯数据仅保存在本地数据库
+tech_prose_writing	full	com.mitchellh.ghostty		zhichidaorudisanfangcikugeshi	支持导入第三方词库格式
+tech_prose_writing	full	com.mitchellh.ghostty		tuigejianzidongchufacuowujiyihuigun	退格键自动触发错误记忆回滚
+tech_prose_writing	full	com.mitchellh.ghostty		houxuanlanzhichihengxiangjincoumoshiyuwanggezhankai	候选栏支持横向紧凑模式与网格展开
+tech_prose_writing	full	com.mitchellh.ghostty		tongguozengliangjisuanjiangshouzhenxiangyingkongzhizaishihaomiaoyinei	通过增量计算将首帧响应控制在十毫秒以内
+tech_prose_writing	full	com.mitchellh.ghostty		fangzhihouxuancizaishijueganzhichuangkouzhihoufashengtiaobian	防止候选词在视觉感知窗口之后发生跳变
+tech_prose_writing	full	com.mitchellh.ghostty		shuzihoumianjingenxiaoshudianshibaochiyingwenbanjiaojudian	数字后面紧跟小数点时保持英文半角句点
+tech_prose_writing	full	com.mitchellh.ghostty		zhongwenyuyingwendancizhijianzidongcharubanjiaokongge	中文与英文单词之间自动插入半角空格
+tech_prose_writing	full	com.mitchellh.ghostty		zhishizhengliuyouxiaobaoliulejiaoshimoxingdeyuyipanbieli	知识蒸馏有效保留了教师模型的语义判别力
+tech_prose_writing	full	com.mitchellh.ghostty		cengjianyinzhuangtaiduiqijiasulexueshengmoxingdeshoulian	层间隐状态对齐加速了学生模型的收敛
+tech_prose_writing	full	com.mitchellh.ghostty		yuxianxiangshiduhengliangshuchubiaozhengkongjiandeduiqichengdu	余弦相似度衡量输出表征空间的对齐程度
+tech_prose_writing	full	com.mitchellh.ghostty		jiaochashangsunshiyusandusunshilianheyouhua	交叉熵损失与散度损失联合优化
+tech_prose_writing	full	com.mitchellh.ghostty		cibiaocaijiandafusuojianleqianrucengcanshuguimo	词表裁剪大幅缩减了嵌入层参数规模
+tech_prose_writing	full	com.mitchellh.ghostty		fenzufangshelianghuajiangulejingduyufangcundaikuan	分组仿射量化兼顾了精度与访存带宽
+tech_prose_writing	full	com.mitchellh.ghostty		juzhenchengfasuanzironghexianzhujianshaoleneiheqidongkaixiao	矩阵乘法算子融合显著减少了内核启动开销
+tech_prose_writing	full	com.mitchellh.ghostty		gongxiangqianzhuijisuanbimianleduimeigehouxuanchongfubianma	共享前缀计算避免了对每个候选重复编码
+tech_prose_writing	full	com.mitchellh.ghostty		yufayueshuyouxiaoguolvlebufuhejufadehouxuanzuhe	语法约束有效过滤了不符合句法的候选组合
+tech_prose_writing	full	com.mitchellh.ghostty		youbianjiebihegailvzhunqueshibieweiwanchengdejieduanduanyu	右边界闭合概率准确识别未完成的截断短语
+tech_prose_writing	full	com.mitchellh.ghostty		yuyanxueguizeyutongjiyuyanmoxingxiangfuxiangcheng	语言学规则与统计语言模型相辅相成
+tech_prose_writing	full	com.mitchellh.ghostty		congxinxilundiyixingyuanlishenshipinyinjiemaguocheng	从信息论第一性原理审视拼音解码过程
+tech_prose_writing	full	com.mitchellh.ghostty		bafuzadegongchengwentichaijieweizhengjiaodezimokuai	把复杂的工程问题拆解为正交的子模块
+code_switching	full	md.obsidian		woshiyongmacoshegithub	我使用 macOS 和 GitHub
+code_switching	full	com.mitchellh.ghostty		bangworeviewzhegepr	帮我 review 这个 PR
+code_switching	full	com.mitchellh.ghostty		tiaozhengchatgptyinggai	调整 ChatGPT 应该
+code_switching	full	com.microsoft.VSCode		useEffect	useEffect
+code_switching	full	com.microsoft.VSCode		useState	useState
+code_switching	full	com.microsoft.VSCode		kubern	Kubernetes
+code_switching	full	com.microsoft.VSCode		chatg	ChatGPT
+code_switching	full	com.microsoft.VSCode		postgre	PostgreSQL
+code_switching	full	com.microsoft.VSCode		typesc	TypeScript
+code_switching	full	com.microsoft.VSCode		javasc	JavaScript
+code_switching	full	com.microsoft.VSCode		tensorf	TensorFlow
+code_switching	full	com.microsoft.VSCode		huggingf	HuggingFace
+code_switching	full	com.mitchellh.ghostty		yongrustxiedaimazhenkuai	用 Rust 写代码真快
+code_switching	full	com.mitchellh.ghostty		zhegeapiyoubug	这个 API 有 bug|这个 API 有 Bug
+code_switching	full	com.mitchellh.ghostty		tijiaoyigecommit	提交一个 commit
+code_switching	full	com.mitchellh.ghostty		hebingzhegebranch	合并这个 branch
+code_switching	full	com.mitchellh.ghostty		zaidockerliyunxing	在 Docker 里运行
+code_switching	full	com.mitchellh.ghostty		bushudaokubernetesjiqun	部署到 Kubernetes 集群
+code_switching	full	com.mitchellh.ghostty		shiyongswiftkaifamacosyingyong	使用 Swift 开发 macOS 应用
+code_switching	full	com.mitchellh.ghostty		zhegejsonwenjiangeshicuole	这个 JSON 文件格式错了
+code_switching	full	com.mitchellh.ghostty		peizhiyamlwenjian	配置 YAML 文件
+code_switching	full	com.mitchellh.ghostty		xiugaitomlpeizhi	修改 TOML 配置
+code_switching	full	com.mitchellh.ghostty		lianjiepostgresqlshujuku	连接 PostgreSQL 数据库
+code_switching	full	com.mitchellh.ghostty		yongredishuancunshuju	用 Redis 缓存数据
+code_switching	full	com.mitchellh.ghostty		zaivscodelitiaoshidaima	在 VSCode 里调试代码
+code_switching	full	com.mitchellh.ghostty		dakaighosttyzhongduan	打开 Ghostty 终端
+code_switching	full	com.mitchellh.ghostty		shiyongclaudehedeepseek	使用 Claude 和 DeepSeek
+code_switching	full	com.mitchellh.ghostty		diaoyongopenaideapi	调用 OpenAI 的 API
+code_switching	full	com.mitchellh.ghostty		xunlianpytorchmoxing	训练 PyTorch 模型
+code_switching	full	com.mitchellh.ghostty		zaiappledemetalgpushangyunxing	在 Apple 的 Metal GPU 上运行|在苹果的 Metal GPU 上运行
+code_switching	full	com.mitchellh.ghostty		wodeiphonehemacbook	我的 iPhone 和 MacBook
+code_switching	full	com.mitchellh.ghostty		shengjidaoioszuixinbanben	升级到 iOS 最新版本
+code_switching	full	com.mitchellh.ghostty		daochupdfwendang	导出 PDF 文档
+code_switching	full	com.mitchellh.ghostty		yongmarkdownxiewendang	用 Markdown 写文档
+code_switching	full	com.mitchellh.ghostty		yonglatexpaibanlunwen	用 LaTeX 排版论文
+code_switching	full	com.mitchellh.ghostty		jianchasshlianjie	检查 SSH 连接
+code_switching	full	com.mitchellh.ghostty		kaiqihttpsjiami	开启 HTTPS 加密
+code_switching	full	com.mitchellh.ghostty		tongguogrpcjinxingtongxin	通过 gRPC 进行通信
+code_switching	full	com.mitchellh.ghostty		dingyiprotobufjiekou	定义 Protobuf 接口
+code_switching	full	com.mitchellh.ghostty		shiyongwebsocketshishituisong	使用 WebSocket 实时推送
+code_switching	full	com.mitchellh.ghostty		jichengoauthdenglu	集成 OAuth 登录
+code_switching	full	com.mitchellh.ghostty		zaifigmalishejijiemian	在 Figma 里设计界面
+code_switching	full	com.mitchellh.ghostty		zainotionlijilubiji	在 Notion 里记录笔记
+code_switching	full	com.mitchellh.ghostty		zaiobsidianlixiewenzhang	在 Obsidian 里写文章
+code_switching	full	com.mitchellh.ghostty		yongpythonxiejiaoben	用 Python 写脚本
+code_switching	full	com.mitchellh.ghostty		yongtypescriptxieqianduan	用 TypeScript 写前端
+code_switching	full	com.mitchellh.ghostty		jiyureactgoujianzujian	基于 React 构建组件
+code_switching	full	com.mitchellh.ghostty		shiyongtailwindyangshi	使用 Tailwind 样式
+code_switching	full	com.mitchellh.ghostty		bianyichengwebassembly	编译成 WebAssembly
+code_switching	full	com.mitchellh.ghostty		guazailorashipeiqi	挂载 LoRA 适配器
+code_switching	full	com.mitchellh.ghostty		daochusafetensorsquanzhong	导出 Safetensors 权重|导出 safetensors 权重
+code_switching	full	com.mitchellh.ghostty		zaicolabshangxunlianmoxing	在 Colab 上训练模型
+code_switching	full	com.mitchellh.ghostty		bushudaoawshecloudflare	部署到 AWS 和 Cloudflare
+code_switching	full	com.mitchellh.ghostty		yongterraformguanlijichusheshi	用 Terraform 管理基础设施
+code_switching	full	com.mitchellh.ghostty		yongpulumibushuyunziyuan	用 Pulumi 部署云资源
+code_switching	full	com.mitchellh.ghostty		jianchacpuhegpuzhanyong	检查 CPU 和 GPU 占用
+code_switching	full	com.mitchellh.ghostty		youhuallmdetuilitokensudu	优化 LLM 的推理 token 速度
+code_switching	full	com.mitchellh.ghostty		goujianragjiansuoxitong	构建 RAG 检索系统
+code_switching	full	com.mitchellh.ghostty		anzhuanghomebrewruanjianbao	安装 Homebrew 软件包
+code_switching	full	com.mitchellh.ghostty		dakaixcodebianyigongcheng	打开 Xcode 编译工程
+code_switching	full	com.mitchellh.ghostty		shiyongswiftuibuju	使用 SwiftUI 布局
+code_switching	full	com.mitchellh.ghostty		diaoyongappkitchuangkou	调用 AppKit 窗口
+code_switching	full	com.mitchellh.ghostty		yunxingcargotestceshi	运行 Cargo test 测试|运行 cargo test 测试
+code_switching	full	com.mitchellh.ghostty		shiyongtokioxieyibufuwu	使用 Tokio 写异步服务
+code_switching	full	com.mitchellh.ghostty		qianrushiyingyongshiyongsqlite	嵌入式应用使用 SQLite
+code_switching	full	com.mitchellh.ghostty		fenxishujushiyongduckdb	分析数据使用 DuckDB
+code_switching	full	com.mitchellh.ghostty		zaichromeliulanqiliceshi	在 Chrome 浏览器里测试
+code_switching	full	com.mitchellh.ghostty		bushudaovercelpingtai	部署到 Vercel 平台
+code_switching	full	com.mitchellh.ghostty		shiyonggitguanlibanben	使用 Git 管理版本
+code_switching	full	com.mitchellh.ghostty		zailinearliguanlirenwu	在 Linear 里管理任务
+code_switching	full	com.mitchellh.ghostty		shiyongneovimbianjidaima	使用 Neovim 编辑代码
+code_switching	full	com.mitchellh.ghostty		yongcursorfuzhubiancheng	用 Cursor 辅助编程
+code_switching	full	com.mitchellh.ghostty		ceshigraphqlchaxunjiekou	测试 GraphQL 查询接口
+code_switching	full	com.mitchellh.ghostty		xunlianqwenmoxing	训练 Qwen 模型
+code_switching	full	com.mitchellh.ghostty		shiyongmlxkuangjia	使用 MLX 框架
+idioms_proverbs_poetry	full	md.obsidian		chunnuanhuakai	春暖花开
+idioms_proverbs_poetry	full	md.obsidian		quanshenguanzhu	全神贯注
+idioms_proverbs_poetry	full	md.obsidian		shishiqiushi	实事求是
+idioms_proverbs_poetry	full	md.obsidian		xunxujianjin	循序渐进
+idioms_proverbs_poetry	full	md.obsidian		chizhiyiheng	持之以恒
+idioms_proverbs_poetry	full	md.obsidian		pobujidai	迫不及待
+idioms_proverbs_poetry	full	md.obsidian		qingbuzijin	情不自禁
+idioms_proverbs_poetry	full	md.obsidian		buyouzizhu	不由自主
+idioms_proverbs_poetry	full	md.obsidian		huangrandawu	恍然大悟
+idioms_proverbs_poetry	full	md.obsidian		huorankailang	豁然开朗
+idioms_proverbs_poetry	full	md.obsidian		momingqimiao	莫名其妙
+idioms_proverbs_poetry	full	md.obsidian		bukesiyi	不可思议
+idioms_proverbs_poetry	full	md.obsidian		lisuodangran	理所当然
+idioms_proverbs_poetry	full	md.obsidian		mingfuqishi	名副其实
+idioms_proverbs_poetry	full	md.obsidian		yijuliangde	一举两得
+idioms_proverbs_poetry	full	md.obsidian		shibangongbei	事半功倍
+idioms_proverbs_poetry	full	md.obsidian		jiaotashidi	脚踏实地
+idioms_proverbs_poetry	full	md.obsidian		jingyiqiujing	精益求精
+idioms_proverbs_poetry	full	md.obsidian		yisibugou	一丝不苟
+idioms_proverbs_poetry	full	md.obsidian		zhuanxinzhizhi	专心致志
+idioms_proverbs_poetry	full	md.obsidian		quanliyifu	全力以赴
+idioms_proverbs_poetry	full	md.obsidian		yingnanershang	迎难而上
+idioms_proverbs_poetry	full	md.obsidian		jianchibuxie	坚持不懈
+idioms_proverbs_poetry	full	md.obsidian		baizhebunao	百折不挠
+idioms_proverbs_poetry	full	md.obsidian		shuidaoqucheng	水到渠成
+idioms_proverbs_poetry	full	md.obsidian		tuoyingerchu	脱颖而出
+idioms_proverbs_poetry	full	md.obsidian		xiangfuxiangcheng	相辅相成
+idioms_proverbs_poetry	full	md.obsidian		juyifansan	举一反三
+idioms_proverbs_poetry	full	md.obsidian		ronghuiguantong	融会贯通
+idioms_proverbs_poetry	full	md.obsidian		qianyimohua	潜移默化
+idioms_proverbs_poetry	full	md.obsidian		errumuran	耳濡目染
+idioms_proverbs_poetry	full	md.obsidian		weiyuchoumou	未雨绸缪
+idioms_proverbs_poetry	full	md.obsidian		fangweidujian	防微杜渐
+idioms_proverbs_poetry	full	md.obsidian		yindizhiyi	因地制宜
+idioms_proverbs_poetry	full	md.obsidian		lianglierxing	量力而行
+idioms_proverbs_poetry	full	md.obsidian		shihuashishuo	实话实说
+idioms_proverbs_poetry	full	md.obsidian		huashetianzu	画蛇添足
+idioms_proverbs_poetry	full	md.obsidian		shouzhudaitu	守株待兔
+idioms_proverbs_poetry	full	md.obsidian		yanerdaoling	掩耳盗铃
+idioms_proverbs_poetry	full	md.obsidian		wangyangbulao	亡羊补牢
+idioms_proverbs_poetry	full	md.obsidian		kezhouqiujian	刻舟求剑
+idioms_proverbs_poetry	full	md.obsidian		jingdizhiwa	井底之蛙
+idioms_proverbs_poetry	full	md.obsidian		zixiangmaodun	自相矛盾
+idioms_proverbs_poetry	full	md.obsidian		bantuerfei	半途而废
+idioms_proverbs_poetry	full	md.obsidian		jigongjinli	急功近利
+idioms_proverbs_poetry	full	md.obsidian		xinkuangshenyi	心旷神怡
+idioms_proverbs_poetry	full	md.obsidian		liulianwangfan	流连忘返
+idioms_proverbs_poetry	full	md.obsidian		luoyibujue	络绎不绝
+idioms_proverbs_poetry	full	md.obsidian		chuanliubuxi	川流不息
+idioms_proverbs_poetry	full	md.obsidian		wanzhongyixin	万众一心
+idioms_proverbs_poetry	full	md.obsidian		tongzhougongji	同舟共济
+idioms_proverbs_poetry	full	md.obsidian		xuezhongsongtan	雪中送炭
+idioms_proverbs_poetry	full	md.obsidian		jinshangtianhua	锦上添花
+idioms_proverbs_poetry	full	md.obsidian		yinshuisiyuan	饮水思源
+idioms_proverbs_poetry	full	md.obsidian		zhientubao	知恩图报
+idioms_proverbs_poetry	full	md.obsidian		chuangqianmingyueguang	床前明月光
+idioms_proverbs_poetry	full	md.obsidian		yishidishangshuang	疑是地上霜
+idioms_proverbs_poetry	full	md.obsidian		jutouwangmingyue	举头望明月
+idioms_proverbs_poetry	full	md.obsidian		ditousiguxiang	低头思故乡
+idioms_proverbs_poetry	full	md.obsidian		chunmianbujuexiao	春眠不觉晓
+idioms_proverbs_poetry	full	md.obsidian		chuchuwentiniao	处处闻啼鸟
+idioms_proverbs_poetry	full	md.obsidian		bairiyishanjin	白日依山尽
+idioms_proverbs_poetry	full	md.obsidian		huangheruhailiu	黄河入海流
+idioms_proverbs_poetry	full	md.obsidian		yuqiongqianlimu	欲穷千里目
+idioms_proverbs_poetry	full	md.obsidian		gengshangyicenglou	更上一层楼
+idioms_proverbs_poetry	full	md.obsidian		kongshanxinyuhou	空山新雨后
+idioms_proverbs_poetry	full	md.obsidian	空山新雨后，	tianqiwanlaiqiu	天气晚来秋
+idioms_proverbs_poetry	full	md.obsidian		mingyuesongjianzhao	明月松间照
+idioms_proverbs_poetry	full	md.obsidian	明月松间照，	qingquanshishangliu	清泉石上流
+idioms_proverbs_poetry	full	md.obsidian		haineicunzhiji	海内存知己
+idioms_proverbs_poetry	full	md.obsidian	海内存知己，	tianyaruobilin	天涯若比邻
+idioms_proverbs_poetry	full	md.obsidian		wubianluomuxiaoxiaoxia	无边落木萧萧下
+idioms_proverbs_poetry	full	md.obsidian	无边落木萧萧下，	bujinchangjianggungunlai	不尽长江滚滚来
+idioms_proverbs_poetry	full	md.obsidian		lianggehuanglimingcuiliu	两个黄鹂鸣翠柳
+idioms_proverbs_poetry	full	md.obsidian	两个黄鹂鸣翠柳，	yixingbailushangqingtian	一行白鹭上青天
+idioms_proverbs_poetry	full	md.obsidian		damoguyanzhi	大漠孤烟直
+idioms_proverbs_poetry	full	md.obsidian	大漠孤烟直，	zhangheluoriyuan	长河落日圆
+idioms_proverbs_poetry	full	md.obsidian		yehuoshaobujin	野火烧不尽
+idioms_proverbs_poetry	full	md.obsidian	野火烧不尽，	chunfengchuiyousheng	春风吹又生
+idioms_proverbs_poetry	full	md.obsidian		suifengqianruye	随风潜入夜
+idioms_proverbs_poetry	full	md.obsidian	随风潜入夜，	runwuxiwusheng	润物细无声
+idioms_proverbs_poetry	full	md.obsidian		junbujianhuanghezhishuitianshanglai	君不见黄河之水天上来
+idioms_proverbs_poetry	full	md.obsidian		tianshengwocaibiyouyong	天生我材必有用
+idioms_proverbs_poetry	full	md.obsidian		mingyuejishiyou	明月几时有
+idioms_proverbs_poetry	full	md.obsidian		danyuanrenzhangjiu	但愿人长久
+idioms_proverbs_poetry	full	md.obsidian	但愿人长久，	qianligongchanjuan	千里共婵娟
+idioms_proverbs_poetry	full	md.obsidian	月有悲欢离合，	renyoudanxihuofu	人有旦夕祸福
+idioms_proverbs_poetry	full	md.obsidian		xiantianxiazhiyoueryou	先天下之忧而忧
+idioms_proverbs_poetry	full	md.obsidian	先天下之忧而忧，	houtianxiazhileerle	后天下之乐而乐
+idioms_proverbs_poetry	full	md.obsidian		luoxiayuguwuqifei	落霞与孤鹜齐飞
+fuzzy_pinyin	full	com.tencent.xinWeChat		zidao	知道
+fuzzy_pinyin	full	com.tencent.xinWeChat		wozidaole	我知道了
+fuzzy_pinyin	full	com.tencent.xinWeChat		feican	非常
+fuzzy_pinyin	full	com.tencent.xinWeChat		feicanganxie	非常感谢
+fuzzy_pinyin	full	com.tencent.xinWeChat	使用	yinwen	英文
+fuzzy_pinyin	full	com.tencent.xinWeChat		zongguo	中国
+fuzzy_pinyin	full	com.tencent.xinWeChat		zongguoren	中国人
+fuzzy_pinyin	full	com.tencent.xinWeChat		cifan	吃饭
+fuzzy_pinyin	full	com.tencent.xinWeChat		yiqicifan	一起吃饭
+fuzzy_pinyin	full	com.tencent.xinWeChat		sanban	上班
+fuzzy_pinyin	full	com.tencent.xinWeChat		jintiansanban	今天上班
+fuzzy_pinyin	full	com.tencent.xinWeChat		sengyin	声音
+fuzzy_pinyin	full	com.tencent.xinWeChat		zhenzheng	真正
+fuzzy_pinyin	full	com.tencent.xinWeChat		zenzeng	真正
+fuzzy_pinyin	full	com.tencent.xinWeChat		cenggong	成功
+fuzzy_pinyin	full	com.tencent.xinWeChat		zunicenggong	祝你成功
+fuzzy_pinyin	full	com.tencent.xinWeChat		penyou	朋友
+fuzzy_pinyin	full	com.tencent.xinWeChat		haopenyou	好朋友
+fuzzy_pinyin	full	com.tencent.xinWeChat		xianzhai	现在
+fuzzy_pinyin	full	com.tencent.xinWeChat		surufa	输入法
+fuzzy_pinyin	full	com.tencent.xinWeChat		suangpin	双拼
+fuzzy_pinyin	full	com.tencent.xinWeChat		zhiji	自己
+fuzzy_pinyin	full	com.tencent.xinWeChat		zuozhe	作者|坐着
+fuzzy_pinyin	full	com.tencent.xinWeChat		zhegefangfa	这个方法
+fuzzy_pinyin	full	com.tencent.xinWeChat		zegefangfa	这个方法
+fuzzy_pinyin	full	com.tencent.xinWeChat		sijian	时间
+fuzzy_pinyin	full	com.tencent.xinWeChat		meiyousijian	没有时间
+fuzzy_pinyin	full	com.tencent.xinWeChat		sijie	世界
+fuzzy_pinyin	full	com.tencent.xinWeChat		nihaosijie	你好世界
+fuzzy_pinyin	full	com.tencent.xinWeChat		zaoshanghao	早上好
+fuzzy_pinyin	full	com.tencent.xinWeChat		zhaosanghao	早上好
+fuzzy_pinyin	full	com.tencent.xinWeChat		wansanghao	晚上好
+fuzzy_pinyin	full	com.tencent.xinWeChat		yinggai	应该
+fuzzy_pinyin	full	com.tencent.xinWeChat		yingai	应该
+fuzzy_pinyin	full	com.tencent.xinWeChat		yijing	已经
+fuzzy_pinyin	full	com.tencent.xinWeChat		yijinwanchengle	已经完成了
+fuzzy_pinyin	full	com.tencent.xinWeChat		gaoxing	高兴
+fuzzy_pinyin	full	com.tencent.xinWeChat		hengaoxin	很高兴
+fuzzy_pinyin	full	com.tencent.xinWeChat		dianying	电影
+fuzzy_pinyin	full	com.tencent.xinWeChat		kandianyin	看电影
+fuzzy_pinyin	full	com.tencent.xinWeChat		beijin	北京
+fuzzy_pinyin	full	com.tencent.xinWeChat		sanghai	上海
+fuzzy_pinyin	full	com.tencent.xinWeChat		guangzou	广州
+fuzzy_pinyin	full	com.tencent.xinWeChat		senzen	深圳
+fuzzy_pinyin	full	com.tencent.xinWeChat		hangzou	杭州
+fuzzy_pinyin	full	com.tencent.xinWeChat		wenti	问题
+fuzzy_pinyin	full	com.tencent.xinWeChat		meiyouwenti	没有问题
+fuzzy_pinyin	full	com.tencent.xinWeChat		zongyao	重要
+fuzzy_pinyin	full	com.tencent.xinWeChat		feichangzongyao	非常重要
+fuzzy_pinyin	full	com.tencent.xinWeChat		zici	支持
+fuzzy_pinyin	full	com.tencent.xinWeChat		ganxiezici	感谢支持
+fuzzy_pinyin	full	com.tencent.xinWeChat		sishiqiusi	实事求是
+fuzzy_pinyin	full	com.tencent.xinWeChat		canseng	产生
+fuzzy_pinyin	full	com.tencent.xinWeChat		fazhan	发展
+fuzzy_pinyin	full	com.tencent.xinWeChat		fazan	发展
+fuzzy_pinyin	full	com.tencent.xinWeChat		zengzhang	增长
+fuzzy_pinyin	full	com.tencent.xinWeChat		zenzang	增长
+fuzzy_pinyin	full	com.tencent.xinWeChat		bangzu	帮助
+fuzzy_pinyin	full	com.tencent.xinWeChat		huxiangbangzu	互相帮助
+fuzzy_pinyin	full	com.tencent.xinWeChat		zuanxin	专心
+fuzzy_pinyin	full	com.tencent.xinWeChat		zuanxinxuexi	专心学习
+fuzzy_pinyin	full	com.tencent.xinWeChat		changshi	尝试|常识
+fuzzy_pinyin	full	com.tencent.xinWeChat		cangsi	尝试|常识
+fuzzy_pinyin	full	com.tencent.xinWeChat		shenghuo	生活
+fuzzy_pinyin	full	com.tencent.xinWeChat		senghuo	生活
+fuzzy_pinyin	full	com.tencent.xinWeChat		xinqing	心情
+fuzzy_pinyin	full	com.tencent.xinWeChat		xinqinhao	心情好
+fuzzy_pinyin	full	com.tencent.xinWeChat		mingtian	明天
+fuzzy_pinyin	full	com.tencent.xinWeChat		mintianjian	明天见
+fuzzy_pinyin	full	com.tencent.xinWeChat		jingyan	经验
+fuzzy_pinyin	full	com.tencent.xinWeChat		jinyanfengfu	经验丰富
+fuzzy_pinyin	full	com.tencent.xinWeChat		anquan	安全
+fuzzy_pinyin	full	com.tencent.xinWeChat		zhuyianquan	注意安全
+fuzzy_pinyin	full	com.tencent.xinWeChat		zuyianquan	注意安全
+motor_typos	full	md.obsidian		shaungpin	双拼
+motor_typos	full	md.obsidian		shaungpinshurufa	双拼输入法
+motor_typos	full	md.obsidian		shuruaf	输入法
+motor_typos	full	md.obsidian		nihao	你好
+motor_typos	full	md.obsidian		niaho	你好
+motor_typos	full	md.obsidian		nihaoshiije	你好世界
+motor_typos	full	md.obsidian		zhongugo	中国
+motor_typos	full	md.obsidian		rengongzhienng	人工智能
+motor_typos	full	md.obsidian		jisuanij	计算机
+motor_typos	full	md.obsidian		chenguxyuan	程序员
+motor_typos	full	md.obsidian		diannoa	电脑
+motor_typos	full	md.obsidian		shouij	手机
+motor_typos	full	md.obsidian		pengyuo	朋友
+motor_typos	full	md.obsidian		jintina	今天
+motor_typos	full	md.obsidian		mingtina	明天
+motor_typos	full	md.obsidian		xiazai	下载
+motor_typos	full	md.obsidian		xiazia	下载
+motor_typos	full	md.obsidian		wenti	问题
+motor_typos	full	md.obsidian		ewnti	问题
+motor_typos	full	md.obsidian		fangan	方案
+motor_typos	full	md.obsidian		xeixie	谢谢
+motor_typos	full	md.obsidian		kaixni	开心
+motor_typos	full	md.obsidian		dianynig	电影
+motor_typos	full	md.obsidian		yinyue	音乐
+motor_typos	full	md.obsidian		yniyue	音乐
+motor_typos	full	md.obsidian		nohaoshijie	你好世界
+motor_typos	full	md.obsidian		shulufa	输入法
+motor_typos	full	md.obsidian		shuruga	输入法
+motor_typos	full	md.obsidian		woshiyigechengxuyusn	我是一个程序员
+motor_typos	full	md.obsidian		jintianwimenshiyong	今天我们使用
+motor_typos	full	md.obsidian		bendiyuyanmoxung	本地语言模型
+motor_typos	full	md.obsidian		renfongzhineng	人工智能
+motor_typos	full	md.obsidian		feichabg	非常
+motor_typos	full	md.obsidian		xianzsi	现在
+motor_typos	full	md.obsidian		shenmr	什么
+motor_typos	full	md.obsidian		zenmrban	怎么办
+motor_typos	full	md.obsidian		keyu	可以
+motor_typos	full	md.obsidian		zhudao	知道|主导
+motor_typos	full	md.obsidian		xihusn	喜欢
+motor_typos	full	md.obsidian		gaoxung	高兴
+motor_typos	full	md.obsidian		mohuyign	模糊音
+motor_typos	full	md.obsidian		shuruffa	输入法
+motor_typos	full	md.obsidian		nihaao	你好
+motor_typos	full	md.obsidian		jintiann	今天
+motor_typos	full	md.obsidian		xianzaai	现在
+motor_typos	full	md.obsidian		feichangg	非常
+motor_typos	full	md.obsidian		diannaoo	电脑
+motor_typos	full	md.obsidian		chengxuyuann	程序员
+motor_typos	full	md.obsidian		chunuanhuakai	春暖花开
+motor_typos	full	md.obsidian	无边落木萧萧下，	bujinchangjiangungunlai	不尽长江滚滚来
+motor_typos	full	md.obsidian		xiniankuaile	新年快乐
+motor_typos	full	md.obsidian		jianankunku	艰难困苦
+motor_typos	full	md.obsidian		zhonguoren	中国人
+motor_typos	full	md.obsidian		rengongzhineng	人工智能
+motor_typos	full	md.obsidian		yuanyin	原因
+motor_typos	full	md.obsidian		zhinengongju	智能工具
+motor_typos	full	md.obsidian		qingongjianxue	勤工俭学
+motor_typos	full	md.obsidian		ankang	安康
+motor_typos	full	md.obsidian		xining	西宁
+motor_typos	full	md.obsidian		jining	济宁
+motor_typos	full	md.obsidian		nanning	南宁
+motor_typos	full	md.obsidian		naning	南宁
+motor_typos	full	md.obsidian		yunnan	云南
+motor_typos	full	md.obsidian		yunan	云南
+motor_typos	full	md.obsidian		henan	河南
+motor_typos	full	md.obsidian		hunan	湖南
+motor_typos	full	md.obsidian		jinan	济南
+motor_typos	full	md.obsidian		fujian	福建
+motor_typos	full	md.obsidian		guangdong	广东
+motor_typos	full	md.obsidian		shandong	山东
+motor_typos	full	md.obsidian		liaoning	辽宁
+motor_typos	full	md.obsidian		heilongjiang	黑龙江
+motor_typos	full	md.obsidian		zhejiang	浙江
+motor_typos	full	md.obsidian		jiangsu	江苏
+motor_typos	full	md.obsidian		sichuan	四川
+shuangpin_xiaohe	xiaohe	md.obsidian		ulpbuurufa	双拼输入法
+shuangpin_ziranma	ziranma	md.obsidian		udpnuurufa	双拼输入法
+shuangpin_microsoft	microsoft	md.obsidian		udpnuurufa	双拼输入法
+shuangpin_xiaohe	xiaohe	md.obsidian		jbtmtmqivfhc	今天天气真好
+shuangpin_ziranma	ziranma	md.obsidian		jntmtmqivfhk	今天天气真好
+shuangpin_microsoft	microsoft	md.obsidian		jntmtmqivfhk	今天天气真好
+shuangpin_xiaohe	xiaohe	md.obsidian		wouiyigeigxvyr	我是一个程序员
+shuangpin_ziranma	ziranma	md.obsidian		wouiyigeigxvyr	我是一个程序员
+shuangpin_microsoft	microsoft	md.obsidian		wouiyigeigxyyr	我是一个程序员
+shuangpin_xiaohe	xiaohe	md.obsidian		bfdiyvyjmoxk	本地语言模型
+shuangpin_ziranma	ziranma	md.obsidian		bfdiyvyjmoxy	本地语言模型
+shuangpin_microsoft	microsoft	md.obsidian		bfdiyyyjmox;	本地语言模型
+shuangpin_xiaohe	xiaohe	md.obsidian		rfgsvingjiuu	人工智能技术
+shuangpin_ziranma	ziranma	md.obsidian		rfgsvingjiuu	人工智能技术
+shuangpin_microsoft	microsoft	md.obsidian		rfgsvingjiuu	人工智能技术
+shuangpin_xiaohe	xiaohe	md.obsidian		womfyiqiqviifjba	我们一起去吃饭吧
+shuangpin_ziranma	ziranma	md.obsidian		womfyiqiqviifjba	我们一起去吃饭吧
+shuangpin_microsoft	microsoft	md.obsidian		womfyiqiqyiifjba	我们一起去吃饭吧
+shuangpin_xiaohe	xiaohe	md.obsidian		iynrhxkd	春暖花开
+shuangpin_ziranma	ziranma	md.obsidian		ipnrhwkl	春暖花开
+shuangpin_microsoft	microsoft	md.obsidian		ipnrhwkl	春暖花开
+shuangpin_xiaohe	xiaohe	md.obsidian		vuniugrikkle	祝你生日快乐
+shuangpin_ziranma	ziranma	md.obsidian		vuniugrikyle	祝你生日快乐
+shuangpin_microsoft	microsoft	md.obsidian		vuniugrikyle	祝你生日快乐
+shuangpin_xiaohe	xiaohe	md.obsidian		vegewftihfvsyc	这个问题很重要
+shuangpin_ziranma	ziranma	md.obsidian		vegewftihfvsyk	这个问题很重要
+shuangpin_microsoft	microsoft	md.obsidian		vegewftihfvsyk	这个问题很重要
+shuangpin_xiaohe	xiaohe	md.obsidian		mktmzcuhbadmjm	明天早上八点见
+shuangpin_ziranma	ziranma	md.obsidian		mytmzkuhbadmjm	明天早上八点见
+shuangpin_microsoft	microsoft	md.obsidian		m;tmzkuhbadmjm	明天早上八点见
+shuangpin_xiaohe	xiaohe	md.obsidian		fwihgjxpnideviii	非常感谢你的支持
+shuangpin_ziranma	ziranma	md.obsidian		fzihgjxxnideviii	非常感谢你的支持
+shuangpin_microsoft	microsoft	md.obsidian		fzihgjxxnideviii	非常感谢你的支持
+shuangpin_xiaohe	xiaohe	md.obsidian		vuyiuftijmkh	注意身体健康
+shuangpin_ziranma	ziranma	md.obsidian		vuyiuftijmkh	注意身体健康
+shuangpin_microsoft	microsoft	md.obsidian		vuyiuftijmkh	注意身体健康
+shuangpin_xiaohe	xiaohe	md.obsidian		vzmozdjxxqxi	周末在家休息
+shuangpin_ziranma	ziranma	md.obsidian		vbmozljwxqxi	周末在家休息
+shuangpin_microsoft	microsoft	md.obsidian		vbmozljwxqxi	周末在家休息
+shuangpin_xiaohe	xiaohe	md.obsidian		rfvfwjiggszorfwu	认真完成工作任务
+shuangpin_ziranma	ziranma	md.obsidian		rfvfwjiggszorfwu	认真完成工作任务
+shuangpin_microsoft	microsoft	md.obsidian		rfvfwjiggszorfwu	认真完成工作任务
+shuangpin_xiaohe	xiaohe	md.obsidian		bciillhcdexbtd	保持良好的心态
+shuangpin_ziranma	ziranma	md.obsidian		bkiildhkdexntl	保持良好的心态
+shuangpin_microsoft	microsoft	md.obsidian		bkiildhkdexntl	保持良好的心态
+shuangpin_xiaohe	xiaohe	md.obsidian		ufduxtxisrfa	深度学习算法
+shuangpin_ziranma	ziranma	md.obsidian		ufduxtxisrfa	深度学习算法
+shuangpin_microsoft	microsoft	md.obsidian		ufduxtxisrfa	深度学习算法
+shuangpin_xiaohe	xiaohe	md.obsidian		lkkcbwnwcyykue	零拷贝内存映射
+shuangpin_ziranma	ziranma	md.obsidian		lykkbznzcpyyue	零拷贝内存映射
+shuangpin_microsoft	microsoft	md.obsidian		l;kkbznzcpy;ue	零拷贝内存映射
+shuangpin_xiaohe	xiaohe	md.obsidian		drcetvliyjiijidi	端侧推理延迟极低
+shuangpin_ziranma	ziranma	md.obsidian		drcetvliyjiijidi	端侧推理延迟极低
+shuangpin_microsoft	microsoft	md.obsidian		drcetvliyjiijidi	端侧推理延迟极低
+shuangpin_xiaohe	xiaohe	md.obsidian		hdnwcyviji	海内存知己
+shuangpin_ziranma	ziranma	md.obsidian		hlnzcpviji	海内存知己
+shuangpin_microsoft	microsoft	md.obsidian		hlnzcpviji	海内存知己
+shuangpin_xiaohe	xiaohe	md.obsidian		qmligsijjr	千里共婵娟
+shuangpin_ziranma	ziranma	md.obsidian		qmligsijjr	千里共婵娟
+shuangpin_microsoft	microsoft	md.obsidian		qmligsijjr	千里共婵娟
+shuangpin_xiaohe	xiaohe	md.obsidian		uiuiqqui	实事求是
+shuangpin_ziranma	ziranma	md.obsidian		uiuiqqui	实事求是
+shuangpin_microsoft	microsoft	md.obsidian		uiuiqqui	实事求是
+shuangpin_xiaohe	xiaohe	md.obsidian		xyxvjmjb	循序渐进
+shuangpin_ziranma	ziranma	md.obsidian		xpxvjmjn	循序渐进
+shuangpin_microsoft	microsoft	md.obsidian		xpxyjmjn	循序渐进
+shuangpin_xiaohe	xiaohe	md.obsidian		jntauidi	脚踏实地
+shuangpin_ziranma	ziranma	md.obsidian		jctauidi	脚踏实地
+shuangpin_microsoft	microsoft	md.obsidian		jctauidi	脚踏实地
+shuangpin_xiaohe	xiaohe	md.obsidian		qrliyifu	全力以赴
+shuangpin_ziranma	ziranma	md.obsidian		qrliyifu	全力以赴
+shuangpin_microsoft	microsoft	md.obsidian		qrliyifu	全力以赴
+skeleton_abbr	full	com.tencent.xinWeChat		wsm	为什么
+skeleton_abbr	full	com.tencent.xinWeChat		zm	怎么
+skeleton_abbr	full	com.tencent.xinWeChat		sm	什么
+skeleton_abbr	full	com.tencent.xinWeChat		rgzn	人工智能
+skeleton_abbr	full	com.tencent.xinWeChat		zgr	中国人
+skeleton_abbr	full	com.tencent.xinWeChat		srf	输入法
+skeleton_abbr	full	com.tencent.xinWeChat		cx	程序|出现|创新
+skeleton_abbr	full	com.tencent.xinWeChat		cxy	程序员
+skeleton_abbr	full	com.tencent.xinWeChat		bzd	不知道
+skeleton_abbr	full	com.tencent.xinWeChat		mywt	没有问题
+skeleton_abbr	full	com.tencent.xinWeChat		jttq	今天天气
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woshiyigebing	我是一个兵
+dangling_trap_adversarial	full	com.tencent.xinWeChat	如果把人比作食物的话，	woshiyigebing	我是一个饼
+dangling_trap_adversarial	full	com.tencent.xinWeChat		chilelianggebing	吃了两个饼
+dangling_trap_adversarial	full	com.tencent.xinWeChat		maileyigebing	买了一个饼
+dangling_trap_adversarial	full	com.tencent.xinWeChat		geiwoyigebing	给我一个饼
+dangling_trap_adversarial	full	com.tencent.xinWeChat		womenyiqiquba	我们一起去吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		jintianjiudaozheliba	今天就到这里吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		nikuaidianguolaiba	你快点过来吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		dajiayiqichufaba	大家一起出发吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		haishisuanleba	还是算了吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		nijuedezheyangkeyima	你觉得这样可以吗
+dangling_trap_adversarial	full	com.tencent.xinWeChat		mingtianhaihuixiayuma	明天还会下雨吗
+dangling_trap_adversarial	full	com.tencent.xinWeChat		nizuijinzaimangshenmene	你最近在忙什么呢
+dangling_trap_adversarial	full	com.tencent.xinWeChat		wodeyaoshifangzainaerne	我的钥匙放在哪儿呢|我的钥匙放在哪呢
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zheduohuazhenhaokana	这朵花真好看啊
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woyijingzhidaozhejianshile	我已经知道这件事了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tazuotianyijinghuiqule	他昨天已经回去了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		womenzaojiurenshile	我们早就认识了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		waimiandeyuzhongyutingle	外面的雨终于停了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		wochadianwanglegennishuo	我差点忘了跟你说
+dangling_trap_adversarial	full	com.tencent.xinWeChat		geinitianmafanle	给你添麻烦了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		rangnijianxiaole	让你见笑了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woshizuotiangangdaode	我是昨天刚到的
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tashiwomenbandebanzhang	他是我们班的班长
+dangling_trap_adversarial	full	com.tencent.xinWeChat		nishizenmezhidaode	你是怎么知道的
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zheshiwogeinimaideliwu	这是我给你买的礼物
+dangling_trap_adversarial	full	com.tencent.xinWeChat		nashitazijizuodejueding	那是他自己做的决定
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woyouyigedadandexiangfa	我有一个大胆的想法
+dangling_trap_adversarial	full	com.tencent.xinWeChat		niyoumeiyoukongbangwoyixia	你有没有空帮我一下
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tajintianmeilaigongsishangban	他今天没来公司上班
+dangling_trap_adversarial	full	com.tencent.xinWeChat		wobuzhidaogaizenmeban	我不知道该怎么办
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zhejianshiyidianyeburongyi	这件事一点也不容易
+dangling_trap_adversarial	full	com.tencent.xinWeChat		qinggeiwoyibeibingshui	请给我一杯冰水
+dangling_trap_adversarial	full	com.tencent.xinWeChat		bangwonayixianagebeizi	帮我拿一下那个杯子
+dangling_trap_adversarial	full	com.tencent.xinWeChat		bachuanghudakaitongtongfeng	把窗户打开通通风
+dangling_trap_adversarial	full	com.tencent.xinWeChat		bazhezhangzhuozibanguoqu	把这张桌子搬过去
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tabeidajiaxuanweidaibiao	他被大家选为代表
+dangling_trap_adversarial	full	com.tencent.xinWeChat		buyaobeibiaomianxianxiangmihuo	不要被表面现象迷惑
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tabiwodaliangsui	他比我大两岁
+dangling_trap_adversarial	full	com.tencent.xinWeChat		jintianbizuotianliangkuaiduole	今天比昨天凉快多了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		genwoyiqizouba	跟我一起走吧
+dangling_trap_adversarial	full	com.tencent.xinWeChat		youshisuishigenwoshuo	有事随时跟我说
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tiwoxiangnifumuwenhao	替我向你父母问好
+dangling_trap_adversarial	full	com.tencent.xinWeChat		xiangxianjinbangyangxuexi	向先进榜样学习
+dangling_trap_adversarial	full	com.tencent.xinWeChat		congmingtiankaishizaoqiduanlian	从明天开始早起锻炼
+dangling_trap_adversarial	full	com.tencent.xinWeChat		wangzuobianzouliangbaimijiudaole	往左边走两百米就到了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		liditiezhanzhiyouwufenzhonglucheng	离地铁站只有五分钟路程
+dangling_trap_adversarial	full	com.tencent.xinWeChat		weilegongtongdemubiaonuli	为了共同的目标努力
+dangling_trap_adversarial	full	com.tencent.xinWeChat		anzhaojidingjihuatuijin	按照既定计划推进
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tongguozheciceshifaxianlewenti	通过这次测试发现了问题
+dangling_trap_adversarial	full	com.tencent.xinWeChat		guanyuzhegehuatiyihouzailiao	关于这个话题以后再聊
+dangling_trap_adversarial	full	com.tencent.xinWeChat		duiyuxinshoulaishuofeichangyouhao	对于新手来说非常友好
+dangling_trap_adversarial	full	com.tencent.xinWeChat		chulegongzuohaiyaozhaogujiating	除了工作还要照顾家庭
+dangling_trap_adversarial	full	com.tencent.xinWeChat		lianxiaohaizidoumingbaizhegedaoli	连小孩子都明白这个道理
+dangling_trap_adversarial	full	com.tencent.xinWeChat		napayudaokunnanyebuyaofangqi	哪怕遇到困难也不要放弃
+dangling_trap_adversarial	full	com.tencent.xinWeChat		jiranxuanzelejiuyaojianchidaodi	既然选择了就要坚持到底
+dangling_trap_adversarial	full	com.tencent.xinWeChat		suiranxiazhedayudanshitahaishizhunshidaole	虽然下着大雨但是他还是准时到了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		buguanjieguoruhewomendoujinlile	不管结果如何我们都尽力了
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zhiyoujiaotashidicainengqudechenggong	只有脚踏实地才能取得成功
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zhiyaogongfushentiechumochengzhen	只要功夫深铁杵磨成针
+dangling_trap_adversarial	full	com.tencent.xinWeChat		yuqilinyuanxianyuburutuierjiewang	与其临渊羡鱼不如退而结网
+dangling_trap_adversarial	full	com.tencent.xinWeChat		ningkemanyidianyeyaobaozhengzhiliang	宁可慢一点也要保证质量
+dangling_trap_adversarial	full	com.tencent.xinWeChat		napazhiyoubaifenzhiyidexiwangyeyaojinbaifenzhibaidenuli	哪怕只有百分之一的希望也要尽百分之百的努力
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tabudanxuexihaoerqieleyuzhuren	他不但学习好而且乐于助人
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woshijinnianjiadalejichusheshitouru	我市今年加大了基础设施投入
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woshilidedengguangfeichangrouhe	卧室里的灯光非常柔和
+dangling_trap_adversarial	full	com.tencent.xinWeChat		womengongsijinniantuichulexinchanpin	我们公司今年推出了新产品
+dangling_trap_adversarial	full	com.tencent.xinWeChat		woshileyixiaxiaoguohaitingbucuode	我试了一下效果还挺不错的
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zuorenyidingyaojiaotashidi	做人一定要脚踏实地
+dangling_trap_adversarial	full	com.tencent.xinWeChat		tazuoshiyixianghentashi	他做事一向很踏实
+dangling_trap_adversarial	full	com.tencent.xinWeChat		shisuinaniantadiyicikanjiandahai	十岁那年他第一次看见大海
+dangling_trap_adversarial	full	com.tencent.xinWeChat		yundonghoudaliangchuhanrongyidaozhishentishishui	运动后大量出汗容易导致身体失水
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zheqishijianyinqileguangfanguanzhu	这起事件引起了广泛关注
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zhenxiyanqiandemeiyicunshiguang	珍惜眼前的每一寸时光
+dangling_trap_adversarial	full	com.tencent.xinWeChat		baochimeitianyuedubanxiaoshidexiguan	保持每天阅读半小时的习惯
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zheshuangxiezichuanqilaifeichanghejiao	这双鞋子穿起来非常合脚
+dangling_trap_adversarial	full	com.tencent.xinWeChat		wanfanhouyanzhehebiansanbubanxiaoshi	晚饭后沿着河边散步半小时
+dangling_trap_adversarial	full	com.tencent.xinWeChat		geijialidehuacaojiaoyidianshui	给家里的花草浇一点水
+dangling_trap_adversarial	full	com.tencent.xinWeChat		bahuanxialaideyifufangjinxiyiji	把换下来的衣服放进洗衣机
+dangling_trap_adversarial	full	com.tencent.xinWeChat		zhoumoyuelejigelaotongxuejucan	周末约了几个老同学聚餐

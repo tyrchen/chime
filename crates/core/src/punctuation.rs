@@ -22,7 +22,13 @@ impl PunctuationState {
             }
             b'?' => Some("？"),
             b'!' => Some("！"),
-            b':' => Some("："),
+            b':' => {
+                if prev_char.is_some_and(|c| c.is_ascii_digit()) {
+                    Some(":")
+                } else {
+                    Some("：")
+                }
+            }
             b';' => Some("；"),
             b'\\' => Some("、"),
             b'(' => Some("（"),

@@ -914,6 +914,7 @@ mod tests {
     #[test]
     fn test_should_roundtrip_compiled_imedict_v2_with_bigrams_and_trigrams() {
         let mut seed = Lexicon::with_builtin_seed();
+        seed.insert_bigram_boost("端侧", "量化", 1.8);
         seed.insert_trigram_boost("保障", "公民", "权利", 2.4);
         let builder = CompiledDictBuilder::from_lexicon(&seed);
         let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());

@@ -30,6 +30,7 @@ void chime_sync_context(
 
 char *chime_toggle_english(ChimeEngineHandle *engine, uint64_t session_id);
 char *chime_toggle_punctuation(ChimeEngineHandle *engine, uint64_t session_id);
+char *chime_toggle_pangu_spacing(ChimeEngineHandle *engine, uint64_t session_id);
 char *chime_toggle_grid(ChimeEngineHandle *engine, uint64_t session_id);
 char *chime_process_key(
     ChimeEngineHandle *engine,
@@ -45,6 +46,7 @@ char *chime_poll_async_rerank(ChimeEngineHandle *engine, uint64_t session_id);
 
 int64_t chime_import_asset(ChimeEngineHandle *engine, const char *asset_path);
 void chime_reload_assets(ChimeEngineHandle *engine);
+void chime_clear_user_habits(ChimeEngineHandle *engine);
 char *chime_get_config_json(ChimeEngineHandle *engine);
 bool chime_set_config_json(ChimeEngineHandle *engine, const char *config_json);
 char *chime_get_status_json(ChimeEngineHandle *engine);

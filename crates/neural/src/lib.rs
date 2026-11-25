@@ -94,6 +94,12 @@ impl CompactVocab {
         }
         ids
     }
+
+    /// Looks up the exact token ID for a single piece (e.g. clause-boundary punctuation).
+    #[must_use]
+    pub fn token_id(&self, piece: &str) -> Option<u32> {
+        self.pieces.get(piece).copied()
+    }
 }
 
 /// Thread-confined Apple Silicon Metal (`mlx-rs`) Qwen2.5 reranker owned exclusively by the worker
@@ -103,6 +109,8 @@ pub struct SafetensorsReranker {
     mlx_model: MlxTransformer,
     vocab: CompactVocab,
     kv_cache: MlxPrefixCache,
+    closure_token_ids: Vec<u32>,
+    closure_weight: f32,
     weight_scale: f32,
 }
 
@@ -149,6 +157,11 @@ impl SafetensorsReranker {
         let vocab_bytes = std::fs::read(model_dir.join("vocab.json"))?;
         let tokens: Vec<String> = serde_json::from_slice(&vocab_bytes)?;
         let vocab = CompactVocab::from_tokens(&tokens);
+        let closure_token_ids: Vec<u32> = ["。", "，", "？", "！"]
+            .into_iter()
+            .filter_map(|p| vocab.token_id(p))
+            .collect();
+        let closure_weight = 1.05_f32;
 
         let mut mlx_model =
             MlxTransformer::load_safetensors_file(&config, &model_dir.join("model.safetensors"))?;
@@ -159,17 +172,33 @@ impl SafetensorsReranker {
         }
         let mut kv_cache = MlxPrefixCache::new();
         // Warm up all Metal GPU shader shape buckets (`past_kv=None` causal, `past_kv=Some`
-        // single-step, and `past_kv=Some` multi-step causal) during background initialization!
+        // single-step, and `past_kv=Some` multi-step causal + closure gather across typical batch
+        // sizes) during background initialization so the first keystroke never hits Metal JIT!
         if config.vocab_size >= 2 {
             let t1 = 1.min(u32::try_from(config.vocab_size - 1).unwrap_or(0));
-            let _ = mlx_model.ensure_prefix_cached(&[0], &mut kv_cache);
-            let _ = mlx_model.ensure_prefix_cached(&[0, t1, t1], &mut kv_cache);
-            let _ = mlx_model.ensure_prefix_cached(&[t1; 16], &mut kv_cache);
-            let _ = mlx_model.score_candidates_batch(
-                &kv_cache,
-                &[vec![0, t1], vec![0, t1, t1, 0]],
-                true,
+            let default_scales: Vec<f32> = loras.iter().map(|s| s.scale).collect();
+            let _ =
+                mlx_model.ensure_prefix_cached_with_scales(&[0], &default_scales, &mut kv_cache);
+            let _ = mlx_model.ensure_prefix_cached_with_scales(
+                &[0, t1, t1],
+                &default_scales,
+                &mut kv_cache,
             );
+            let _ = mlx_model.ensure_prefix_cached_with_scales(
+                &[t1; 16],
+                &default_scales,
+                &mut kv_cache,
+            );
+            for b in [2usize, 6, 8] {
+                let dummy_batch: Vec<Vec<u32>> = vec![vec![0, t1, t1, 0]; b];
+                let _ = mlx_model.score_candidates_with_closure(
+                    &kv_cache,
+                    &dummy_batch,
+                    &default_scales,
+                    &closure_token_ids,
+                    closure_weight,
+                );
+            }
             kv_cache = MlxPrefixCache::new();
         }
 
@@ -177,7 +206,9 @@ impl SafetensorsReranker {
             mlx_model,
             vocab,
             kv_cache,
-            weight_scale: 0.65,
+            closure_token_ids,
+            closure_weight,
+            weight_scale: 1.02,
         })
     }
 
@@ -201,6 +232,18 @@ impl SafetensorsReranker {
         app_bundle_id: &str,
         candidate_texts: &[String],
     ) -> Vec<f32> {
+        self.score_candidates_with_mode(left_context, app_bundle_id, candidate_texts, false)
+    }
+
+    /// Computes zero-meaned conditional log-likelihood bonuses, optionally disabling right-boundary
+    /// punctuation closure when `open_prefix` is true (used for mid-sentence beam guidance).
+    pub fn score_candidates_with_mode(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+        open_prefix: bool,
+    ) -> Vec<f32> {
         if candidate_texts.is_empty() {
             return Vec::new();
         }
@@ -215,8 +258,10 @@ impl SafetensorsReranker {
         for text in candidate_texts {
             let ids = self.vocab.encode(text, false);
             let c_len = text.chars().filter(|c| !c.is_whitespace()).count().max(1);
-            max_char_len = max_char_len.max(c_len);
             let valid = !ids.is_empty() && !ids.contains(&unk);
+            if valid && text.chars().any(|c| ('\u{4E00}'..='\u{9FA5}').contains(&c)) {
+                max_char_len = max_char_len.max(c_len);
+            }
             valid_mask.push(valid);
             char_lens.push(c_len);
             if valid {
@@ -233,12 +278,18 @@ impl SafetensorsReranker {
             return vec![0.0; candidate_texts.len()];
         }
 
-        // Bound sliding context window to the trailing 96 characters for consistent low-latency
-        // prefill; Qwen3 was pretrained without a synthetic `<bos>` token (`bos_token_id = null`).
+        // Bound sliding context window to the trailing 96 characters and always anchor RoPE
+        // position 0 with `"。"` so prefix-conditioned scoring shares the exact same positional
+        // manifold as standalone scoring and `Qwen3-6L` distillation!
         let bounded_ctx: String = if has_left_ctx {
             let chars: Vec<char> = trimmed_ctx.chars().collect();
             let start = chars.len().saturating_sub(96);
-            chars[start..].iter().collect()
+            let slice: String = chars[start..].iter().collect();
+            if slice.starts_with('。') {
+                slice
+            } else {
+                format!("。{slice}")
+            }
         } else {
             "。".to_string()
         };
@@ -261,28 +312,89 @@ impl SafetensorsReranker {
             return vec![0.0; candidate_texts.len()];
         }
 
-        let Ok(joint_lps) = self.mlx_model.score_candidates_joint_lps_with_scales(
+        let eff_closure_weight = if open_prefix {
+            0.0
+        } else {
+            self.closure_weight
+        };
+        let Ok(joint_lps) = self.mlx_model.score_candidates_with_closure(
             &self.kv_cache,
             &encoded,
             &lora_scales,
+            &self.closure_token_ids,
+            eff_closure_weight,
         ) else {
             return vec![0.0; candidate_texts.len()];
         };
 
-        // Calibrated length normalization (`alpha = 0.92`): leaves equal-length homophone pairs
-        // (`权利` vs `权力`, `多大` vs `多达`) 100% invariant while preventing longer
-        // prefix-completion verses (`君不见高堂明镜悲白发` vs `君不见`) from suffering linear BPE
-        // accumulation penalty!
+        let (norm_scores, mean_lp) = Self::normalize_with_bpe_compression_prior(
+            joint_lps,
+            &char_lens,
+            &encoded,
+            &valid_mask,
+            valid_count,
+        );
+
+        let eff_scale = if open_prefix {
+            0.42
+        } else if has_left_ctx {
+            1.18
+        } else {
+            self.weight_scale
+        };
+
+        norm_scores
+            .into_iter()
+            .zip(valid_mask)
+            .map(|(lp, valid)| {
+                if valid {
+                    (lp - mean_lp) * eff_scale
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    fn normalize_with_bpe_compression_prior(
+        joint_lps: Vec<f32>,
+        char_lens: &[usize],
+        encoded: &[Vec<u32>],
+        valid_mask: &[bool],
+        valid_count: usize,
+    ) -> (Vec<f32>, f32) {
+        #[allow(clippy::cast_precision_loss)]
+        let mean_clen: f32 = char_lens
+            .iter()
+            .zip(valid_mask.iter())
+            .filter_map(|(&c, &v)| v.then_some(c as f32))
+            .sum::<f32>()
+            / (valid_count as f32);
+        #[allow(clippy::cast_precision_loss)]
+        let min_tok_per_char: f32 = encoded
+            .iter()
+            .zip(char_lens.iter())
+            .zip(valid_mask.iter())
+            .filter_map(|((ids, &clen), &v)| {
+                (v && clen >= 2).then_some((ids.len() as f32) / (clen as f32))
+            })
+            .fold(1.0_f32, f32::min);
         let norm_scores: Vec<f32> = joint_lps
             .into_iter()
-            .zip(char_lens)
-            .map(|(lp, clen)| {
+            .zip(char_lens.iter())
+            .zip(encoded.iter())
+            .map(|((lp, &clen), ids)| {
                 #[allow(clippy::cast_precision_loss)]
-                let denom = (clen as f32).powf(0.42);
-                lp / denom
+                let rel_denom = ((clen as f32) / mean_clen.max(1.0)).powf(0.42);
+                #[allow(clippy::cast_precision_loss)]
+                let extra_splits = if clen >= 2 {
+                    ((ids.len() as f32) - min_tok_per_char * (clen as f32)).max(0.0)
+                } else {
+                    0.0
+                };
+                (lp - 1.85 * extra_splits) / rel_denom
             })
             .collect();
-
         #[allow(clippy::cast_precision_loss)]
         let mean_lp: f32 = norm_scores
             .iter()
@@ -290,14 +402,7 @@ impl SafetensorsReranker {
             .filter_map(|(&s, &v)| v.then_some(s))
             .sum::<f32>()
             / (valid_count as f32);
-
-        let scale = self.weight_scale;
-
-        norm_scores
-            .into_iter()
-            .zip(valid_mask)
-            .map(|(lp, valid)| if valid { (lp - mean_lp) * scale } else { 0.0 })
-            .collect()
+        (norm_scores, mean_lp)
     }
 
     /// Returns the loaded model configuration.

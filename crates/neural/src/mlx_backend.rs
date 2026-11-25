@@ -906,20 +906,43 @@ impl MlxTransformer {
     /// # Errors
     ///
     /// Returns [`NeuralError::Safetensors`] if an MLX Metal kernel fails during continuation pass.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn score_candidates_joint_lps_with_scales(
         &self,
         cache: &MlxPrefixCache,
         cands: &[Vec<u32>],
         lora_scales: &[f32],
     ) -> Result<Vec<f32>, NeuralError> {
+        self.score_candidates_with_closure(cache, cands, lora_scales, &[], 0.0)
+    }
+
+    /// Computes exact unnormalized joint log-likelihoods plus right-boundary utterance-closure
+    /// log-probability $\beta_{\text{close}} \log \sum_{p \in \mathcal{P}} P(p \mid \text{ctx}, c)$
+    /// in a **single batched `[B_cand, L_max]` Metal forward pass** with zero extra GPU launches!
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if an MLX Metal kernel fails during continuation pass.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::too_many_lines
+    )]
+    pub fn score_candidates_with_closure(
+        &self,
+        cache: &MlxPrefixCache,
+        cands: &[Vec<u32>],
+        lora_scales: &[f32],
+        closure_token_ids: &[u32],
+        closure_weight: f32,
+    ) -> Result<Vec<f32>, NeuralError> {
         if cands.is_empty() || cache.next_token_log_probs.is_empty() {
             return Ok(vec![0.0; cands.len()]);
         }
 
+        let use_closure = !closure_token_ids.is_empty() && closure_weight > 0.0;
         let mut results = vec![0.0_f32; cands.len()];
-        let mut multi_rows: Vec<usize> = Vec::with_capacity(cands.len());
-        let mut max_cont_len = 0usize;
+        let mut active_rows: Vec<usize> = Vec::with_capacity(cands.len());
+        let mut step_len = 0usize;
 
         for (c_idx, cand_ids) in cands.iter().enumerate() {
             if cand_ids.is_empty() {
@@ -927,39 +950,67 @@ impl MlxTransformer {
             }
             let first_idx = (cand_ids[0] as usize).min(cache.next_token_log_probs.len() - 1);
             results[c_idx] = cache.next_token_log_probs[first_idx];
-            if cand_ids.len() > 1 {
-                multi_rows.push(c_idx);
-                max_cont_len = max_cont_len.max(cand_ids.len() - 1);
+            if use_closure {
+                active_rows.push(c_idx);
+                step_len = step_len.max(cand_ids.len());
+            } else if cand_ids.len() > 1 {
+                active_rows.push(c_idx);
+                step_len = step_len.max(cand_ids.len() - 1);
             }
         }
 
-        if multi_rows.is_empty() {
+        if active_rows.is_empty() || step_len == 0 {
             return Ok(results);
         }
 
         let vocab_max = i32::try_from(self.config.vocab_size.saturating_sub(1)).unwrap_or(0);
-        let batch_size = multi_rows.len();
-        let mut input_flat = vec![0_i32; batch_size * max_cont_len];
-        let mut target_flat = vec![0_i32; batch_size * max_cont_len];
+        let gather_width = 1 + if use_closure {
+            closure_token_ids.len()
+        } else {
+            0
+        };
+        let closure_i32: Vec<i32> = if use_closure {
+            closure_token_ids
+                .iter()
+                .map(|&id| i32::try_from(id).unwrap_or(0).clamp(0, vocab_max))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        for (row_idx, &c_idx) in multi_rows.iter().enumerate() {
+        let batch_size = active_rows.len();
+        let mut input_flat = vec![0_i32; batch_size * step_len];
+        let mut gather_flat = vec![0_i32; batch_size * step_len * gather_width];
+
+        for (row_idx, &c_idx) in active_rows.iter().enumerate() {
             let cand_ids = &cands[c_idx];
-            let steps = cand_ids.len() - 1;
-            let row_base = row_idx * max_cont_len;
-            for s in 0..steps {
+            let active_steps = if use_closure {
+                cand_ids.len()
+            } else {
+                cand_ids.len() - 1
+            };
+            let row_base = row_idx * step_len;
+            for s in 0..active_steps {
                 input_flat[row_base + s] =
                     i32::try_from(cand_ids[s]).unwrap_or(0).clamp(0, vocab_max);
-                target_flat[row_base + s] = i32::try_from(cand_ids[s + 1])
-                    .unwrap_or(0)
-                    .clamp(0, vocab_max);
+                let g_base = (row_base + s) * gather_width;
+                if s + 1 < cand_ids.len() {
+                    gather_flat[g_base] = i32::try_from(cand_ids[s + 1])
+                        .unwrap_or(0)
+                        .clamp(0, vocab_max);
+                }
+                for (k, &pid) in closure_i32.iter().enumerate() {
+                    gather_flat[g_base + 1 + k] = pid;
+                }
             }
         }
 
-        let gathered = self.forward_batched_target_lps(
+        let gathered = self.forward_batched_gather_lps(
             &input_flat,
-            &target_flat,
+            &gather_flat,
             batch_size as i32,
-            max_cont_len as i32,
+            step_len as i32,
+            gather_width as i32,
             cache.cached_tokens.len(),
             &cache.keys,
             &cache.values,
@@ -968,12 +1019,27 @@ impl MlxTransformer {
         eval([&gathered]).map_err(mlx_err)?;
 
         let slice = gathered.as_slice::<f32>();
-        for (row_idx, &c_idx) in multi_rows.iter().enumerate() {
-            let steps = cands[c_idx].len() - 1;
-            let row_base = row_idx * max_cont_len;
-            for s in 0..steps {
-                if let Some(&val) = slice.get(row_base + s) {
+        for (row_idx, &c_idx) in active_rows.iter().enumerate() {
+            let m = cands[c_idx].len();
+            let row_base = row_idx * step_len;
+            for s in 0..m.saturating_sub(1) {
+                let g_base = (row_base + s) * gather_width;
+                if let Some(&val) = slice.get(g_base) {
                     results[c_idx] += val;
+                }
+            }
+            if use_closure && m >= 1 {
+                let p_base = (row_base + m - 1) * gather_width + 1;
+                let p_end = p_base + closure_i32.len();
+                if let Some(p_slice) = slice.get(p_base..p_end)
+                    && !p_slice.is_empty()
+                {
+                    let max_lp = p_slice.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    if max_lp.is_finite() {
+                        let sum_exp: f32 = p_slice.iter().map(|&x| (x - max_lp).exp()).sum();
+                        let closure_lp = (max_lp + sum_exp.max(1e-12).ln()).clamp(-9.5, 0.0);
+                        results[c_idx] += closure_weight * closure_lp;
+                    }
                 }
             }
         }
@@ -1222,12 +1288,13 @@ impl MlxTransformer {
         clippy::cast_possible_wrap,
         clippy::too_many_arguments
     )]
-    fn forward_batched_target_lps(
+    fn forward_batched_gather_lps(
         &self,
         input_flat: &[i32],
-        target_flat: &[i32],
+        gather_flat: &[i32],
         batch_size: i32,
         step_len: i32,
+        gather_width: i32,
         pos_offset: usize,
         past_keys: &[Array],
         past_vals: &[Array],
@@ -1262,10 +1329,10 @@ impl MlxTransformer {
             .as_dtype(MlxDtype::Float32)
             .map_err(mlx_err)?;
         let lps = log_softmax(&logits, -1).map_err(mlx_err)?;
-        let target_arr = Array::from_slice(target_flat, &[batch_size, step_len, 1]);
-        lps.take_along_axis(&target_arr, -1)
+        let gather_arr = Array::from_slice(gather_flat, &[batch_size, step_len, gather_width]);
+        lps.take_along_axis(&gather_arr, -1)
             .map_err(mlx_err)?
-            .reshape(&[batch_size * step_len])
+            .reshape(&[batch_size * step_len * gather_width])
             .map_err(mlx_err)
     }
 }

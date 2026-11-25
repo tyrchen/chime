@@ -16,18 +16,18 @@
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.7.4`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **最新发布版本（`v0.8.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.7.4`）
+## 下载与安装（`v0.8.0`）
 
 系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.7.4-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.7.4-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.8.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.8.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
 | **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + Q4 Rank-8 LoRA |
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + Q4 Rank-8 LoRA |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | 安装包与卡带完整性哈希校验值 |
@@ -54,9 +54,10 @@
    - 零体积膨胀的代数模糊音展开（`z/zh`、`c/ch`、`s/sh`、`n/l`、`f/h`、`r/l`、`an/ang`、`en/eng`、`in/ing`、`ian/iang`、`uan/uang`）。
    - 内置四类单步按键噪声恢复：**邻键乱序交换**（`shaungpin -> 双拼`、`nianquuqqianliyanbo -> 念去去，千里烟波`）、**QWERTY 欧氏距离邻键误触**（`shuruga -> 输入法`）、**连击重键剔除**（`mohuyign -> 模糊音`）以及 **跨音节双辅音吞音恢复**（`chunuanhuakai -> 春暖花开`、`bujinchangjiangungunlai -> 不尽长江滚滚来`）。
    - 单音节候选清爽克制（如 `gen -> 1. 跟 2. 根 3. 根据 4. 根本 5. 更`），按 `↓` 键即可展开 `5×5` 网格面板查看后置的 35+ 同音单字兜底。
-2. **免切换中英代码混输与智能标点**：
-   - 中英文与代码标识符同轨解码（`woshiyongmacoshegithub -> 我使用 macOS 和 GitHub`、`bangworeviewzhegepr -> 帮我 review 这个 PR`），自动补齐盘古半角空格、自动纠正专有名词大小写（`ChatGPT`、`Kubernetes`、`PostgreSQL`）并原样保留驼峰标识符（`useEffect`）。
-   - 支持 `⌃.` 快速切换中英标点，智能识别数字小数点（输入 `3.14` 不会误转为 `3。14`）。
+2. **对齐主流输入法习惯的中英切换、智能空格与偏好设置**：
+   - **免切换同轨混输 + 可配置 `Shift` 内联切换**：既支持免切换同轨解码（`woshiyongmacoshegithub -> 我使用 macOS 和 GitHub`、`bangworeviewzhegepr -> 帮我 review 这个 PR`、大写字母开头直接输英文 `Mac -> Mac / MacBook`），也完整对齐搜狗 / 豆包输入法的内部中英切换习惯（默认 **左 / 右 `Shift` 均可切换**，可配置仅左 `Shift`、仅右 `Shift`、`Caps Lock` 或关闭；支持配置拼音输入中按 `Shift`「上屏英文并切换」或「仅上屏英文保持中文」，并在光标旁弹出轻量 `中 / 英` 状态浮窗）。
+   - **中英文与数字前后自动插入空格（默认开启，可一键关闭）**：全覆盖中文↔英文词、中文↔阿拉伯数字（如 `我有 100 个`、`使用 Rust 开发`）四向边界，可在偏好设置或菜单栏一键开启/关闭。
+   - **智能全半角标点与自定义翻页键**：支持 `⌃.` 快速切换中英标点，自动豁免数字小数点（`3.14`）与时间冒号（`12:30`）；支持自定义 `- / =`、`[ / ]`、`, / .` 翻页键，`; / '` 二三候选快选，以及候选栏字号（`14–19 pt`）。
 3. **零拷贝 `CHIMED02` 词库与全篇「一路 `Tab`」诗词续写**：
    - `core.imedict` 内置 `660,000+` 中英词条、教师模型打分的二元/三元语法及 16 字节有序 FNV-1a 续写哈希表，通过 `mmap` 在 `< 0.8 ms` 内完成冷启动映射。
    - 支持唐诗、宋词、古文名篇逐句 `Tab` 续写（如敲 `junbujianhuanghe` 上屏后连按 `Tab` 续写《将进酒》全篇，或续写《水调歌头》《雨霖铃》《滕王阁序》《岳阳楼记》《赤壁赋》），并具备重首句上下文消歧与防复读机制（上文已有「君不见黄河之水天上来，奔流到海不复回。」时再敲 `junbujian`，自动将下一联 **`#1 君不见高堂明镜悲白发`** 置顶）。

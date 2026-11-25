@@ -4,6 +4,9 @@
 pub mod base_builder;
 pub mod builtin;
 pub mod compiled;
+pub(crate) mod generated {
+    include!(concat!(env!("OUT_DIR"), "/generated_lexicon_data.rs"));
+}
 pub mod importers;
 pub mod poetry;
 pub mod user_store;
@@ -75,7 +78,17 @@ impl Lexicon {
         Self::default()
     }
 
-    /// Creates a lexicon preloaded with the built-in seed Mandarin + English corpus.
+    /// Creates a lexicon preloaded with declarative closed-class grammar, canonical English
+    /// proper-casing, and classical couplets (without unit-test-only seed words).
+    #[must_use]
+    pub fn with_core_grammar() -> Self {
+        let mut lex = Self::new();
+        builtin::populate_core_grammar_and_casing(&mut lex);
+        lex
+    }
+
+    /// Creates a lexicon preloaded with core grammar plus minimal unit-test seed words for
+    /// standalone tests running without `core.imedict`.
     #[must_use]
     pub fn with_builtin_seed() -> Self {
         let mut lex = Self::new();
@@ -327,21 +340,25 @@ impl Lexicon {
         self.lookup_exact_with_limit(syllables, limit)
     }
 
-    /// Queries exact `syllables` returning up to `limit` entries per layer.
+    /// Queries exact `syllables` returning up to `limit` deduplicated entries across layers.
     #[must_use]
     pub fn lookup_exact_with_limit(
         &self,
         syllables: &[SyllableId],
         limit: usize,
     ) -> Vec<WordEntry> {
-        let mut out = Vec::new();
+        let mut raw = Vec::new();
         if let Some(overlay) = self.exact_map.get(syllables) {
-            out.extend(overlay.iter().take(limit).cloned());
+            raw.extend(overlay.iter().take(limit).cloned());
         }
         for layer in &self.compiled_layers {
-            layer.lookup_exact_into(syllables, limit, &mut out);
+            layer.lookup_exact_into(syllables, limit, &mut raw);
         }
-        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        let mut out = Vec::with_capacity(raw.len());
+        for entry in raw {
+            Self::upsert_sorted(&mut out, &entry);
+        }
+        out.truncate(limit);
         out
     }
 
@@ -370,16 +387,19 @@ impl Lexicon {
         if query.len() < 3 {
             return Vec::new();
         }
-        let mut out: Vec<WordEntry> = self
+        let mut raw: Vec<WordEntry> = self
             .exact_map
             .iter()
             .filter(|(k, _)| k.len() > query.len() && k.starts_with(query))
             .flat_map(|(_, v)| v.iter().take(2).cloned())
             .collect();
         for layer in &self.compiled_layers {
-            layer.complete_pinyin_prefix_into(query, limit, &mut out);
+            layer.complete_pinyin_prefix_into(query, limit, &mut raw);
         }
-        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        let mut out = Vec::with_capacity(raw.len());
+        for entry in raw {
+            Self::upsert_sorted(&mut out, &entry);
+        }
         out.truncate(limit);
         out
     }
@@ -388,16 +408,19 @@ impl Lexicon {
     /// `根本`).
     #[must_use]
     pub fn complete_2syl_from_single(&self, first_syl: SyllableId, limit: usize) -> Vec<WordEntry> {
-        let mut out: Vec<WordEntry> = self
+        let mut raw: Vec<WordEntry> = self
             .exact_map
             .iter()
             .filter(|(k, _)| k.len() == 2 && k[0] == first_syl)
             .flat_map(|(_, v)| v.iter().filter(|w| w.log_prob >= -4.25).take(2).cloned())
             .collect();
         for layer in &self.compiled_layers {
-            layer.complete_2syl_from_single_into(first_syl, limit, &mut out);
+            layer.complete_2syl_from_single_into(first_syl, limit, &mut raw);
         }
-        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        let mut out = Vec::with_capacity(raw.len());
+        for entry in raw {
+            Self::upsert_sorted(&mut out, &entry);
+        }
         out.truncate(limit);
         out
     }
@@ -405,14 +428,17 @@ impl Lexicon {
     /// Queries both the mutable overlay and all mounted `mmap` layers for an initial skeleton.
     #[must_use]
     pub fn lookup_skeleton(&self, skeleton: &str) -> Vec<WordEntry> {
-        let mut out = Vec::new();
+        let mut raw = Vec::new();
         if let Some(overlay) = self.skeleton_map.get(skeleton) {
-            out.extend(overlay.iter().take(5).cloned());
+            raw.extend(overlay.iter().take(5).cloned());
         }
         for layer in &self.compiled_layers {
-            layer.lookup_skeleton_into(skeleton, 5, &mut out);
+            layer.lookup_skeleton_into(skeleton, 5, &mut raw);
         }
-        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        let mut out = Vec::with_capacity(raw.len());
+        for entry in raw {
+            Self::upsert_sorted(&mut out, &entry);
+        }
         out
     }
 
@@ -430,10 +456,11 @@ impl Lexicon {
         None
     }
 
-    /// Finds top prefix completions for English words of length >= 4 (`chatg` -> `ChatGPT`).
+    /// Finds top prefix completions for English words of length >= 3 (`Mac` -> `MacBook`,
+    /// `chatg` -> `ChatGPT`).
     #[must_use]
     pub fn complete_english_prefix(&self, lower_prefix: &str, limit: usize) -> Vec<WordEntry> {
-        if lower_prefix.len() < 4 {
+        if lower_prefix.len() < 3 {
             return Vec::new();
         }
         let mut out: Vec<WordEntry> = self
@@ -446,8 +473,19 @@ impl Lexicon {
             layer.complete_english_prefix_into(lower_prefix, limit, &mut out);
         }
         out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
-        out.truncate(limit);
-        out
+        let mut deduped = Vec::with_capacity(limit);
+        for item in out {
+            if !deduped
+                .iter()
+                .any(|x: &WordEntry| x.surface == item.surface)
+            {
+                deduped.push(item);
+                if deduped.len() >= limit {
+                    break;
+                }
+            }
+        }
+        deduped
     }
 
     /// Returns the strongest contextual bigram transition bonus across overlay and `mmap` layers.

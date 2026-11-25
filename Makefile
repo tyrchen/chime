@@ -40,7 +40,7 @@ else \
 fi
 endef
 
-.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
+.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval bench bench-dev bench-test swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
 
 build:
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo build --workspace --all-targets
@@ -69,11 +69,19 @@ build-classics-corpus:
 
 build-core-dict: build-models build-classics-corpus
 	@mkdir -p "$(DIST_DIR)"
-	@cat "$(MULTI_LEX_TSV)" "$(CLASSICS_CORE_LEX)" > "$(MERGED_CORE_LEX)"
-	@if [ -n "$(JIEBA_DICT)" ] && [ -f "$(JIEBA_DICT)" ]; then \
-		MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
-	else \
-		MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)"; \
+	@if [ ! -f "$(MULTI_LEX_TSV)" ] || [ tools/calibrate_modern_lexicon.py -nt "$(MULTI_LEX_TSV)" ] || [ crates/lexicon/data/polyphones.yaml -nt "$(MULTI_LEX_TSV)" ]; then \
+		uv run --python 3.12 --no-project --with torch --with transformers --with safetensors --with wordfreq --with pypinyin \
+			python -I tools/calibrate_modern_lexicon.py --out "$(MULTI_LEX_TSV)" --polyphones-yaml crates/lexicon/data/polyphones.yaml; \
+	fi
+	@if [ ! -f "$(CORE_DICT)" ] || [ "$(MULTI_LEX_TSV)" -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/closed_grammar.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/polyphones.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/src/base_builder.rs -nt "$(CORE_DICT)" ]; then \
+		python3 -c 'import pathlib; d = pathlib.Path("$(DIST_DIR)"); m = (d/"multi_lexicon.tsv").read_text("utf-8"); c_lines = []; \
+		[c_lines.append(f"{p[0]}\t{p[1]}\t{(float(p[2]) - 1.25 if len(p[0]) <= 4 else float(p[2])):.4f}") for ln in (d/"classics_core_lexicon.tsv").read_text("utf-8").splitlines() if "\t" in ln for p in [ln.split("\t")] if len(p) >= 3 and len(p[0]) >= 2]; \
+		(d/"merged_core_lexicon.tsv").write_text(m + ("\n" if not m.endswith("\n") else "") + "\n".join(c_lines) + "\n", "utf-8")'; \
+		if [ -n "$(JIEBA_DICT)" ] && [ -f "$(JIEBA_DICT)" ]; then \
+			MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
+		else \
+			MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)"; \
+		fi; \
 	fi
 
 build-icons:
@@ -83,6 +91,14 @@ build-icons:
 
 eval: build-core-dict
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- eval --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)"
+
+bench-dev: build-core-dict
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench benchmarks/dev_suite.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-dev"
+
+bench-test: build-core-dict
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench benchmarks/test_holdout.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-holdout"
+
+bench: bench-dev bench-test
 
 swift-build:
 	@mkdir -p "$(MLX_METAL_OUT_DIR)"

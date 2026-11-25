@@ -525,6 +525,25 @@ impl UserStore {
         self.habits.len()
     }
 
+    /// Clears all learned personal word habits, negative feedback overrides, per-app affinities,
+    /// and user bigrams from both RAM and `SQLite` WAL storage.
+    pub fn clear_all(&mut self) {
+        self.habits.clear();
+        self.custom_words.clear();
+        self.reading_trie = Cedar::new();
+        self.negative_overrides.clear();
+        self.app_affinity.clear();
+        self.user_bigrams.clear();
+        if let Some(conn) = &self.conn {
+            let _ = conn.execute_batch(
+                "DELETE FROM user_habits;
+                 DELETE FROM negative_feedback;
+                 DELETE FROM app_affinity;
+                 DELETE FROM user_bigrams;",
+            );
+        }
+    }
+
     /// Returns whether `app_bundle_id` belongs to a developer / technical host application.
     #[must_use]
     pub fn is_developer_app(app_bundle_id: &str) -> bool {

@@ -16,18 +16,18 @@ It combines a **$< 0.8\text{ ms}$ zero-copy `mmap` dual-track lattice decoder (`
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.7.4`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.8.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.7.4`)
+## Download & Installation (`v0.8.0`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.7.4-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | Installs to `/Library/Input Methods/Chime.app`, registers TIS without logout & opens Input Sources |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.7.4-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.8.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | Installs to `/Library/Input Methods/Chime.app`, registers TIS without logout & opens Input Sources |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.8.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
 | **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` classical entries + `231,593` `Tab` chains + Q4 Rank-8 LoRA |
 | **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + Q4 Rank-8 LoRA |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | Release integrity checksums |
@@ -55,9 +55,10 @@ You can hot-mount downloaded `.imepack.zip` cartridges with **zero restart**:
    - Zero-bloat algebraic fuzzy Pinyin (`z/zh`, `c/ch`, `s/sh`, `n/l`, `f/h`, `r/l`, `an/ang`, `en/eng`, `in/ing`, `ian/iang`, `uan/uang`) evaluated dynamically without dictionary explosion.
    - Four 1-edit motor-slip operators: **adjacent swap** (`shaungpin -> 双拼`, `nianquuqqianliyanbo -> 念去去，千里烟波`), **QWERTY Euclidean neighbor** (`shuruga -> 输入法`), **accidental key-repeat** (`mohuyign -> 模糊音`), and **geminate boundary consonant elision** (`chunuanhuakai -> 春暖花开`, `bujinchangjiangungunlai -> 不尽长江滚滚来`).
    - Clean single-syllable Top-5 curation (`gen -> 1. 跟 2. 根 3. 根据 4. 根本 5. 更`) with `35+` single-character fallbacks accessible via the expandable `5x5` grid (`↓`).
-2. **Modeless Chinese-English Code-Switching**:
-   - Simultaneous Mandarin + English/code identifier decoding (`wo'shi'yong'macos'he'github` -> `我使用 macOS 和 GitHub`, `bang'wo'review'zhe'ge'pr` -> `帮我 review 这个 PR`) with automatic Pangu half-width spacing, camelCase preservation (`useEffect`), and technical prefix completion (`kubern` -> `Kubernetes`).
-   - Smart full-width/half-width punctuation (`⌃.` toggle) with automatic numeric decimal exemption (`3.14` never becomes `3。14`).
+2. **Mainstream IME Ergonomics, Configurable `Shift` Toggle & Auto-Spacing**:
+   - **Modeless Code-Switching + Configurable Inline `Shift` Mode**: Supports both seamless modeless mixed decoding (`woshiyongmacoshegithub` -> `我使用 macOS 和 GitHub`, `bangworeviewzhegepr` -> `帮我 review 这个 PR`, leading-uppercase direct English `Mac` -> `Mac` / `MacBook`, `kubern` -> `Kubernetes`) and Sogou/Doubao-compatible internal Chinese/English toggling (**Left/Right `Shift` by default**, configurable to Left Shift, Right Shift, `Caps Lock`, or off; configurable preedit `Shift` commit behavior and a subtle cursor-side `中 / 英` HUD toast).
+   - **Configurable Symmetric Auto-Spacing (Default ON, User-Toggleable)**: Automatically inserts half-width spaces across Chinese↔English and Chinese↔number boundaries (`我有 100 个`, `使用 Rust 开发`), and can be toggled off anytime in Settings or the menu bar.
+   - **Smart Punctuation & Paging Customization**: `⌃.` full/half-width punctuation toggle with automatic numeric decimal (`3.14`) and time colon (`12:30`) exemptions, customizable `- / =`, `[ / ]`, and `, / .` page keys, optional `; / '` 2nd/3rd candidate quick-select, and adjustable candidate font size (`14–19 pt`).
 3. **Zero-Copy `CHIMED02` Lexicon & Full-Poem `Tab` Chaining**:
    - `660,000+` core Mandarin & English entries + sorted 16-byte FNV-1a continuation table mapped via `mmap` in `< 0.8 ms`.
    - Stateful `Tab` verse chaining across Tang poetry, Song Ci, and classical prose (e.g., typing `junbujianhuanghe` + `Tab` chains through all 24 clauses of Li Bai's *Qiang Jin Jiu* 《将进酒》, Su Shi's 《水调歌头》, Liu Yong's 《雨霖铃》), with context-guided next-verse promotion and verbatim anti-repeat scoring (`...奔流到海不复回。` + `junbujian` -> `#1 君不见高堂明镜悲白发`).

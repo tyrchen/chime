@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""
+First-Principles ML + Corpus Modern Mandarin Lexicon Calibrator (`dist/multi_lexicon.tsv`).
+
+Combines three unit-consistent statistical & neural laws (zero benchmark hardcoding):
+1. Standalone Zipf + Marginal Floor Law for Single Characters:
+     lp(c, r) = max(lp_standalone(c), lp_marginal(c, r) - 0.95)
+   Preserves natural standalone homophone balance (`兵/饼/病`, `吃/赤`) while rescuing bound
+   morphemes starved by word-segmenter tokenization (`睡`, `喝`, `杯`, `伞`, `瓶`, `队`, `堵`, `拧`).
+2. Unit-Consistent 28-Layer `Qwen/Qwen3-0.6B-Base` Teacher Zipf Conversion:
+     Zipf_Qwen3(w) = ln P_Qwen3(w | anchor) / ln(10) + 9.0
+   Scores modern CJK compounds in the exact same base-10 Zipf scale as `wordfreq` without length
+   division sign inversion!
+3. Multi-domain `wordfreq` (334k) + `pypinyin.phrases_dict` (47k MIT polyphones) + `jieba`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import math
+import os
+from collections import defaultdict
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+import wordfreq
+from pypinyin import Style, pinyin as py_annotate
+from pypinyin.phrases_dict import phrases_dict
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+LN10 = math.log(10.0)
+
+
+def is_all_cjk(s: str) -> bool:
+    return bool(s) and all("\u4e00" <= ch <= "\u9fa5" for ch in s)
+
+
+def load_polyphone_tables(yaml_path: Path) -> tuple[dict[str, str], set[str]]:
+    overrides: dict[str, str] = {}
+    het_chars: set[str] = set()
+    if not yaml_path.exists():
+        return overrides, het_chars
+    section = ""
+    cur_surf = ""
+    for raw in yaml_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line in ("character_readings:", "word_overrides:"):
+            section = line[:-1]
+            continue
+        if not section or not line or line.startswith("#"):
+            continue
+        if line.startswith("- surface:"):
+            cur_surf = line.split(":", 1)[1].strip().strip('"')
+            if section == "character_readings" and cur_surf:
+                het_chars.add(cur_surf)
+        elif section == "word_overrides" and line.startswith("pinyin:") and cur_surf:
+            overrides[cur_surf] = line.split(":", 1)[1].strip().strip('"')
+            cur_surf = ""
+    return overrides, het_chars
+
+
+def annotate_word_pinyin(word: str, overrides: dict[str, str]) -> str | None:
+    if word in overrides:
+        return overrides[word]
+    syls = py_annotate(word, style=Style.NORMAL, heteronym=False, errors="ignore")
+    if len(syls) != len(word):
+        return None
+    cleaned = []
+    for item in syls:
+        if not item or not item[0]:
+            return None
+        s = item[0].lower().replace("ü", "v").replace("u:", "v")
+        if not s.isalpha():
+            return None
+        cleaned.append(s)
+    return " ".join(cleaned)
+
+
+def load_jieba_freqs() -> dict[str, int]:
+    home = os.path.expanduser("~")
+    candidates = sorted(glob.glob(f"{home}/.cargo/registry/src/*/jieba-rs-*/src/data/dict.txt"))
+    freqs: dict[str, int] = {}
+    if not candidates:
+        return freqs
+    for line in Path(candidates[-1]).read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            freqs[parts[0]] = int(parts[1])
+    return freqs
+
+
+def score_qwen3_zipf(candidate_words: set[str]) -> tuple[dict[str, float], list[str]]:
+    snaps = sorted(
+        glob.glob(str(Path.home() / ".cache/huggingface/hub/models--Qwen--Qwen3-0.6B-Base/snapshots/*"))
+    )
+    if not snaps:
+        return {}, []
+    snap_dir = snaps[-1]
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"Scoring modern Chinese lexicon Zipf priors with Qwen3-0.6B-Base on {device}...", flush=True)
+    tok = AutoTokenizer.from_pretrained(snap_dir)
+    model = AutoModelForCausalLM.from_pretrained(
+        snap_dir,
+        dtype=torch.float16 if device == "mps" else torch.float32,
+    ).to(device)
+    model.eval()
+
+    bpe_cjk_words: list[str] = []
+    single_tok_map: dict[str, int] = {}
+    for tid in range(tok.vocab_size):
+        piece = tok.decode([tid])
+        if 1 <= len(piece) <= 6 and is_all_cjk(piece):
+            bpe_cjk_words.append(piece)
+            single_tok_map[piece] = tid
+
+    prompts = ["。", "，", "今天", "我们", "可以", "这个", "在", "一个"]
+    prompt_probs = []
+    with torch.no_grad():
+        for p in prompts:
+            ids = torch.tensor([tok.encode(p, add_special_tokens=False)], dtype=torch.long, device=device)
+            logits = model(ids).logits[0, -1].float()
+            prompt_probs.append(F.softmax(logits, dim=-1).cpu())
+    # Mixture probability across 8 discourse anchors: P_mix(t) = (1/8) sum_k P(t | prompt_k)
+    mix_prob = torch.stack(prompt_probs, dim=0).mean(dim=0).clamp_min(1e-12)
+    mix_log_prob = mix_prob.log()
+
+    qwen_zipf: dict[str, float] = {}
+    for w, tid in single_tok_map.items():
+        # Exact base-10 Zipf scale (`log10 P(w) + 9.0`)!
+        qwen_zipf[w] = float(mix_log_prob[tid].item()) / LN10 + 9.0
+
+    anchor_id = tok.encode("。", add_special_tokens=False)[0]
+    by_tok_len: dict[int, list[tuple[str, list[int]]]] = defaultdict(list)
+    for w in candidate_words:
+        if w in qwen_zipf or not (2 <= len(w) <= 5) or not is_all_cjk(w):
+            continue
+        tids = tok.encode(w, add_special_tokens=False)
+        if 2 <= len(tids) <= 3:
+            by_tok_len[len(tids)].append((w, tids))
+
+    with torch.no_grad():
+        for k_len, items in by_tok_len.items():
+            items = items[:18000]
+            bs = 512
+            for start in range(0, len(items), bs):
+                chunk = items[start : start + bs]
+                mat = torch.tensor(
+                    [[anchor_id] + tids for _, tids in chunk],
+                    dtype=torch.long,
+                    device=device,
+                )
+                logits = model(mat[:, :-1]).logits.float()
+                lps = F.log_softmax(logits, dim=-1)
+                for row_i, (w, tids) in enumerate(chunk):
+                    joint_ln_p = float(mix_log_prob[tids[0]].item())
+                    for step in range(1, k_len):
+                        joint_ln_p += float(lps[row_i, step, tids[step]].item())
+                    # Multi-token joint P(t1, t2) includes internal character transitions; add +0.55
+                    # Zipf calibration offset to align multi-token BPE split with single-token Zipf.
+                    qwen_zipf[w] = joint_ln_p / LN10 + 9.0 + 0.55 * (k_len - 1)
+
+    del model
+    if device == "mps":
+        torch.mps.empty_cache()
+    return qwen_zipf, bpe_cjk_words
+
+
+def zipf_to_word_lp(z: float) -> float:
+    return max(-5.75, min(-2.15, -5.68 + (z - 2.65) * 0.85))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--polyphones-yaml",
+        default="crates/lexicon/data/polyphones.yaml",
+    )
+    args = parser.parse_args()
+
+    overrides, het_chars = load_polyphone_tables(Path(args.polyphones_yaml))
+    wf_dict = wordfreq.get_frequency_dict("zh")
+    jieba_freqs = load_jieba_freqs()
+
+    extra_open_surfaces: set[str] = set()
+    tech_tsv = Path("dist/tech_pack_lexicon.tsv")
+    if tech_tsv.exists():
+        for ln in tech_tsv.read_text(encoding="utf-8").splitlines():
+            w = ln.split("\t", 1)[0].strip()
+            if 2 <= len(w) <= 5 and is_all_cjk(w):
+                extra_open_surfaces.add(w)
+    for w, freq in jieba_freqs.items():
+        if 2 <= len(w) <= 4 and freq >= 15 and is_all_cjk(w):
+            extra_open_surfaces.add(w)
+    for w, prob in wf_dict.items():
+        if 2 <= len(w) <= 5 and prob >= 2e-7 and is_all_cjk(w):
+            extra_open_surfaces.add(w)
+
+    qwen_zipf, bpe_cjk_words = score_qwen3_zipf(extra_open_surfaces)
+
+    char_marginal_prob: dict[tuple[str, str], float] = defaultdict(float)
+    char_standalone_lp: dict[tuple[str, str], float] = {}
+    lex_entries: dict[tuple[str, str], float] = {}
+
+    for word, prob in wf_dict.items():
+        clen = len(word)
+        if not (1 <= clen <= 8) or not is_all_cjk(word) or prob <= 0.0:
+            continue
+        py = annotate_word_pinyin(word, overrides)
+        if not py:
+            continue
+        syls = py.split()
+        if len(syls) == clen:
+            for ch, syl in zip(word, syls):
+                char_marginal_prob[(ch, syl)] += prob
+
+        zipf_wf = math.log10(prob) + 9.0
+        if clen == 1:
+            if zipf_wf >= 2.25:
+                char_standalone_lp[(word, py)] = max(
+                    -6.40, min(-2.05, -6.30 + (zipf_wf - 2.25) * 0.82)
+                )
+        else:
+            if zipf_wf < 2.65:
+                continue
+            if word in qwen_zipf:
+                # Probability-domain / Zipf-domain weighted geometric mean (65% wordfreq, 35% Qwen3)
+                eff_z = 0.65 * zipf_wf + 0.35 * qwen_zipf[word]
+            else:
+                eff_z = zipf_wf
+            key = (word, py)
+            lex_entries[key] = max(lex_entries.get(key, -99.0), zipf_to_word_lp(eff_z))
+
+    # Single-character priors: standalone `wordfreq` Zipf with marginal `- 0.95` starvation floor!
+    total_char_mass = sum(char_marginal_prob.values()) or 1.0
+    all_char_keys = set(char_standalone_lp.keys()) | set(char_marginal_prob.keys())
+    for key in all_char_keys:
+        ch, _ = key
+        # Multi-reading characters declared in `polyphones.yaml` (`得`, `地`, `的`, `了`, `着`, `长`,
+        # `行`, `重`, `还`) already carry reading-specific priors; never overwrite them with
+        # reading-merged `wordfreq[ch]`!
+        if ch in het_chars:
+            continue
+        lp_stand = char_standalone_lp.get(key, -99.0)
+        mass = char_marginal_prob.get(key, 0.0) / total_char_mass
+        lp_marg_floor = -99.0
+        if mass > 1e-8:
+            m_zipf = math.log10(mass) + 9.0
+            if m_zipf >= 2.60:
+                lp_marg_floor = max(-6.40, min(-3.05, -6.30 + (m_zipf - 2.60) * 0.82)) - 0.95
+        lp_q_floor = -99.0
+        if ch in qwen_zipf and qwen_zipf[ch] >= 3.20:
+            lp_q_floor = max(-6.20, min(-3.20, -6.30 + (qwen_zipf[ch] - 2.40) * 0.80)) - 0.65
+        best_lp = max(lp_stand, lp_marg_floor, lp_q_floor)
+        if best_lp > -6.45:
+            lex_entries[key] = max(lex_entries.get(key, -99.0), best_lp)
+
+    # Multi-character modern compounds from Qwen3 BPE & open tech/general corpora missing in wordfreq
+    for word in set(bpe_cjk_words) | extra_open_surfaces:
+        clen = len(word)
+        if not (2 <= clen <= 6) or not is_all_cjk(word) or word not in qwen_zipf:
+            continue
+        py = annotate_word_pinyin(word, overrides)
+        if not py or len(py.split()) != clen:
+            continue
+        key = (word, py)
+        if key in lex_entries:
+            # Allow high-confidence Qwen3 modern compounds (`简洁`, `一致`, `做起来`, `充电宝`) to
+            # rescue web-scraped Zipf under-counts up to `zipf_to_word_lp(qwen_zipf - 0.20)`!
+            rescued = zipf_to_word_lp(qwen_zipf[word] - 0.20)
+            if rescued > lex_entries[key]:
+                lex_entries[key] = 0.45 * lex_entries[key] + 0.55 * rescued
+            continue
+        qz = qwen_zipf[word]
+        if qz < 3.15:
+            continue
+        lex_entries[key] = zipf_to_word_lp(qz - 0.25)
+
+    # Curated polyphone compounds (`pypinyin.phrases_dict`)
+    for phrase in phrases_dict:
+        clen = len(phrase)
+        if not (2 <= clen <= 8) or not is_all_cjk(phrase):
+            continue
+        py = annotate_word_pinyin(phrase, overrides)
+        if not py or len(py.split()) != clen:
+            continue
+        key = (phrase, py)
+        if key in lex_entries:
+            continue
+        if phrase in qwen_zipf and qwen_zipf[phrase] >= 3.10:
+            lp = zipf_to_word_lp(qwen_zipf[phrase] - 0.30)
+        elif jieba_freqs.get(phrase, 0) >= 30:
+            lp = -4.45
+        else:
+            lp = -5.10
+        lex_entries[key] = max(lex_entries.get(key, -99.0), lp)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [f"{w}\t{py}\t{lp:.4f}" for (w, py), lp in sorted(lex_entries.items())]
+    out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    print(f"Calibrated {len(rows)} unit-consistent Zipf + Qwen3 Mandarin entries -> {out_path}")
+
+
+if __name__ == "__main__":
+    main()

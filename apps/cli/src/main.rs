@@ -207,6 +207,32 @@ enum Commands {
         #[arg(long)]
         neural: Option<PathBuf>,
     },
+    /// Run a large-scale TSV benchmark (`category\tscheme\tapp\tleft_ctx\tkeys\texpected`) with a
+    /// warm persistent lexicon + MLX Metal SLM and report `Acc@1`, `Hit@3`, `Hit@5`, `MRR`, and
+    /// per-category error diagnostics.
+    Bench {
+        /// Input benchmark TSV file.
+        tsv: PathBuf,
+        /// Optional compiled `core.imedict` to mount.
+        #[arg(long)]
+        dict: Option<PathBuf>,
+        /// Optional `.imepack` cartridge directories to mount.
+        #[arg(long)]
+        pack: Vec<PathBuf>,
+        /// Optional neural reranker directory (`dist/base_neural`).
+        #[arg(long)]
+        neural: Option<PathBuf>,
+        /// Optional path to write detailed failure rows TSV.
+        #[arg(long)]
+        failures_out: Option<PathBuf>,
+        /// Optional JSONL ledger path (`benchmarks/history.jsonl`) to append continuous tracking
+        /// scores.
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Optional run tag recorded in `--record` JSONL (e.g. `v0.8.0-dev` or `v0.8.0-holdout`).
+        #[arg(long, default_value = "manual")]
+        tag: String,
+    },
 }
 
 #[derive(Debug)]
@@ -225,6 +251,17 @@ impl NeuralReranker for SyncNeuralAdapter {
         self.inner
             .score_sync_with_app(left_context, app_bundle_id, &texts)
     }
+
+    fn score_open_prefix_batch(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        self.inner
+            .score_sync_mode_with_timeout(left_context, app_bundle_id, &texts, true, None)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -242,7 +279,11 @@ fn main() -> Result<()> {
             pack,
             neural,
         } => {
-            let mut lex = Lexicon::with_builtin_seed();
+            let mut lex = if dict.is_some() {
+                Lexicon::with_core_grammar()
+            } else {
+                Lexicon::with_builtin_seed()
+            };
             if let Some(d_path) = dict {
                 lex.mount_compiled_mmap(&d_path)?;
             }
@@ -261,6 +302,7 @@ fn main() -> Result<()> {
                 scheme: scheme.into(),
                 fuzzy: chime_phonetics::FuzzyConfig::default(),
                 pangu_spacing: true,
+                uppercase_triggers_english: true,
                 now_epoch_secs: 1_000,
             };
             let t0 = Instant::now();
@@ -501,6 +543,26 @@ fn main() -> Result<()> {
         }
         Commands::Eval { dict, pack, neural } => {
             run_golden_eval(&mut stdout, dict.as_deref(), &pack, neural.as_deref())?;
+        }
+        Commands::Bench {
+            tsv,
+            dict,
+            pack,
+            neural,
+            failures_out,
+            record,
+            tag,
+        } => {
+            run_large_bench(
+                &mut stdout,
+                &tsv,
+                dict.as_deref(),
+                &pack,
+                neural.as_deref(),
+                failures_out.as_deref(),
+                record.as_deref(),
+                &tag,
+            )?;
         }
     }
     Ok(())
@@ -901,10 +963,106 @@ fn run_golden_eval(
             keys: "junbujian",
             expected_top1: "君不见高堂明镜悲白发",
         },
+        Case {
+            category: "syntax-copula-bing",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "woshiyigebing",
+            expected_top1: "我是一个兵",
+        },
+        Case {
+            category: "syntax-bingren",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "woshiyigebingren",
+            expected_top1: "我是一个病人",
+        },
+        Case {
+            category: "syntax-programmer",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "woshiyigechengxuyuan",
+            expected_top1: "我是一个程序员",
+        },
+        Case {
+            category: "spoken-nishishui",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "nishishui",
+            expected_top1: "你是谁",
+        },
+        Case {
+            category: "pronoun-default-ta",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "tashiyigehaoren",
+            expected_top1: "他是一个好人",
+        },
+        Case {
+            category: "pronoun-fem-ta",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "我妹妹很温柔，",
+            app: "md.obsidian",
+            keys: "tashiyigehaoren",
+            expected_top1: "她是一个好人",
+        },
+        Case {
+            category: "exact-over-fuzzy",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "woxiangchifan",
+            expected_top1: "我想吃饭",
+        },
+        Case {
+            category: "closure-modal-ba",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "womenyiqiquba",
+            expected_top1: "我们一起去吧",
+        },
+        Case {
+            category: "semantic-chi-bing",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "chilelianggebing",
+            expected_top1: "吃了两个饼",
+        },
+        Case {
+            category: "semantic-mai-bing",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "maileyigebing",
+            expected_top1: "买了一个饼",
+        },
+        Case {
+            category: "semantic-gei-bing",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "geiwoyigebing",
+            expected_top1: "给我一个饼",
+        },
+        Case {
+            category: "spoken-kaixin",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.tencent.xinWeChat",
+            keys: "jintianzhenkaixin",
+            expected_top1: "今天真开心",
+        },
     ];
 
     let mut base_lex = if let Some(dp) = dict_path {
-        let mut lex = Lexicon::with_builtin_seed();
+        let mut lex = Lexicon::with_core_grammar();
         lex.mount_compiled_mmap(dp)?;
         lex
     } else {
@@ -946,6 +1104,7 @@ fn run_golden_eval(
             scheme: c.scheme,
             fuzzy: chime_phonetics::FuzzyConfig::default(),
             pangu_spacing: true,
+            uppercase_triggers_english: true,
             now_epoch_secs: 1_000,
         };
         let t0 = Instant::now();
@@ -1159,5 +1318,251 @@ fn run_golden_eval(
         passed == total_cases,
         "benchmark suite failed: only {passed}/{total_cases} Top-1 cases passed"
     );
+    Ok(())
+}
+
+#[derive(Default)]
+struct CatStats {
+    total: usize,
+    hit1: usize,
+    hit3: usize,
+    hit5: usize,
+    mrr_sum: f64,
+    latencies_us: Vec<u64>,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
+)]
+fn run_large_bench(
+    out: &mut impl Write,
+    tsv_path: &Path,
+    dict_path: Option<&Path>,
+    pack_dirs: &[PathBuf],
+    neural_path: Option<&Path>,
+    failures_out: Option<&Path>,
+    record_path: Option<&Path>,
+    tag: &str,
+) -> Result<()> {
+    let raw_tsv = fs::read_to_string(tsv_path)
+        .with_context(|| format!("failed to read benchmark TSV {}", tsv_path.display()))?;
+
+    let mut base_lex = if let Some(dp) = dict_path {
+        let mut lex = Lexicon::with_core_grammar();
+        lex.mount_compiled_mmap(dp)?;
+        lex
+    } else {
+        build_comprehensive_lexicon("", None, 25)
+    };
+    let lora_specs = mount_cli_packs(pack_dirs, &mut base_lex)?;
+
+    let decoder = if let Some(np) = neural_path
+        && np.join("model.safetensors").exists()
+    {
+        let slm = AsyncRerankHandle::spawn_from_dir_with_loras(np, lora_specs)?;
+        LatticeDecoder::new().with_reranker(Box::new(SyncNeuralAdapter { inner: slm }))
+    } else {
+        LatticeDecoder::new()
+    };
+    let user_store = chime_lexicon::UserStore::new();
+
+    let mut cat_order: Vec<String> = Vec::new();
+    let mut cat_map: std::collections::HashMap<String, CatStats> = std::collections::HashMap::new();
+    let mut all_latencies: Vec<u64> = Vec::new();
+    let mut total = 0usize;
+    let mut hit1 = 0usize;
+    let mut hit3 = 0usize;
+    let mut hit5 = 0usize;
+    let mut mrr_sum = 0.0_f64;
+    let mut failure_lines =
+        String::from("category\tscheme\tleft_ctx\tkeys\texpected\tfound_rank\ttop5_candidates\n");
+
+    let wall_t0 = Instant::now();
+    for (line_no, raw_line) in raw_tsv.lines().enumerate() {
+        let line = raw_line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        anyhow::ensure!(
+            cols.len() >= 6,
+            "invalid benchmark row at line {} (expected 6 tab-separated columns): {line}",
+            line_no + 1
+        );
+        let category = cols[0].trim();
+        let scheme = match cols[1].trim() {
+            "xiaohe" => ShuangpinScheme::Xiaohe,
+            "ziranma" => ShuangpinScheme::Ziranma,
+            "microsoft" => ShuangpinScheme::Microsoft,
+            _ => ShuangpinScheme::Full,
+        };
+        let app = cols[2].trim();
+        let left_ctx = cols[3].trim();
+        let keys = cols[4].trim();
+        let expected_alts: Vec<&str> = cols[5].split('|').map(str::trim).collect();
+
+        let ctx = DecodeContext {
+            left_context: left_ctx,
+            app_bundle_id: app,
+            scheme,
+            fuzzy: chime_phonetics::FuzzyConfig::default(),
+            pangu_spacing: true,
+            uppercase_triggers_english: true,
+            now_epoch_secs: 1_000,
+        };
+
+        let t0 = Instant::now();
+        let cands = decoder.decode(keys, &base_lex, &user_store, &ctx);
+        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Evaluate rank among full-span candidates (`consumed_bytes == keys.len()`) so partial
+        // single-character grid fallbacks don't skew sentence rank.
+        let full_cands: Vec<&Candidate> = cands
+            .iter()
+            .filter(|c| c.consumed_bytes == keys.len())
+            .collect();
+        let eval_pool: Vec<&str> = if full_cands.is_empty() {
+            cands.iter().map(|c| c.text.as_str()).collect()
+        } else {
+            full_cands.iter().map(|c| c.text.as_str()).collect()
+        };
+
+        let found_pos = eval_pool
+            .iter()
+            .position(|cand| expected_alts.contains(cand));
+        let rr = found_pos.map_or(0.0, |idx| 1.0 / ((idx + 1) as f64));
+        let is_h1 = found_pos == Some(0);
+        let is_h3 = found_pos.is_some_and(|idx| idx < 3);
+        let is_h5 = found_pos.is_some_and(|idx| idx < 5);
+
+        total += 1;
+        hit1 += usize::from(is_h1);
+        hit3 += usize::from(is_h3);
+        hit5 += usize::from(is_h5);
+        mrr_sum += rr;
+        all_latencies.push(us);
+
+        if !cat_map.contains_key(category) {
+            cat_order.push(category.to_string());
+        }
+        let st = cat_map.entry(category.to_string()).or_default();
+        st.total += 1;
+        st.hit1 += usize::from(is_h1);
+        st.hit3 += usize::from(is_h3);
+        st.hit5 += usize::from(is_h5);
+        st.mrr_sum += rr;
+        st.latencies_us.push(us);
+
+        if !is_h1 {
+            let top5_str = eval_pool
+                .iter()
+                .take(5)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" / ");
+            let rank_str = found_pos.map_or_else(|| "MISS".to_string(), |i| (i + 1).to_string());
+            let _ = std::fmt::Write::write_fmt(
+                &mut failure_lines,
+                format_args!(
+                    "{category}\t{}\t{left_ctx}\t{keys}\t{}\t{rank_str}\t{top5_str}\n",
+                    cols[1].trim(),
+                    cols[5].trim()
+                ),
+            );
+        }
+    }
+    let wall_ms = wall_t0.elapsed().as_millis();
+
+    if let Some(f_path) = failures_out {
+        if let Some(parent) = f_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(f_path, &failure_lines)?;
+    }
+
+    writeln!(
+        out,
+        "\n==================== Chime Large-Scale Linguistic Benchmark ({total} cases in \
+         {wall_ms} ms) ===================="
+    )?;
+    writeln!(
+        out,
+        "{:<28} {:>6} {:>9} {:>9} {:>9} {:>8} {:>9}",
+        "Category", "Cases", "Acc@1", "Hit@3", "Hit@5", "MRR", "p50(us)"
+    )?;
+    writeln!(out, "{}", "-".repeat(86))?;
+    for cat in &cat_order {
+        if let Some(st) = cat_map.get_mut(cat) {
+            st.latencies_us.sort_unstable();
+            let c_p50 = st
+                .latencies_us
+                .get(st.latencies_us.len() / 2)
+                .copied()
+                .unwrap_or(0);
+            let n_f = (st.total.max(1)) as f64;
+            writeln!(
+                out,
+                "{:<28} {:>6} {:>8.2}% {:>8.2}% {:>8.2}% {:>8.4} {:>9}",
+                cat,
+                st.total,
+                100.0 * (st.hit1 as f64) / n_f,
+                100.0 * (st.hit3 as f64) / n_f,
+                100.0 * (st.hit5 as f64) / n_f,
+                st.mrr_sum / n_f,
+                c_p50
+            )?;
+        }
+    }
+    writeln!(out, "{}", "-".repeat(86))?;
+    all_latencies.sort_unstable();
+    let n_all = (total.max(1)) as f64;
+    let p50 = all_latencies.get(total / 2).copied().unwrap_or(0);
+    let p95 = all_latencies.get((total * 95) / 100).copied().unwrap_or(0);
+    let p99 = all_latencies.get((total * 99) / 100).copied().unwrap_or(0);
+    writeln!(
+        out,
+        "{:<28} {:>6} {:>8.2}% {:>8.2}% {:>8.2}% {:>8.4} {:>9}",
+        "TOTAL / OVERALL",
+        total,
+        100.0 * (hit1 as f64) / n_all,
+        100.0 * (hit3 as f64) / n_all,
+        100.0 * (hit5 as f64) / n_all,
+        mrr_sum / n_all,
+        p50
+    )?;
+    writeln!(
+        out,
+        "Overall Hits: Top-1={hit1}/{total}, Top-3={hit3}/{total}, Top-5={hit5}/{total} | Latency \
+         p50={p50} us, p95={p95} us, p99={p99} us"
+    )?;
+    if let Some(rec_file) = record_path {
+        if let Some(parent) = rec_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let suite_name = tsv_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("bench.tsv");
+        let acc1 = (10000.0 * (hit1 as f64) / n_all).round() / 100.0;
+        let h3 = (10000.0 * (hit3 as f64) / n_all).round() / 100.0;
+        let h5 = (10000.0 * (hit5 as f64) / n_all).round() / 100.0;
+        let mrr_val = (10000.0 * mrr_sum / n_all).round() / 10000.0;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(rec_file)?;
+        writeln!(
+            f,
+            "{{\"timestamp\":{ts},\"version\":{:?},\"tag\":{tag:?},\"suite\":{suite_name:?},\"\
+             cases\":{total},\"acc_at_1\":{acc1:.2},\"hit_at_3\":{h3:.2},\"hit_at_5\":{h5:.2},\"\
+             mrr\":{mrr_val:.4},\"p50_us\":{p50},\"p95_us\":{p95},\"p99_us\":{p99}}}",
+            env!("CARGO_PKG_VERSION")
+        )?;
+    }
     Ok(())
 }

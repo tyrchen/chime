@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Native macOS 15 SwiftUI Preferences Window controller for Chime IME.
+/// Native macOS SwiftUI 4-Tab Preferences Window controller for Chime IME (aligned with Sogou &
+/// Doubao usability conventions).
 @MainActor
 public final class ChimeSettingsWindowController {
     public static let shared = ChimeSettingsWindowController()
@@ -20,7 +21,7 @@ public final class ChimeSettingsWindowController {
 
         let hosting = NSHostingController(rootView: ChimeSettingsView())
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -49,43 +50,114 @@ public final class ChimeSettingsWindowController {
 }
 
 struct ChimeSettingsView: View {
-    @State private var config: ChimeConfigDTO = ChimeEngineBridge.shared.getConfig() ?? ChimeConfigDTO(
-        scheme: "full",
-        fuzzy: ChimeFuzzyDTO(
-            z_zh: true, c_ch: true, s_sh: true, n_l: false, f_h: false, r_l: false,
-            an_ang: true, en_eng: true, in_ing: true, ian_iang: false, uan_uang: false,
-            fuzzy_penalty: 0.35
-        ),
-        pangu_spacing: true,
-        chinese_punctuation: true,
-        record_training_samples: false,
-        anti_jitter_ms: 60,
-        page_size: 5,
-        candidate_layout: "horizontal"
-    )
+    @State private var config: ChimeConfigDTO = ChimeEngineBridge.shared.getConfig() ?? .default
     @State private var status: ChimeStatusDTO? = ChimeEngineBridge.shared.getStatus()
+    @State private var confirmClearHabits = false
 
     var body: some View {
+        TabView {
+            generalAndShortcutsTab
+                .tabItem {
+                    Label("常规与按键", systemImage: "keyboard")
+                }
+
+            typographyAndAppearanceTab
+                .tabItem {
+                    Label("排版与外观", systemImage: "textformat.size")
+                }
+
+            fuzzyPinyinTab
+                .tabItem {
+                    Label("模糊音", systemImage: "waveform")
+                }
+
+            lexiconAndModelTab
+                .tabItem {
+                    Label("词库与 AI", systemImage: "cpu")
+                }
+        }
+        .frame(minWidth: 550, minHeight: 500)
+        .onChange(of: config) { _, newValue in
+            ChimeEngineBridge.shared.setConfig(newValue)
+            status = ChimeEngineBridge.shared.getStatus()
+        }
+        .alert("确认清空已学习的个人习惯词频？", isPresented: $confirmClearHabits) {
+            Button("清空", role: .destructive) {
+                ChimeEngineBridge.shared.clearUserHabits()
+                status = ChimeEngineBridge.shared.getStatus()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这将清除本地 SQLite 中记录的个人选词偏好与退格纠偏记录，静态核心词库与扩展模型包不受影响。")
+        }
+    }
+
+    private var generalAndShortcutsTab: some View {
         Form {
-            Section("基础输入方案") {
+            Section("输入方案") {
                 Picker("拼音方案", selection: $config.scheme) {
-                    Text("全拼（支持超级简拼）").tag("full")
+                    Text("全拼（支持超级简拼与自动纠错）").tag("full")
                     Text("小鹤双拼").tag("xiaohe")
                     Text("自然码双拼").tag("ziranma")
                     Text("微软双拼").tag("microsoft")
                 }
-                Picker("候选栏布局", selection: $config.candidate_layout) {
-                    Text("横排单行").tag("horizontal")
-                    Text("竖排列表").tag("vertical")
-                }
-                Stepper("每页候选个数：\(config.page_size)", value: $config.page_size, in: 3...9)
-                Toggle("中英文与数字边界自动添加空格", isOn: $config.pangu_spacing)
-                Toggle("中文全角智能标点（快捷键 Ctrl+. 或候选栏点击切换）", isOn: $config.chinese_punctuation)
             }
 
-            Section("模糊音（零词库体积膨胀）") {
-                HStack {
-                    Button("一键开启全部常用模糊音") {
+            Section("中英文切换习惯（对齐搜狗 / 豆包输入法）") {
+                Picker("中英切换快捷键", selection: $config.english_toggle_key) {
+                    Text("Shift（左 / 右 Shift 均可，默认推荐）").tag("both_shift")
+                    Text("仅左 Shift").tag("left_shift")
+                    Text("仅右 Shift").tag("right_shift")
+                    Text("Caps Lock 大写锁定键").tag("caps_lock")
+                    Text("关闭内部快捷键（仅使用系统切换键）").tag("none")
+                }
+                Picker("正在输入拼音时按 Shift", selection: $config.shift_commit_mode) {
+                    Text("上屏已输入的英文字母，并切换至英文模式").tag("commit_and_toggle")
+                    Text("仅上屏英文字母，保持中文输入状态").tag("commit_keep_chinese")
+                }
+                Toggle("中文模式下大写字母开头直接输入英文（如 Hello、MacBook）", isOn: $config.uppercase_triggers_english)
+                Toggle("切换中英文或全半角标点时在光标旁显示状态浮窗（中 / 英）", isOn: $config.show_status_toast)
+            }
+
+            Section("翻页与快速选词热键") {
+                Toggle("使用减号 / 等号（- / =）翻页", isOn: $config.minus_equal_paging)
+                Toggle("使用左 / 右方括号（[ / ]）翻页", isOn: $config.bracket_paging)
+                Toggle("使用逗号 / 句号（, / .）翻页（多页候选时生效）", isOn: $config.comma_period_paging)
+                Toggle("使用分号 / 单引号（; / '）快速选择第 2 / 第 3 候选词", isOn: $config.semicolon_apostrophe_select)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var typographyAndAppearanceTab: some View {
+        Form {
+            Section("智能排版与标点") {
+                Toggle("中英文与数字前后自动插入半角空格（如：我有 100 个、使用 Rust 开发）", isOn: $config.pangu_spacing)
+                Toggle("中文状态下使用全角标点（自动豁免 3.14 小数点与 12:30 时间冒号，Ctrl+. 快速切换）", isOn: $config.chinese_punctuation)
+            }
+
+            Section("候选栏外观") {
+                Picker("候选栏排列方向", selection: $config.candidate_layout) {
+                    Text("横排单行（按下键 ↓ 可展开 5×5 面板）").tag("horizontal")
+                    Text("竖排列表").tag("vertical")
+                }
+                Stepper("每页候选词数量：\(config.page_size) 个", value: $config.page_size, in: 3...9)
+                Picker("候选词字体大小", selection: $config.candidate_font_size) {
+                    Text("紧凑 (14 pt)").tag(14)
+                    Text("标准 (15 pt，默认)").tag(15)
+                    Text("舒适大号 (17 pt)").tag(17)
+                    Text("特大字号 (19 pt)").tag(19)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var fuzzyPinyinTab: some View {
+        Form {
+            Section("快捷预设") {
+                HStack(spacing: 12) {
+                    Button("开启全部常用模糊音") {
                         config.fuzzy.z_zh = true
                         config.fuzzy.c_ch = true
                         config.fuzzy.s_sh = true
@@ -95,49 +167,72 @@ struct ChimeSettingsView: View {
                         config.fuzzy.ian_iang = true
                         config.fuzzy.uan_uang = true
                     }
+                    Button("全部关闭（严格标准音）") {
+                        config.fuzzy.z_zh = false
+                        config.fuzzy.c_ch = false
+                        config.fuzzy.s_sh = false
+                        config.fuzzy.n_l = false
+                        config.fuzzy.f_h = false
+                        config.fuzzy.r_l = false
+                        config.fuzzy.an_ang = false
+                        config.fuzzy.en_eng = false
+                        config.fuzzy.in_ing = false
+                        config.fuzzy.ian_iang = false
+                        config.fuzzy.uan_uang = false
+                    }
                     Spacer()
                 }
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+            }
+
+            Section("声母与韵母模糊对（零词库膨胀实时代数展开）") {
+                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
                     GridRow {
-                        Toggle("z ↔ zh", isOn: $config.fuzzy.z_zh)
-                        Toggle("c ↔ ch", isOn: $config.fuzzy.c_ch)
-                        Toggle("s ↔ sh", isOn: $config.fuzzy.s_sh)
+                        Toggle("z ↔ zh（平翘舌）", isOn: $config.fuzzy.z_zh)
+                        Toggle("c ↔ ch（平翘舌）", isOn: $config.fuzzy.c_ch)
+                        Toggle("s ↔ sh（平翘舌）", isOn: $config.fuzzy.s_sh)
                     }
                     GridRow {
-                        Toggle("an ↔ ang", isOn: $config.fuzzy.an_ang)
-                        Toggle("en ↔ eng", isOn: $config.fuzzy.en_eng)
-                        Toggle("in ↔ ing", isOn: $config.fuzzy.in_ing)
+                        Toggle("an ↔ ang（前后鼻音）", isOn: $config.fuzzy.an_ang)
+                        Toggle("en ↔ eng（前后鼻音）", isOn: $config.fuzzy.en_eng)
+                        Toggle("in ↔ ing（前后鼻音）", isOn: $config.fuzzy.in_ing)
                     }
                     GridRow {
-                        Toggle("n ↔ l", isOn: $config.fuzzy.n_l)
-                        Toggle("f ↔ h", isOn: $config.fuzzy.f_h)
                         Toggle("ian ↔ iang", isOn: $config.fuzzy.ian_iang)
+                        Toggle("uan ↔ uang", isOn: $config.fuzzy.uan_uang)
+                        Toggle("n ↔ l（鼻边音）", isOn: $config.fuzzy.n_l)
                     }
                     GridRow {
-                        Toggle("uan ↔ uang", isOn: $config.fuzzy.uan_uang)
+                        Toggle("f ↔ h", isOn: $config.fuzzy.f_h)
                         Toggle("r ↔ l", isOn: $config.fuzzy.r_l)
                         Spacer()
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
 
-            Section("个性化与词库引擎状态") {
-                Toggle("记录本地打字训练对（仅存本机 SQLite，供导出 Colab 微调）", isOn: $config.record_training_samples)
-
+    private var lexiconAndModelTab: some View {
+        Form {
+            Section("端侧引擎与神经网络状态") {
                 if let status {
                     LabeledContent("已挂载词条总数", value: "\(status.word_entries)")
                     LabeledContent("拼音索引组数", value: "\(status.pinyin_keys)")
                     LabeledContent("已挂载扩展卡带 (.imepack)", value: "\(status.installed_packs ?? 0) 个")
-                    LabeledContent("已学习个人习惯", value: "\(status.learned_habits)")
+                    LabeledContent("已学习个人习惯词条", value: "\(status.learned_habits) 条")
                     LabeledContent(
-                        "Stage-2 端侧神经重排",
+                        "端侧语义重排引擎",
                         value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded)
-                            ? "MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
+                            ? "Qwen3 6L MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
                             : "统计双轨模式"
                     )
                 }
+            }
 
-                HStack {
+            Section("词库导入与个人数据管理（100% 本地离线）") {
+                Toggle("记录本地打字训练样本（仅存本机 SQLite，供导出 Colab 微调个人 LoRA）", isOn: $config.record_training_samples)
+
+                HStack(spacing: 10) {
                     Button("导入词库或 .imepack 模型包…") {
                         ChimeSettingsWindowController.shared.presentImportOpenPanel()
                         status = ChimeEngineBridge.shared.getStatus()
@@ -150,14 +245,13 @@ struct ChimeSettingsView: View {
                         }
                         status = ChimeEngineBridge.shared.getStatus()
                     }
+                    Spacer()
+                    Button("清空个人习惯词频…", role: .destructive) {
+                        confirmClearHabits = true
+                    }
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 500, minHeight: 540)
-        .onChange(of: config) { _, newValue in
-            ChimeEngineBridge.shared.setConfig(newValue)
-            status = ChimeEngineBridge.shared.getStatus()
-        }
     }
 }

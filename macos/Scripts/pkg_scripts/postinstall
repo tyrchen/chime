@@ -6,7 +6,7 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall v0.7.4 started at $(date) ==="
+    echo "=== Chime postinstall v0.8.0 started at $(date) ==="
     if [ -d "$APP_PATH" ]; then
         chown -R root:wheel "$APP_PATH" 2>&1 || true
         chmod -R u+rwX,go+rX "$APP_PATH" 2>&1 || true
@@ -97,7 +97,7 @@ LOG_FILE="/tmp/chime-install.log"
     else
         echo "ERROR: $APP_PATH not found!"
     fi
-    echo "=== Chime postinstall v0.7.4 finished at $(date) ==="
+    echo "=== Chime postinstall v0.8.0 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true

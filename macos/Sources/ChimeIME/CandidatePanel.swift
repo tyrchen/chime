@@ -1,7 +1,7 @@
 import AppKit
 
 /// Interactive borderless, non-activating 120Hz candidate panel supporting:
-/// 1. Compact `1x5` horizontal/vertical candidate bar with `[中。/英.]` toggle & `⌄` expand button;
+/// 1. Compact `1x5` horizontal/vertical candidate bar with `[中/英]` & `[中。/英.]` toggles + `⌄` expand;
 /// 2. Doubao-style `5x5` 2D candidate grid (`↓` key) with phrases + single characters;
 /// 3. Copilot-style `⇥` contextual ghost completion pill (`一路 Tab` for poetry, idioms & habits).
 @MainActor
@@ -11,6 +11,7 @@ public final class CandidatePanel: NSPanel {
     public var onSelectCandidate: ((Int) -> Void)?
     public var onToggleGrid: (() -> Void)?
     public var onTogglePunctuation: (() -> Void)?
+    public var onToggleEnglish: (() -> Void)?
 
     private let rootStack = NSStackView()
 
@@ -64,18 +65,19 @@ public final class CandidatePanel: NSPanel {
         }
 
         rootStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let fontSize = CGFloat(max(13, min(20, response.candidate_font_size)))
 
         if candidates.isEmpty && !response.ghost_text.isEmpty {
-            rootStack.addArrangedSubview(buildGhostCompletionPill(ghostText: response.ghost_text))
+            rootStack.addArrangedSubview(buildGhostCompletionPill(ghostText: response.ghost_text, fontSize: fontSize))
         } else if response.grid_expanded {
-            buildExpandedGrid(response: response)
+            buildExpandedGrid(response: response, fontSize: fontSize)
         } else {
-            buildCompactBar(response: response)
+            buildCompactBar(response: response, fontSize: fontSize)
         }
 
         rootStack.layoutSubtreeIfNeeded()
         let fitting = rootStack.fittingSize
-        let origin = clampedOrigin(size: fitting, caretRect: caretRect)
+        let origin = Self.clampedOrigin(size: fitting, caretRect: caretRect)
         self.setFrame(NSRect(origin: origin, size: fitting), display: true)
         self.orderFrontRegardless()
     }
@@ -86,7 +88,7 @@ public final class CandidatePanel: NSPanel {
 
     // MARK: - 1. Ghost Completion Pill (`一路 Tab`)
 
-    private func buildGhostCompletionPill(ghostText: String) -> NSView {
+    private func buildGhostCompletionPill(ghostText: String, fontSize: CGFloat) -> NSView {
         let container = ClickableActionView { [weak self] in
             self?.onSelectCandidate?(0)
         }
@@ -98,7 +100,7 @@ public final class CandidatePanel: NSPanel {
 
         let iconBadge = makeTagBadge(text: "⇥ 联想", accent: true)
         let textLabel = NSTextField(labelWithString: ghostText)
-        textLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        textLabel.font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
         textLabel.textColor = NSColor.labelColor
 
         let hintLabel = NSTextField(labelWithString: "Tab 补全 · Esc 忽略")
@@ -121,7 +123,7 @@ public final class CandidatePanel: NSPanel {
 
     // MARK: - 2. Compact 1x5 Candidate Bar
 
-    private func buildCompactBar(response: ChimeResponse) {
+    private func buildCompactBar(response: ChimeResponse, fontSize: CGFloat) {
         let isVertical = response.candidate_layout == "vertical"
         let bar = NSStackView()
         bar.orientation = isVertical ? .vertical : .horizontal
@@ -135,6 +137,7 @@ public final class CandidatePanel: NSPanel {
                 displayNumber: idx + 1,
                 item: item,
                 isSelected: isSelected,
+                fontSize: fontSize,
                 fixedWidth: nil
             )
             bar.addArrangedSubview(pill)
@@ -155,6 +158,14 @@ public final class CandidatePanel: NSPanel {
             controls.addArrangedSubview(expandBtn)
         }
 
+        let modeBtn = buildSmallButton(
+            title: response.inline_english_mode ? "英" : "中",
+            tooltip: "点击或按 Shift 切换中英文输入模式"
+        ) { [weak self] in
+            self?.onToggleEnglish?()
+        }
+        controls.addArrangedSubview(modeBtn)
+
         let punctBtn = buildSmallButton(
             title: response.chinese_punctuation ? "中。" : "英.",
             tooltip: "点击或按 Ctrl+. 切换中英文标点"
@@ -169,8 +180,7 @@ public final class CandidatePanel: NSPanel {
 
     // MARK: - 3. Doubao-style 5x5 Expanded Grid
 
-    private func buildExpandedGrid(response: ChimeResponse) {
-        // Header row: preedit + page counter + punctuation toggle + collapse button
+    private func buildExpandedGrid(response: ChimeResponse, fontSize: CGFloat) {
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -193,6 +203,14 @@ public final class CandidatePanel: NSPanel {
             header.addArrangedSubview(pageBadge)
         }
 
+        let modeBtn = buildSmallButton(
+            title: response.inline_english_mode ? "英" : "中",
+            tooltip: "点击或按 Shift 切换中英文输入模式"
+        ) { [weak self] in
+            self?.onToggleEnglish?()
+        }
+        header.addArrangedSubview(modeBtn)
+
         let punctBtn = buildSmallButton(
             title: response.chinese_punctuation ? "中。" : "英.",
             tooltip: "点击或按 Ctrl+. 切换中英文标点"
@@ -211,7 +229,6 @@ public final class CandidatePanel: NSPanel {
 
         rootStack.addArrangedSubview(header)
 
-        // 5x5 Candidate Grid (up to 5 rows x 5 columns)
         let candidates = response.candidates
         let activeRow = response.highlighted_index / 5
         let totalRows = (candidates.count + 4) / 5
@@ -233,6 +250,7 @@ public final class CandidatePanel: NSPanel {
                         displayNumber: numberBadge,
                         item: candidates[idx],
                         isSelected: isSelected,
+                        fontSize: fontSize,
                         fixedWidth: 96
                     )
                     rowStack.addArrangedSubview(cell)
@@ -257,6 +275,7 @@ public final class CandidatePanel: NSPanel {
         displayNumber: Int?,
         item: ChimeCandidate,
         isSelected: Bool,
+        fontSize: CGFloat,
         fixedWidth: CGFloat?
     ) -> NSView {
         let container = ClickableCandidateView(candidateIndex: clickIndex) { [weak self] clickedIdx in
@@ -274,7 +293,8 @@ public final class CandidatePanel: NSPanel {
             labelWithAttributedString: formatCandidate(
                 displayNumber: displayNumber,
                 item: item,
-                isSelected: isSelected
+                isSelected: isSelected,
+                fontSize: fontSize
             )
         )
         label.lineBreakMode = .byTruncatingTail
@@ -297,19 +317,21 @@ public final class CandidatePanel: NSPanel {
     private func formatCandidate(
         displayNumber: Int?,
         item: ChimeCandidate,
-        isSelected: Bool
+        isSelected: Bool,
+        fontSize: CGFloat
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        let idxSize = max(11, fontSize - 2)
         if let num = displayNumber {
             let indexAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: idxSize, weight: .medium),
                 .foregroundColor: isSelected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
             ]
             result.append(NSAttributedString(string: "\(num). ", attributes: indexAttrs))
         }
 
         var wordAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: isSelected ? .semibold : .regular),
+            .font: NSFont.systemFont(ofSize: fontSize, weight: isSelected ? .semibold : .regular),
             .foregroundColor: NSColor.labelColor
         ]
         if item.kind == "TypoCorrected" {
@@ -375,7 +397,7 @@ public final class CandidatePanel: NSPanel {
         return btn
     }
 
-    private func clampedOrigin(size: NSSize, caretRect: NSRect) -> NSPoint {
+    fileprivate static func clampedOrigin(size: NSSize, caretRect: NSRect) -> NSPoint {
         let screen = NSScreen.screens.first(where: { NSMouseInRect(caretRect.origin, $0.frame, false) })
             ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -389,6 +411,80 @@ public final class CandidatePanel: NSPanel {
             x = max(visible.minX + 8.0, visible.maxX - size.width - 8.0)
         }
         return NSPoint(x: x, y: y)
+    }
+}
+
+/// Non-activating Sogou/Doubao-style status HUD pill (`中` / `英` / `中。` / `英.`) shown briefly
+/// near the caret when switching mode via `Shift` or `Ctrl+.`.
+@MainActor
+public final class StatusToastPanel: NSPanel {
+    public static let shared = StatusToastPanel()
+
+    private let label = NSTextField(labelWithString: "中")
+    private var dismissTask: Task<Void, Never>?
+
+    private init() {
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 46, height: 32),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        self.level = .popUpMenu
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.hasShadow = true
+        self.ignoresMouseEvents = true
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let vibrancy = NSVisualEffectView()
+        vibrancy.material = .hudWindow
+        vibrancy.blendingMode = .behindWindow
+        vibrancy.state = .active
+        vibrancy.wantsLayer = true
+        vibrancy.layer?.cornerRadius = 8.0
+        vibrancy.layer?.masksToBounds = true
+        vibrancy.layer?.borderWidth = 0.5
+        vibrancy.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+
+        label.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        label.textColor = NSColor.labelColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        vibrancy.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: vibrancy.topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: vibrancy.bottomAnchor, constant: -6)
+        ])
+        self.contentView = vibrancy
+    }
+
+    override public var canBecomeKey: Bool { false }
+    override public var canBecomeMain: Bool { false }
+
+    public func show(badge: String, caretRect: NSRect) {
+        dismissTask?.cancel()
+        label.stringValue = badge
+        self.contentView?.layoutSubtreeIfNeeded()
+        let fitting = self.contentView?.fittingSize ?? NSSize(width: 44, height: 30)
+        let origin = CandidatePanel.clampedOrigin(size: fitting, caretRect: caretRect)
+        self.alphaValue = 1.0
+        self.setFrame(NSRect(origin: origin, size: fitting), display: true)
+        self.orderFrontRegardless()
+
+        dismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled, let self else { return }
+            self.orderOut(nil)
+        }
+    }
+
+    public func hide() {
+        dismissTask?.cancel()
+        self.orderOut(nil)
     }
 }
 

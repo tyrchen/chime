@@ -1,0 +1,152 @@
+# Minimal standalone seed vocabulary ONLY for in-memory Cargo unit tests (`Lexicon::with_builtin_seed`)
+# when `dist/core.imedict` is not mounted. NEVER merged into production `core.imedict`!
+
+seed_words:
+  - surface: "好"
+    pinyin: "hao"
+    log_prob: -3.10
+    tech: false
+  - surface: "你好"
+    pinyin: "ni hao"
+    log_prob: -3.30
+    tech: false
+  - surface: "世界"
+    pinyin: "shi jie"
+    log_prob: -3.85
+    tech: false
+  - surface: "中国"
+    pinyin: "zhong guo"
+    log_prob: -3.40
+    tech: false
+  - surface: "中国人"
+    pinyin: "zhong guo ren"
+    log_prob: -3.80
+    tech: false
+  - surface: "今天"
+    pinyin: "jin tian"
+    log_prob: -3.40
+    tech: false
+  - surface: "使用"
+    pinyin: "shi yong"
+    log_prob: -3.30
+    tech: true
+  - surface: "双"
+    pinyin: "shuang"
+    log_prob: -4.10
+    tech: false
+  - surface: "双拼"
+    pinyin: "shuang pin"
+    log_prob: -4.15
+    tech: true
+  - surface: "全拼"
+    pinyin: "quan pin"
+    log_prob: -4.35
+    tech: true
+  - surface: "输入法"
+    pinyin: "shu ru fa"
+    log_prob: -3.60
+    tech: true
+  - surface: "词库"
+    pinyin: "ci ku"
+    log_prob: -4.10
+    tech: true
+  - surface: "本地"
+    pinyin: "ben di"
+    log_prob: -3.80
+    tech: true
+  - surface: "模型"
+    pinyin: "mo xing"
+    log_prob: -3.60
+    tech: true
+  - surface: "语言模型"
+    pinyin: "yu yan mo xing"
+    log_prob: -4.00
+    tech: true
+  - surface: "人工智能"
+    pinyin: "ren gong zhi neng"
+    log_prob: -3.80
+    tech: true
+  - surface: "量化"
+    pinyin: "liang hua"
+    log_prob: -4.00
+    tech: true
+  - surface: "亮化"
+    pinyin: "liang hua"
+    log_prob: -5.60
+    tech: false
+  - surface: "调整"
+    pinyin: "tiao zheng"
+    log_prob: -3.65
+    tech: false
+  - surface: "过程中"
+    pinyin: "guo cheng zhong"
+    log_prob: -3.35
+    tech: false
+  - surface: "过程"
+    pinyin: "guo cheng"
+    log_prob: -3.30
+    tech: false
+  - surface: "成"
+    pinyin: "cheng"
+    log_prob: -3.40
+    tech: false
+  - surface: "知道"
+    pinyin: "zhi dao"
+    log_prob: -3.50
+    tech: false
+  - surface: "非常"
+    pinyin: "fei chang"
+    log_prob: -3.60
+    tech: false
+  - surface: "帮我"
+    pinyin: "bang wo"
+    log_prob: -3.60
+    tech: false
+  - surface: "看"
+    pinyin: "kan"
+    log_prob: -3.30
+    tech: false
+  - surface: "吃"
+    pinyin: "chi"
+    log_prob: -3.25
+    tech: false
+  - surface: "兵"
+    pinyin: "bing"
+    log_prob: -3.85
+    tech: false
+  - surface: "饼"
+    pinyin: "bing"
+    log_prob: -3.95
+    tech: false
+  - surface: "病"
+    pinyin: "bing"
+    log_prob: -4.15
+    tech: false
+  - surface: "时"
+    pinyin: "shi"
+    log_prob: -3.25
+    tech: false
+  - surface: "事"
+    pinyin: "shi"
+    log_prob: -3.30
+    tech: false
+  - surface: "实"
+    pinyin: "shi"
+    log_prob: -3.55
+    tech: false
+  - surface: "十"
+    pinyin: "shi"
+    log_prob: -3.50
+    tech: false
+  - surface: "使"
+    pinyin: "shi"
+    log_prob: -3.60
+    tech: false
+  - surface: "世"
+    pinyin: "shi"
+    log_prob: -3.65
+    tech: false
+  - surface: "市"
+    pinyin: "shi"
+    log_prob: -3.70
+    tech: false

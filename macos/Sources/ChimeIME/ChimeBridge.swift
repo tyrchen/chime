@@ -25,7 +25,80 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
     public let grid_expanded: Bool
     public let ghost_text: String
     public let candidate_layout: String
+    public let candidate_font_size: Int
+    public let show_status_toast: Bool
     public let generation_id: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case handled
+        case committed_text
+        case preedit_text
+        case candidates
+        case highlighted_index
+        case page_index
+        case total_pages
+        case inline_english_mode
+        case chinese_punctuation
+        case grid_expanded
+        case ghost_text
+        case candidate_layout
+        case candidate_font_size
+        case show_status_toast
+        case generation_id
+    }
+
+    public init(
+        handled: Bool,
+        committed_text: String,
+        preedit_text: String,
+        candidates: [ChimeCandidate],
+        highlighted_index: Int,
+        page_index: Int,
+        total_pages: Int,
+        inline_english_mode: Bool,
+        chinese_punctuation: Bool,
+        grid_expanded: Bool,
+        ghost_text: String,
+        candidate_layout: String,
+        candidate_font_size: Int = 15,
+        show_status_toast: Bool = true,
+        generation_id: UInt64
+    ) {
+        self.handled = handled
+        self.committed_text = committed_text
+        self.preedit_text = preedit_text
+        self.candidates = candidates
+        self.highlighted_index = highlighted_index
+        self.page_index = page_index
+        self.total_pages = total_pages
+        self.inline_english_mode = inline_english_mode
+        self.chinese_punctuation = chinese_punctuation
+        self.grid_expanded = grid_expanded
+        self.ghost_text = ghost_text
+        self.candidate_layout = candidate_layout
+        self.candidate_font_size = candidate_font_size
+        self.show_status_toast = show_status_toast
+        self.generation_id = generation_id
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.handled = try c.decode(Bool.self, forKey: .handled)
+        self.committed_text = try c.decode(String.self, forKey: .committed_text)
+        self.preedit_text = try c.decode(String.self, forKey: .preedit_text)
+        self.candidates = try c.decode([ChimeCandidate].self, forKey: .candidates)
+        self.highlighted_index = try c.decode(Int.self, forKey: .highlighted_index)
+        self.page_index = try c.decode(Int.self, forKey: .page_index)
+        self.total_pages = try c.decode(Int.self, forKey: .total_pages)
+        self.inline_english_mode = try c.decode(Bool.self, forKey: .inline_english_mode)
+        self.chinese_punctuation = try c.decode(Bool.self, forKey: .chinese_punctuation)
+        self.grid_expanded = try c.decode(Bool.self, forKey: .grid_expanded)
+        self.ghost_text = try c.decode(String.self, forKey: .ghost_text)
+        self.candidate_layout = try c.decode(String.self, forKey: .candidate_layout)
+        self.candidate_font_size = (try? c.decode(Int.self, forKey: .candidate_font_size)) ?? 15
+        self.show_status_toast = (try? c.decode(Bool.self, forKey: .show_status_toast)) ?? true
+        self.generation_id = try c.decode(UInt64.self, forKey: .generation_id)
+    }
 
     public static let unhandled = ChimeResponse(
         handled: false,
@@ -40,6 +113,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         grid_expanded: false,
         ghost_text: "",
         candidate_layout: "horizontal",
+        candidate_font_size: 15,
+        show_status_toast: true,
         generation_id: 0
     )
 }
@@ -58,6 +133,12 @@ public struct ChimeFuzzyDTO: Codable, Sendable, Equatable {
     public var ian_iang: Bool
     public var uan_uang: Bool
     public var fuzzy_penalty: Float
+
+    public static let `default` = ChimeFuzzyDTO(
+        z_zh: true, c_ch: true, s_sh: true, n_l: false, f_h: false, r_l: false,
+        an_ang: true, en_eng: true, in_ing: true, ian_iang: true, uan_uang: true,
+        fuzzy_penalty: 0.52
+    )
 }
 
 /// Full engine configuration mirrored for SwiftUI Settings binding.
@@ -66,10 +147,39 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var fuzzy: ChimeFuzzyDTO
     public var pangu_spacing: Bool
     public var chinese_punctuation: Bool
+    public var english_toggle_key: String
+    public var shift_commit_mode: String
+    public var uppercase_triggers_english: Bool
+    public var show_status_toast: Bool
+    public var minus_equal_paging: Bool
+    public var bracket_paging: Bool
+    public var comma_period_paging: Bool
+    public var semicolon_apostrophe_select: Bool
     public var record_training_samples: Bool
     public var anti_jitter_ms: UInt64
     public var page_size: Int
+    public var candidate_font_size: Int
     public var candidate_layout: String
+
+    public static let `default` = ChimeConfigDTO(
+        scheme: "full",
+        fuzzy: .default,
+        pangu_spacing: true,
+        chinese_punctuation: true,
+        english_toggle_key: "both_shift",
+        shift_commit_mode: "commit_and_toggle",
+        uppercase_triggers_english: true,
+        show_status_toast: true,
+        minus_equal_paging: true,
+        bracket_paging: false,
+        comma_period_paging: false,
+        semicolon_apostrophe_select: false,
+        record_training_samples: false,
+        anti_jitter_ms: 60,
+        page_size: 5,
+        candidate_font_size: 15,
+        candidate_layout: "horizontal"
+    )
 }
 
 /// Live engine diagnostic metrics displayed in SwiftUI Settings.
@@ -92,8 +202,10 @@ public final class ChimeEngineBridge {
     private struct ControllerSlot {
         var sessionId: UInt64
         var lastCaretRect: NSRect
-        var leftShiftDownTs: TimeInterval?
-        var keyPressedDuringShift: Bool
+        var shiftDownTs: TimeInterval?
+        var shiftDownKeyCode: UInt16?
+        var keyOrOtherModDuringShift: Bool
+        var inlineEnglishMode: Bool
         weak var lastClientObject: AnyObject?
     }
 
@@ -133,7 +245,36 @@ public final class ChimeEngineBridge {
             guard let self, let key = self.activeControllerKey else { return }
             let resp = self.togglePunctuation(controllerKey: key)
             self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+            if resp.show_status_toast {
+                let caret = self.slots[key]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
+                StatusToastPanel.shared.show(
+                    badge: resp.chinese_punctuation ? "中。" : "英.",
+                    caretRect: caret
+                )
+            }
         }
+
+        CandidatePanel.shared.onToggleEnglish = { [weak self] in
+            guard let self, let key = self.activeControllerKey else { return }
+            let resp = self.toggleEnglish(controllerKey: key)
+            self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+            if resp.show_status_toast {
+                let caret = self.slots[key]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
+                StatusToastPanel.shared.show(
+                    badge: resp.inline_english_mode ? "英" : "中",
+                    caretRect: caret
+                )
+            }
+        }
+    }
+
+    public func isInlineEnglish(controllerKey: ObjectIdentifier?) -> Bool {
+        guard let key = controllerKey ?? activeControllerKey else { return false }
+        return slots[key]?.inlineEnglishMode ?? false
+    }
+
+    public func caretRect(for controllerKey: ObjectIdentifier) -> NSRect {
+        slots[controllerKey]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
     }
 
     public func activate(controllerKey: ObjectIdentifier, appBundleId: String, client: AnyObject?) {
@@ -150,8 +291,10 @@ public final class ChimeEngineBridge {
         slots[controllerKey] = ControllerSlot(
             sessionId: sid,
             lastCaretRect: NSRect(x: 480, y: 360, width: 1, height: 18),
-            leftShiftDownTs: nil,
-            keyPressedDuringShift: false,
+            shiftDownTs: nil,
+            shiftDownKeyCode: nil,
+            keyOrOtherModDuringShift: false,
+            inlineEnglishMode: false,
             lastClientObject: client
         )
     }
@@ -161,6 +304,7 @@ public final class ChimeEngineBridge {
             activeControllerKey = nil
         }
         CandidatePanel.shared.hide()
+        StatusToastPanel.shared.hide()
         guard let slot = slots.removeValue(forKey: controllerKey), let handle, slot.sessionId != 0 else {
             return
         }
@@ -198,35 +342,107 @@ public final class ChimeEngineBridge {
         }
     }
 
-    public func pollLeftShiftTap(
+    /// Detects clean modifier taps (`both_shift`, `left_shift`, `right_shift`, `caps_lock`) without
+    /// misfiring on multi-modifier system shortcuts (`Cmd+Shift+4`, `Ctrl+Shift`, `Opt+Shift`).
+    public func pollModifierToggle(
         controllerKey: ObjectIdentifier,
         keyCode: UInt16,
-        shiftDown: Bool,
+        flags: NSEvent.ModifierFlags,
         timestamp: TimeInterval
     ) -> ChimeResponse? {
-        guard keyCode == 0x38, var slot = slots[controllerKey], let handle else { return nil }
-
-        if shiftDown {
-            slot.leftShiftDownTs = timestamp
-            slot.keyPressedDuringShift = false
+        guard var slot = slots[controllerKey], let handle else { return nil }
+        let toggleRule = getConfig()?.english_toggle_key ?? "both_shift"
+        if toggleRule == "none" {
+            slot.shiftDownTs = nil
             slots[controllerKey] = slot
             return nil
         }
 
-        guard let downTs = slot.leftShiftDownTs else { return nil }
-        slot.leftShiftDownTs = nil
-        let cleanTap = !slot.keyPressedDuringShift && (timestamp - downTs) < 0.25
+        let hasOtherMod = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
+        if hasOtherMod {
+            slot.keyOrOtherModDuringShift = true
+            slot.shiftDownTs = nil
+            slots[controllerKey] = slot
+            return nil
+        }
+
+        if toggleRule == "caps_lock" {
+            guard keyCode == 0x39 else { return nil }
+            let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
+            slot.inlineEnglishMode = resp.inline_english_mode
+            slots[controllerKey] = slot
+            return resp
+        }
+
+        let allowedShift: Bool = {
+            switch toggleRule {
+            case "left_shift":
+                return keyCode == 0x38
+            case "right_shift":
+                return keyCode == 0x3C
+            default:
+                return keyCode == 0x38 || keyCode == 0x3C
+            }
+        }()
+        guard allowedShift else {
+            slot.keyOrOtherModDuringShift = true
+            slots[controllerKey] = slot
+            return nil
+        }
+
+        let shiftDown = flags.contains(.shift)
+        if shiftDown {
+            slot.shiftDownTs = timestamp
+            slot.shiftDownKeyCode = keyCode
+            slot.keyOrOtherModDuringShift = false
+            slots[controllerKey] = slot
+            return nil
+        }
+
+        guard let downTs = slot.shiftDownTs, slot.shiftDownKeyCode == keyCode else {
+            slot.shiftDownTs = nil
+            slots[controllerKey] = slot
+            return nil
+        }
+        slot.shiftDownTs = nil
+        slot.shiftDownKeyCode = nil
+        let cleanTap = !slot.keyOrOtherModDuringShift && (timestamp - downTs) < 0.30
         slots[controllerKey] = slot
         guard cleanTap else { return nil }
 
-        let rawPtr = chime_toggle_english(handle, slot.sessionId)
-        return decodeAndFree(rawPtr)
+        let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
+        if var updated = slots[controllerKey] {
+            updated.inlineEnglishMode = resp.inline_english_mode
+            slots[controllerKey] = updated
+        }
+        return resp
+    }
+
+    public func toggleEnglish(controllerKey: ObjectIdentifier?) -> ChimeResponse {
+        guard let key = controllerKey ?? activeControllerKey,
+              var slot = slots[key],
+              let handle,
+              slot.sessionId != 0
+        else {
+            return .unhandled
+        }
+        let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
+        slot.inlineEnglishMode = resp.inline_english_mode
+        slots[key] = slot
+        return resp
     }
 
     public func togglePunctuation(controllerKey: ObjectIdentifier?) -> ChimeResponse {
         guard let handle else { return .unhandled }
-        let sid = controllerKey.flatMap { slots[$0]?.sessionId } ?? 0
+        let sid = (controllerKey ?? activeControllerKey).flatMap { slots[$0]?.sessionId } ?? 0
         let rawPtr = chime_toggle_punctuation(handle, sid)
+        return decodeAndFree(rawPtr)
+    }
+
+    public func togglePanguSpacing(controllerKey: ObjectIdentifier?) -> ChimeResponse {
+        guard let handle else { return .unhandled }
+        let sid = (controllerKey ?? activeControllerKey).flatMap { slots[$0]?.sessionId } ?? 0
+        let rawPtr = chime_toggle_pangu_spacing(handle, sid)
         return decodeAndFree(rawPtr)
     }
 
@@ -250,7 +466,7 @@ public final class ChimeEngineBridge {
         guard var slot = slots[controllerKey], let handle, slot.sessionId != 0 else {
             return .unhandled
         }
-        slot.keyPressedDuringShift = true
+        slot.keyOrOtherModDuringShift = true
         slots[controllerKey] = slot
 
         let rawPtr = chime_process_key(
@@ -263,6 +479,10 @@ public final class ChimeEngineBridge {
             secureInput
         )
         let resp = decodeAndFree(rawPtr)
+        if var updated = slots[controllerKey] {
+            updated.inlineEnglishMode = resp.inline_english_mode
+            slots[controllerKey] = updated
+        }
         if !resp.candidates.isEmpty {
             scheduleAsyncRerankPoll(controllerKey: controllerKey, sessionId: slot.sessionId)
         }
@@ -291,6 +511,12 @@ public final class ChimeEngineBridge {
             caret = slot.lastCaretRect
         }
         CandidatePanel.shared.update(response: response, caretRect: caret)
+    }
+
+    public func recordObservedCaretRect(controllerKey: ObjectIdentifier, rect: NSRect?) {
+        guard let rect, var slot = slots[controllerKey] else { return }
+        slot.lastCaretRect = rect
+        slots[controllerKey] = slot
     }
 
     public func applyResponseToStoredClient(controllerKey: ObjectIdentifier, resp: ChimeResponse) {
@@ -359,6 +585,11 @@ public final class ChimeEngineBridge {
     public func reloadAssets() {
         guard let handle else { return }
         chime_reload_assets(handle)
+    }
+
+    public func clearUserHabits() {
+        guard let handle else { return }
+        chime_clear_user_habits(handle)
     }
 
     private func scheduleAsyncRerankPoll(controllerKey: ObjectIdentifier, sessionId: UInt64) {

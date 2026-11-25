@@ -220,6 +220,25 @@ pub unsafe extern "C" fn chime_toggle_punctuation(
     encode_json(&resp)
 }
 
+/// Toggles Chinese-English/number Pangu auto-spacing, persisting to `config.toml`.
+///
+/// # Safety
+///
+/// `engine` must be valid. Returned string must be freed via [`chime_string_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_toggle_pangu_spacing(
+    engine: *mut ChimeEngineHandle,
+    session_id: u64,
+) -> *mut c_char {
+    if engine.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    let resp: EngineResponse = eng.inner.toggle_pangu_spacing(session_id);
+    encode_json(&resp)
+}
+
 /// Toggles the Doubao-style `5x5` expanded candidate grid (`grid_expanded`).
 ///
 /// # Safety
@@ -354,6 +373,20 @@ pub unsafe extern "C" fn chime_reload_assets(engine: *mut ChimeEngineHandle) {
         // SAFETY: `engine` is valid and non-null.
         let eng = unsafe { &mut *engine };
         eng.inner.reload_assets();
+    }
+}
+
+/// Clears all learned personal word habits and negative feedback from RAM and `SQLite`.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_clear_user_habits(engine: *mut ChimeEngineHandle) {
+    if !engine.is_null() {
+        // SAFETY: `engine` is valid and non-null.
+        let eng = unsafe { &mut *engine };
+        eng.inner.clear_user_habits();
     }
 }
 

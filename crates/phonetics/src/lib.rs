@@ -60,7 +60,7 @@ impl Default for FuzzyConfig {
             in_ing: true,
             ian_iang: true,
             uan_uang: true,
-            fuzzy_penalty: 0.35,
+            fuzzy_penalty: 0.52,
         }
     }
 }

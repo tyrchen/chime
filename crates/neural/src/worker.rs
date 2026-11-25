@@ -50,6 +50,7 @@ enum ActorCmd {
         left_context: String,
         app_bundle_id: String,
         candidate_texts: Vec<String>,
+        open_prefix: bool,
         reply_tx: Sender<Vec<f32>>,
     },
 }
@@ -145,12 +146,14 @@ impl AsyncRerankHandle {
                         left_context,
                         app_bundle_id,
                         candidate_texts,
+                        open_prefix,
                         reply_tx,
                     } => {
-                        let bonuses = reranker.score_candidates_with_app(
+                        let bonuses = reranker.score_candidates_with_mode(
                             &left_context,
                             &app_bundle_id,
                             &candidate_texts,
+                            open_prefix,
                         );
                         let _ = reply_tx.send(bonuses);
                     }
@@ -223,6 +226,20 @@ impl AsyncRerankHandle {
         app_bundle_id: &str,
         candidate_texts: &[String],
     ) -> Vec<f32> {
+        self.score_sync_mode_with_timeout(left_context, app_bundle_id, candidate_texts, false, None)
+    }
+
+    /// Scores an open mid-sentence prefix batch (without right-boundary punctuation closure),
+    /// optionally bounded by `timeout`.
+    #[must_use]
+    pub fn score_sync_mode_with_timeout(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+        open_prefix: bool,
+        timeout: Option<Duration>,
+    ) -> Vec<f32> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         if self
             .cmd_tx
@@ -230,15 +247,22 @@ impl AsyncRerankHandle {
                 left_context: left_context.to_string(),
                 app_bundle_id: app_bundle_id.to_string(),
                 candidate_texts: candidate_texts.to_vec(),
+                open_prefix,
                 reply_tx,
             })
             .is_err()
         {
             return vec![0.0; candidate_texts.len()];
         }
-        reply_rx
-            .recv()
-            .unwrap_or_else(|_| vec![0.0; candidate_texts.len()])
+        if let Some(dur) = timeout {
+            reply_rx
+                .recv_timeout(dur)
+                .unwrap_or_else(|_| vec![0.0; candidate_texts.len()])
+        } else {
+            reply_rx
+                .recv()
+                .unwrap_or_else(|_| vec![0.0; candidate_texts.len()])
+        }
     }
 
     /// Polls any completed Stage-2 rerank results without blocking.

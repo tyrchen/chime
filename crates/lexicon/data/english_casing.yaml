@@ -1,0 +1,471 @@
+# Canonical proper-cased English & developer terms for modeless code-switching.
+# Compiled at build time via crates/lexicon/build.rs.
+
+english_terms:
+  - surface: "ChatGPT"
+    log_prob: -3.10
+    tech: true
+  - surface: "OpenAI"
+    log_prob: -3.30
+    tech: true
+  - surface: "Claude"
+    log_prob: -3.40
+    tech: true
+  - surface: "Gemini"
+    log_prob: -3.50
+    tech: true
+  - surface: "DeepSeek"
+    log_prob: -3.40
+    tech: true
+  - surface: "Anthropic"
+    log_prob: -3.60
+    tech: true
+  - surface: "Qwen"
+    log_prob: -3.60
+    tech: true
+  - surface: "Llama"
+    log_prob: -3.70
+    tech: true
+  - surface: "Mistral"
+    log_prob: -3.90
+    tech: true
+  - surface: "Copilot"
+    log_prob: -3.60
+    tech: true
+  - surface: "Cursor"
+    log_prob: -3.60
+    tech: true
+  - surface: "Perplexity"
+    log_prob: -3.90
+    tech: true
+  - surface: "Midjourney"
+    log_prob: -4.00
+    tech: true
+  - surface: "HuggingFace"
+    log_prob: -3.80
+    tech: true
+  - surface: "PyTorch"
+    log_prob: -3.60
+    tech: true
+  - surface: "TensorFlow"
+    log_prob: -3.80
+    tech: true
+  - surface: "LangChain"
+    log_prob: -4.00
+    tech: true
+  - surface: "CUDA"
+    log_prob: -3.90
+    tech: true
+  - surface: "macOS"
+    log_prob: -3.30
+    tech: true
+  - surface: "iOS"
+    log_prob: -3.50
+    tech: true
+  - surface: "iPadOS"
+    log_prob: -3.90
+    tech: true
+  - surface: "watchOS"
+    log_prob: -4.00
+    tech: true
+  - surface: "visionOS"
+    log_prob: -4.00
+    tech: true
+  - surface: "iPhone"
+    log_prob: -3.50
+    tech: false
+  - surface: "iPad"
+    log_prob: -3.80
+    tech: false
+  - surface: "MacBook"
+    log_prob: -3.70
+    tech: false
+  - surface: "AirPods"
+    log_prob: -3.90
+    tech: false
+  - surface: "Xcode"
+    log_prob: -3.70
+    tech: true
+  - surface: "SwiftUI"
+    log_prob: -3.70
+    tech: true
+  - surface: "AppKit"
+    log_prob: -3.90
+    tech: true
+  - surface: "Homebrew"
+    log_prob: -3.90
+    tech: true
+  - surface: "GitHub"
+    log_prob: -3.40
+    tech: true
+  - surface: "GitLab"
+    log_prob: -3.80
+    tech: true
+  - surface: "Git"
+    log_prob: -3.80
+    tech: true
+  - surface: "Rust"
+    log_prob: -3.40
+    tech: true
+  - surface: "Cargo"
+    log_prob: -3.90
+    tech: true
+  - surface: "Clippy"
+    log_prob: -4.10
+    tech: true
+  - surface: "Tokio"
+    log_prob: -4.00
+    tech: true
+  - surface: "Swift"
+    log_prob: -3.50
+    tech: true
+  - surface: "TypeScript"
+    log_prob: -3.60
+    tech: true
+  - surface: "JavaScript"
+    log_prob: -3.60
+    tech: true
+  - surface: "Node.js"
+    log_prob: -3.80
+    tech: true
+  - surface: "Next.js"
+    log_prob: -3.80
+    tech: true
+  - surface: "React"
+    log_prob: -3.70
+    tech: true
+  - surface: "Vue"
+    log_prob: -3.90
+    tech: true
+  - surface: "Svelte"
+    log_prob: -4.10
+    tech: true
+  - surface: "Tailwind"
+    log_prob: -4.00
+    tech: true
+  - surface: "Python"
+    log_prob: -3.50
+    tech: true
+  - surface: "FastAPI"
+    log_prob: -4.00
+    tech: true
+  - surface: "Jupyter"
+    log_prob: -4.00
+    tech: true
+  - surface: "Colab"
+    log_prob: -3.80
+    tech: true
+  - surface: "Golang"
+    log_prob: -3.90
+    tech: true
+  - surface: "Kotlin"
+    log_prob: -4.00
+    tech: true
+  - surface: "WebAssembly"
+    log_prob: -4.00
+    tech: true
+  - surface: "LoRA"
+    log_prob: -3.90
+    tech: true
+  - surface: "QLoRA"
+    log_prob: -4.10
+    tech: true
+  - surface: "GGUF"
+    log_prob: -4.10
+    tech: true
+  - surface: "CoreML"
+    log_prob: -3.90
+    tech: true
+  - surface: "Metal"
+    log_prob: -3.90
+    tech: true
+  - surface: "MLX"
+    log_prob: -4.00
+    tech: true
+  - surface: "Kubernetes"
+    log_prob: -3.90
+    tech: true
+  - surface: "Docker"
+    log_prob: -3.80
+    tech: true
+  - surface: "Terraform"
+    log_prob: -4.00
+    tech: true
+  - surface: "Pulumi"
+    log_prob: -4.00
+    tech: true
+  - surface: "Cloudflare"
+    log_prob: -3.90
+    tech: true
+  - surface: "Vercel"
+    log_prob: -4.00
+    tech: true
+  - surface: "Supabase"
+    log_prob: -4.00
+    tech: true
+  - surface: "AWS"
+    log_prob: -3.35
+    tech: true
+  - surface: "GCP"
+    log_prob: -3.90
+    tech: true
+  - surface: "Azure"
+    log_prob: -3.90
+    tech: true
+  - surface: "PostgreSQL"
+    log_prob: -3.80
+    tech: true
+  - surface: "MySQL"
+    log_prob: -3.80
+    tech: true
+  - surface: "SQLite"
+    log_prob: -3.90
+    tech: true
+  - surface: "DuckDB"
+    log_prob: -4.00
+    tech: true
+  - surface: "ClickHouse"
+    log_prob: -4.10
+    tech: true
+  - surface: "MongoDB"
+    log_prob: -3.90
+    tech: true
+  - surface: "Redis"
+    log_prob: -3.80
+    tech: true
+  - surface: "GraphQL"
+    log_prob: -3.90
+    tech: true
+  - surface: "gRPC"
+    log_prob: -3.90
+    tech: true
+  - surface: "Protobuf"
+    log_prob: -4.00
+    tech: true
+  - surface: "WebSocket"
+    log_prob: -3.90
+    tech: true
+  - surface: "OAuth"
+    log_prob: -4.00
+    tech: true
+  - surface: "Chrome"
+    log_prob: -3.80
+    tech: false
+  - surface: "Electron"
+    log_prob: -4.10
+    tech: true
+  - surface: "VSCode"
+    log_prob: -3.60
+    tech: true
+  - surface: "Neovim"
+    log_prob: -3.90
+    tech: true
+  - surface: "Ghostty"
+    log_prob: -3.90
+    tech: true
+  - surface: "iTerm2"
+    log_prob: -3.90
+    tech: true
+  - surface: "Nushell"
+    log_prob: -4.00
+    tech: true
+  - surface: "Obsidian"
+    log_prob: -3.90
+    tech: false
+  - surface: "Notion"
+    log_prob: -3.80
+    tech: false
+  - surface: "Figma"
+    log_prob: -3.80
+    tech: false
+  - surface: "Linear"
+    log_prob: -4.00
+    tech: true
+  - surface: "YouTube"
+    log_prob: -3.60
+    tech: false
+  - surface: "TikTok"
+    log_prob: -3.70
+    tech: false
+  - surface: "WeChat"
+    log_prob: -3.70
+    tech: false
+  - surface: "WhatsApp"
+    log_prob: -3.90
+    tech: false
+  - surface: "LinkedIn"
+    log_prob: -3.90
+    tech: false
+  - surface: "Apple"
+    log_prob: -3.50
+    tech: false
+  - surface: "Google"
+    log_prob: -3.50
+    tech: false
+  - surface: "Microsoft"
+    log_prob: -3.60
+    tech: false
+  - surface: "NVIDIA"
+    log_prob: -3.70
+    tech: true
+  - surface: "Safetensors"
+    log_prob: -3.80
+    tech: true
+  - surface: "Transformer"
+    log_prob: -3.90
+    tech: true
+  - surface: "Markdown"
+    log_prob: -3.80
+    tech: true
+  - surface: "LaTeX"
+    log_prob: -4.00
+    tech: true
+  - surface: "Unicode"
+    log_prob: -4.00
+    tech: true
+  - surface: "API"
+    log_prob: -3.50
+    tech: true
+  - surface: "PR"
+    log_prob: -3.60
+    tech: true
+  - surface: "CLI"
+    log_prob: -3.80
+    tech: true
+  - surface: "GUI"
+    log_prob: -4.00
+    tech: true
+  - surface: "SDK"
+    log_prob: -3.90
+    tech: true
+  - surface: "IDE"
+    log_prob: -3.90
+    tech: true
+  - surface: "LLM"
+    log_prob: -3.60
+    tech: true
+  - surface: "SLM"
+    log_prob: -4.00
+    tech: true
+  - surface: "RAG"
+    log_prob: -3.90
+    tech: true
+  - surface: "GPU"
+    log_prob: -3.70
+    tech: true
+  - surface: "CPU"
+    log_prob: -3.80
+    tech: true
+  - surface: "PDF"
+    log_prob: -3.80
+    tech: false
+  - surface: "JSON"
+    log_prob: -3.80
+    tech: true
+  - surface: "TOML"
+    log_prob: -4.00
+    tech: true
+  - surface: "YAML"
+    log_prob: -4.00
+    tech: true
+  - surface: "HTTPS"
+    log_prob: -3.90
+    tech: true
+  - surface: "SSH"
+    log_prob: -3.90
+    tech: true
+  - surface: "review"
+    log_prob: -3.80
+    tech: true
+  - surface: "commit"
+    log_prob: -3.90
+    tech: true
+  - surface: "merge"
+    log_prob: -4.00
+    tech: true
+  - surface: "branch"
+    log_prob: -4.10
+    tech: true
+  - surface: "latency"
+    log_prob: -4.10
+    tech: true
+  - surface: "token"
+    log_prob: -4.00
+    tech: true
+  - surface: "model"
+    log_prob: -3.90
+    tech: true
+  - surface: "seem"
+    log_prob: -4.20
+    tech: false
+  - surface: "seems"
+    log_prob: -4.20
+    tech: false
+  - surface: "work"
+    log_prob: -3.90
+    tech: false
+  - surface: "grid"
+    log_prob: -4.20
+    tech: false
+  - surface: "useEffect"
+    log_prob: -4.20
+    tech: true
+  - surface: "useState"
+    log_prob: -4.20
+    tech: true
+  - surface: "async"
+    log_prob: -4.10
+    tech: true
+  - surface: "asyncio"
+    log_prob: -4.40
+    tech: true
+  - surface: "bug"
+    log_prob: -3.70
+    tech: true
+  - surface: "test"
+    log_prob: -3.80
+    tech: true
+  - surface: "app"
+    log_prob: -3.80
+    tech: true
+  - surface: "web"
+    log_prob: -3.90
+    tech: true
+  - surface: "sql"
+    log_prob: -3.90
+    tech: true
+  - surface: "css"
+    log_prob: -4.00
+    tech: true
+  - surface: "url"
+    log_prob: -3.90
+    tech: true
+  - surface: "env"
+    log_prob: -4.00
+    tech: true
+  - surface: "log"
+    log_prob: -4.00
+    tech: true
+
+code_switch_bigrams:
+  - prev: "使用"
+    next: "macOS"
+    bonus: 1.20
+  - prev: "使用"
+    next: "Rust"
+    bonus: 1.20
+  - prev: "这个"
+    next: "PR"
+    bonus: 1.30
+  - prev: "提交"
+    next: "PR"
+    bonus: 1.40
+  - prev: "帮我"
+    next: "review"
+    bonus: 1.30
+  - prev: "和"
+    next: "GitHub"
+    bonus: 1.10
+  - prev: "在"
+    next: "Colab"
+    bonus: 1.20

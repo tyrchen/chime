@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::{
-    config::{CandidateLayout, ChimeConfig, ConfigError},
+    config::{CandidateLayout, ChimeConfig, ConfigError, EnglishToggleKey, ShiftCommitMode},
     personalize::{
         ImePackManifest, InstalledImePack, PackBuildOptions, PersonalizeError, TrainingRecord,
         build_colab_training_jsonl, build_imepack_dir, build_imepack_v2, discover_installed_packs,
@@ -107,6 +107,10 @@ pub struct EngineResponse {
     pub ghost_text: String,
     /// Candidate window layout orientation (`horizontal` or `vertical`).
     pub candidate_layout: CandidateLayout,
+    /// Candidate font size in points (`13..=20`).
+    pub candidate_font_size: u32,
+    /// Whether to display a brief HUD badge near the cursor on mode/punctuation switch.
+    pub show_status_toast: bool,
     /// Monotonic keystroke generation ID for anti-jitter async rerank validation.
     pub generation_id: u64,
 }
@@ -301,12 +305,18 @@ impl ChimeEngine {
             self.config = cfg;
         }
 
-        let mut lex = Lexicon::with_builtin_seed();
-        if let Some(res_dir) = &self.bundle_resources_dir {
-            let core_path = res_dir.join("core.imedict");
-            if core_path.exists() {
-                let _ = lex.mount_compiled_mmap(&core_path);
-            }
+        let core_dict_path = self
+            .bundle_resources_dir
+            .as_ref()
+            .map(|r| r.join("core.imedict"))
+            .filter(|p| p.exists());
+        let mut lex = if core_dict_path.is_some() {
+            Lexicon::with_core_grammar()
+        } else {
+            Lexicon::with_builtin_seed()
+        };
+        if let Some(core_path) = core_dict_path {
+            let _ = lex.mount_compiled_mmap(&core_path);
         }
         let mut lora_specs: Vec<LoraMountSpec> = Vec::new();
         self.installed_packs_count = 0;
@@ -360,7 +370,13 @@ impl ChimeEngine {
             if let Some(n_dir) = chosen_neural
                 && let Ok(worker) = AsyncRerankHandle::spawn_from_dir_with_loras(&n_dir, lora_specs)
             {
+                self.decoder
+                    .set_reranker(Some(Box::new(MidpointPrefixAdapter {
+                        worker: worker.clone(),
+                    })));
                 self.async_reranker = Some(worker);
+            } else {
+                self.decoder.set_reranker(None);
             }
         }
         self.lexicon = lex;
@@ -488,6 +504,12 @@ impl ChimeEngine {
         &self.user_store
     }
 
+    /// Clears all learned personal word habits and negative feedback overrides from RAM and
+    /// `SQLite`.
+    pub fn clear_user_habits(&mut self) {
+        self.user_store.clear_all();
+    }
+
     /// Allocates a lightweight `session_id`, evicting the oldest session if over
     /// `MAX_ACTIVE_SESSIONS`.
     pub fn create_session(&mut self, app_bundle_id: impl Into<String>) -> u64 {
@@ -554,6 +576,28 @@ impl ChimeEngine {
                 handled: true,
                 chinese_punctuation: self.config.chinese_punctuation,
                 candidate_layout: self.config.candidate_layout,
+                candidate_font_size: self.config.candidate_font_size,
+                show_status_toast: self.config.show_status_toast,
+                ..EngineResponse::default()
+            };
+        };
+        self.build_snapshot(idx, true, String::new())
+    }
+
+    /// Toggles automatic half-width Pangu spacing around English & numbers, persisting to
+    /// `config.toml`.
+    pub fn toggle_pangu_spacing(&mut self, session_id: u64) -> EngineResponse {
+        self.config.pangu_spacing = !self.config.pangu_spacing;
+        if let Some(dir) = &self.app_support_dir {
+            let _ = self.config.save(&dir.join("config.toml"));
+        }
+        let Some(idx) = self.touch_session(session_id) else {
+            return EngineResponse {
+                handled: true,
+                chinese_punctuation: self.config.chinese_punctuation,
+                candidate_layout: self.config.candidate_layout,
+                candidate_font_size: self.config.candidate_font_size,
+                show_status_toast: self.config.show_status_toast,
                 ..EngineResponse::default()
             };
         };
@@ -571,15 +615,19 @@ impl ChimeEngine {
         self.build_snapshot(idx, true, String::new())
     }
 
-    /// Toggles inline English mode on clean `< 250ms` single Left-Shift tap, committing any raw
-    /// preedit.
+    /// Toggles inline English mode on a clean modifier tap (or commits raw ASCII while staying in
+    /// Chinese mode when `shift_commit_mode == CommitKeepChinese` during active preedit).
     pub fn toggle_inline_english(&mut self, session_id: u64) -> EngineResponse {
         let Some(idx) = self.touch_session(session_id) else {
             return EngineResponse::default();
         };
         let pangu = self.config.pangu_spacing;
+        let shift_mode = self.config.shift_commit_mode;
         let sess = &mut self.sessions[idx];
-        sess.inline_english_mode = !sess.inline_english_mode;
+        let was_composing = sess.is_composing();
+        if !(was_composing && shift_mode == ShiftCommitMode::CommitKeepChinese) {
+            sess.inline_english_mode = !sess.inline_english_mode;
+        }
         sess.ghost_suggestion = None;
         let mut raw_commit = std::mem::take(&mut sess.partial_prefix);
         raw_commit.push_str(&std::mem::take(&mut sess.raw_buffer));
@@ -594,6 +642,9 @@ impl ChimeEngine {
             inline_english_mode: sess.inline_english_mode,
             chinese_punctuation: self.config.chinese_punctuation,
             candidate_layout: self.config.candidate_layout,
+            candidate_font_size: self.config.candidate_font_size,
+            show_status_toast: self.config.show_status_toast
+                && !(was_composing && shift_mode == ShiftCommitMode::CommitKeepChinese),
             generation_id: sess.generation_id,
             ..EngineResponse::default()
         }
@@ -620,12 +671,20 @@ impl ChimeEngine {
             }
             let displayed = sess.all_candidates.clone();
             let mut rescored = displayed.clone();
+            let best_non_comp = displayed
+                .iter()
+                .find(|c| {
+                    c.consumed_bytes == sess.raw_buffer.len() && c.kind != MatchKind::Completion
+                })
+                .map_or(f32::NEG_INFINITY, |c| c.score);
             for (cand, bonus) in rescored
                 .iter_mut()
                 .filter(|c| {
-                    c.consumed_bytes == sess.raw_buffer.len() && c.kind != MatchKind::Completion
+                    c.consumed_bytes == sess.raw_buffer.len()
+                        && c.kind != MatchKind::Completion
+                        && c.score >= best_non_comp - 5.4
                 })
-                .take(8)
+                .take(10)
                 .zip(res.bonus_scores)
             {
                 cand.score += bonus;
@@ -673,8 +732,30 @@ impl ChimeEngine {
         };
 
         if self.sessions[idx].inline_english_mode {
-            if event.ascii_char.is_ascii_graphic() || event.ascii_char == b' ' {
-                let s = char::from(event.ascii_char).to_string();
+            let ch = event.ascii_char;
+            if self.config.pangu_spacing
+                && ch.is_ascii_alphanumeric()
+                && self.sessions[idx]
+                    .left_context
+                    .chars()
+                    .last()
+                    .is_some_and(is_cjk_hanzi)
+            {
+                let spaced = format!(" {}", char::from(ch));
+                self.sessions[idx].record_emitted_text(&spaced);
+                return EngineResponse {
+                    handled: true,
+                    committed_text: spaced,
+                    inline_english_mode: true,
+                    chinese_punctuation: self.config.chinese_punctuation,
+                    candidate_layout: self.config.candidate_layout,
+                    candidate_font_size: self.config.candidate_font_size,
+                    show_status_toast: self.config.show_status_toast,
+                    ..EngineResponse::default()
+                };
+            }
+            if ch.is_ascii_graphic() || ch == b' ' {
+                let s = char::from(ch).to_string();
                 self.sessions[idx].record_emitted_text(&s);
             }
             return EngineResponse {
@@ -682,6 +763,8 @@ impl ChimeEngine {
                 inline_english_mode: true,
                 chinese_punctuation: self.config.chinese_punctuation,
                 candidate_layout: self.config.candidate_layout,
+                candidate_font_size: self.config.candidate_font_size,
+                show_status_toast: self.config.show_status_toast,
                 ..EngineResponse::default()
             };
         }
@@ -812,6 +895,31 @@ impl ChimeEngine {
             }
         }
 
+        // Symmetric Pangu auto-spacing before standalone ASCII digits typed right after CJK Hanzi
+        // (`我有` + `100` + `个` -> `我有 100 个` when `pangu_spacing == true`, `我有100个` when
+        // false).
+        if !is_composing
+            && self.config.pangu_spacing
+            && ch.is_ascii_digit()
+            && self.sessions[idx]
+                .left_context
+                .chars()
+                .last()
+                .is_some_and(is_cjk_hanzi)
+        {
+            let spaced = format!(" {}", char::from(ch));
+            self.sessions[idx].record_emitted_text(&spaced);
+            return EngineResponse {
+                handled: true,
+                committed_text: spaced,
+                chinese_punctuation: self.config.chinese_punctuation,
+                candidate_layout: self.config.candidate_layout,
+                candidate_font_size: self.config.candidate_font_size,
+                show_status_toast: self.config.show_status_toast,
+                ..EngineResponse::default()
+            };
+        }
+
         if !is_composing && (ch.is_ascii_graphic() || ch == b' ') {
             let s = char::from(ch).to_string();
             self.sessions[idx].record_emitted_text(&s);
@@ -820,6 +928,8 @@ impl ChimeEngine {
         EngineResponse {
             chinese_punctuation: self.config.chinese_punctuation,
             candidate_layout: self.config.candidate_layout,
+            candidate_font_size: self.config.candidate_font_size,
+            show_status_toast: self.config.show_status_toast,
             ..EngineResponse::default()
         }
     }
@@ -862,6 +972,7 @@ impl ChimeEngine {
             scheme: self.config.scheme,
             fuzzy: self.config.fuzzy,
             pangu_spacing: self.config.pangu_spacing,
+            uppercase_triggers_english: self.config.uppercase_triggers_english,
             now_epoch_secs: 0,
         };
         self.decoder
@@ -1038,16 +1149,37 @@ impl ChimeEngine {
             _ => {}
         }
 
-        // `-` / `=` paging keys when multiple candidates exist
-        if ch == b'=' && total > page_size {
+        // Configurable candidate page-turning shortcuts (`-`/`=`, `[`/`]`, `,`/`.`).
+        let is_next_page_key = (self.config.minus_equal_paging && ch == b'=')
+            || (self.config.bracket_paging && ch == b']')
+            || (self.config.comma_period_paging && ch == b'.');
+        let is_prev_page_key = (self.config.minus_equal_paging && ch == b'-')
+            || (self.config.bracket_paging && ch == b'[')
+            || (self.config.comma_period_paging && ch == b',');
+        if is_next_page_key && total > page_size {
             let next_page = ((self.sessions[idx].selected_global_idx / page_size) + 1) * page_size;
             self.sessions[idx].selected_global_idx = if next_page < total { next_page } else { 0 };
             return Some(self.build_snapshot(idx, true, String::new()));
         }
-        if ch == b'-' && total > page_size {
+        if is_prev_page_key && total > page_size {
             let cur_page = self.sessions[idx].selected_global_idx / page_size;
             self.sessions[idx].selected_global_idx = cur_page.saturating_sub(1) * page_size;
             return Some(self.build_snapshot(idx, true, String::new()));
+        }
+
+        // Optional `;` / `'` quick selection of 2nd and 3rd candidates (Sogou/Doubao/Rime style).
+        if self.config.semicolon_apostrophe_select && !grid {
+            let page_start = (self.sessions[idx].selected_global_idx / page_size) * page_size;
+            if ch == b';'
+                && self.config.scheme != ShuangpinScheme::Microsoft
+                && page_size >= 2
+                && page_start + 1 < total
+            {
+                return Some(self.commit_candidate_global(idx, page_start + 1, now_epoch_secs));
+            }
+            if ch == b'\'' && page_size >= 3 && page_start + 2 < total {
+                return Some(self.commit_candidate_global(idx, page_start + 2, now_epoch_secs));
+            }
         }
 
         // Digit selection:
@@ -1134,55 +1266,121 @@ impl ChimeEngine {
             scheme: self.config.scheme,
             fuzzy: self.config.fuzzy,
             pangu_spacing: self.config.pangu_spacing,
+            uppercase_triggers_english: self.config.uppercase_triggers_english,
             now_epoch_secs,
         };
         let mut cands = self
             .decoder
             .decode(&raw_clone, &self.lexicon, &self.user_store, &ctx);
 
-        // Stage-2 Qwen2.5 Metal GPU contextual reranking with a 10ms synchronous frame-0 budget
-        // (~2.5ms typical on M-series GPU -> zero candidate flicker & zero dropped final
-        // keystrokes!), automatically falling back to async poll if > 10ms!
         if let Some(worker) = &self.async_reranker {
-            let full_texts: Vec<String> = cands
-                .iter()
-                .filter(|c| c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion)
-                .take(8)
-                .map(|c| c.text.clone())
-                .collect();
-            if full_texts.len() >= 2 {
-                let job = RerankJob {
-                    session_id: self.sessions[idx].id,
-                    generation_id: self.sessions[idx].generation_id,
-                    app_bundle_id: app_clone,
-                    left_context: effective_left,
-                    candidate_texts: full_texts,
-                    dispatched_at: Instant::now(),
-                };
-                if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(10)) {
-                    for (cand, bonus) in cands
-                        .iter_mut()
-                        .filter(|c| {
-                            c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion
-                        })
-                        .take(8)
-                        .zip(bonuses)
-                    {
-                        cand.score += bonus;
-                    }
-                    let (mut full_part, partial_part): (Vec<_>, Vec<_>) = cands
-                        .into_iter()
-                        .partition(|c| c.consumed_bytes == raw_clone.len());
-                    full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
-                    promote_top_completion_into_bar(&mut full_part);
-                    full_part.extend(partial_part);
-                    cands = full_part;
-                }
-            }
+            cands = Self::rerank_candidates_with_budget(
+                worker,
+                self.sessions[idx].id,
+                self.sessions[idx].generation_id,
+                app_clone,
+                effective_left,
+                &raw_clone,
+                cands,
+            );
         }
         self.sessions[idx].all_candidates = cands;
 
         self.build_snapshot(idx, true, String::new())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rerank_candidates_with_budget(
+        worker: &AsyncRerankHandle,
+        session_id: u64,
+        generation_id: u64,
+        app_bundle_id: String,
+        effective_left: String,
+        raw_clone: &str,
+        mut cands: Vec<Candidate>,
+    ) -> Vec<Candidate> {
+        let best_non_comp = cands
+            .iter()
+            .find(|c| c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion)
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        let full_texts: Vec<String> = cands
+            .iter()
+            .filter(|c| {
+                c.consumed_bytes == raw_clone.len()
+                    && c.kind != MatchKind::Completion
+                    && c.score >= best_non_comp - 5.4
+            })
+            .take(10)
+            .map(|c| c.text.clone())
+            .collect();
+        if full_texts.len() < 2 {
+            return cands;
+        }
+        let has_fem_cue = effective_left.chars().any(|c| {
+            matches!(
+                c,
+                '她' | '女'
+                    | '妈'
+                    | '姐'
+                    | '妹'
+                    | '姑'
+                    | '娘'
+                    | '妻'
+                    | '婆'
+                    | '姨'
+                    | '嫂'
+                    | '妇'
+                    | '母'
+                    | '护'
+                    | '闺'
+                    | '它'
+                    | '猫'
+                    | '狗'
+            )
+        });
+        let job = RerankJob {
+            session_id,
+            generation_id,
+            app_bundle_id,
+            left_context: effective_left,
+            candidate_texts: full_texts,
+            dispatched_at: Instant::now(),
+        };
+        let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(12)) else {
+            return cands;
+        };
+        let mut env_after = f32::NEG_INFINITY;
+        for (cand, bonus) in cands
+            .iter_mut()
+            .filter(|c| {
+                c.consumed_bytes == raw_clone.len()
+                    && c.kind != MatchKind::Completion
+                    && c.score >= best_non_comp - 5.4
+            })
+            .take(10)
+            .zip(bonuses)
+        {
+            cand.score += bonus;
+            env_after = env_after.max(cand.score);
+        }
+        let drift = env_after - best_non_comp;
+        if drift.is_finite() {
+            for cand in &mut cands {
+                if cand.consumed_bytes == raw_clone.len() && cand.kind != MatchKind::Completion {
+                    cand.score -= drift;
+                }
+            }
+        }
+        let (mut full_part, partial_part): (Vec<_>, Vec<_>) = cands
+            .into_iter()
+            .partition(|c| c.consumed_bytes == raw_clone.len());
+        full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
+        if !has_fem_cue {
+            chime_decoder::apply_unmarked_pronoun_symmetry(&mut full_part, raw_clone.len());
+        }
+        promote_top_completion_into_bar(&mut full_part);
+        full_part.extend(partial_part);
+        full_part
     }
 
     fn commit_candidate_global(
@@ -1334,6 +1532,8 @@ impl ChimeEngine {
             grid_expanded: sess.grid_expanded,
             ghost_text: sess.ghost_suggestion.clone().unwrap_or_default(),
             candidate_layout: self.config.candidate_layout,
+            candidate_font_size: self.config.candidate_font_size,
+            show_status_toast: self.config.show_status_toast,
             generation_id: sess.generation_id,
         }
     }
@@ -1352,6 +1552,38 @@ impl ChimeEngine {
 
 fn is_cjk_hanzi(c: char) -> bool {
     ('\u{4E00}'..='\u{9FA5}').contains(&c)
+}
+
+#[derive(Debug)]
+struct MidpointPrefixAdapter {
+    worker: AsyncRerankHandle,
+}
+
+impl chime_decoder::NeuralReranker for MidpointPrefixAdapter {
+    fn score_batch(
+        &self,
+        _left_context: &str,
+        _app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        vec![0.0; candidates.len()]
+    }
+
+    fn score_open_prefix_batch(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        self.worker.score_sync_mode_with_timeout(
+            left_context,
+            app_bundle_id,
+            &texts,
+            true,
+            Some(Duration::from_millis(5)),
+        )
+    }
 }
 
 fn apply_boundary_pangu_spacing(left_context: &str, committed: &str, enabled: bool) -> String {
@@ -1507,5 +1739,110 @@ mod tests {
             gc = engine.process_key(sid, key(b, 0), 200);
         }
         assert_eq!(gc.candidates[0].text, "过程中");
+    }
+
+    #[test]
+    fn test_should_support_sogou_doubao_usability_settings_pangu_numbers_shift_and_paging() {
+        let mut engine = ChimeEngine::default();
+        let sid = engine.create_session("md.obsidian");
+
+        // 1. Default `pangu_spacing = true`: symmetric spacing around numbers (`我有 100 个`)
+        for b in *b"woyou" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let r_woyou = engine.process_key(sid, key(b' ', 0x31), 300);
+        assert_eq!(r_woyou.committed_text, "我有");
+
+        let r_d1 = engine.process_key(sid, key(b'1', 0x12), 300);
+        assert!(r_d1.handled);
+        assert_eq!(r_d1.committed_text, " 1");
+        let r_d0 = engine.process_key(sid, key(b'0', 0x1D), 300);
+        assert!(!r_d0.handled); // subsequent digits pass through natively
+        let _ = engine.process_key(sid, key(b'0', 0x1D), 300);
+
+        for b in *b"ge" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let r_ge = engine.process_key(sid, key(b' ', 0x31), 300);
+        assert_eq!(r_ge.committed_text, " 个");
+
+        // 2. Toggle `pangu_spacing = false`: zero spaces inserted around numbers or English!
+        let _ = engine.toggle_pangu_spacing(sid);
+        assert!(!engine.config().pangu_spacing);
+        engine.reset_session(sid);
+        for b in *b"woyou" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let _ = engine.process_key(sid, key(b' ', 0x31), 300);
+        let r_no_space = engine.process_key(sid, key(b'5', 0x17), 300);
+        assert!(!r_no_space.handled);
+        assert_eq!(r_no_space.committed_text, "");
+        for b in *b"ge" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let r_ge_nospace = engine.process_key(sid, key(b' ', 0x31), 300);
+        assert_eq!(r_ge_nospace.committed_text, "个");
+
+        // Re-enable `pangu_spacing = true` and verify inline English mode (`Shift`) spacing!
+        let _ = engine.toggle_pangu_spacing(sid);
+        for b in *b"shiyong" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let _ = engine.process_key(sid, key(b' ', 0x31), 300); // commits `使用` (or ` 使用`)
+        let to_eng = engine.toggle_inline_english(sid);
+        assert!(to_eng.inline_english_mode);
+        let first_eng = engine.process_key(sid, key(b'R', 0x0F), 300);
+        assert!(first_eng.handled);
+        assert_eq!(first_eng.committed_text, " R");
+        let _ = engine.process_key(sid, key(b'u', 0), 300);
+        let _ = engine.process_key(sid, key(b's', 0), 300);
+        let _ = engine.process_key(sid, key(b't', 0), 300);
+        let back_zh = engine.toggle_inline_english(sid);
+        assert!(!back_zh.inline_english_mode);
+
+        // 3. Leading uppercase direct English (`Hello`, `Mac` -> `Mac` + `MacBook`)
+        let mut up_resp = EngineResponse::default();
+        for b in *b"Mac" {
+            up_resp = engine.process_key(sid, key(b, 0), 300);
+        }
+        assert_eq!(up_resp.candidates[0].text, "Mac");
+        assert!(up_resp.candidates.iter().any(|c| c.text == "MacBook"));
+        let committed_mac = engine.process_key(sid, key(b' ', 0x31), 300);
+        assert!(committed_mac.committed_text.ends_with("Mac"));
+
+        // 4. `ShiftCommitMode::CommitKeepChinese` commits raw ASCII while staying in Chinese mode!
+        let mut cfg = engine.config().clone();
+        cfg.shift_commit_mode = ShiftCommitMode::CommitKeepChinese;
+        cfg.bracket_paging = true;
+        cfg.semicolon_apostrophe_select = true;
+        engine
+            .update_config(cfg)
+            .unwrap_or_else(|_| std::process::abort());
+        for b in *b"dev" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let keep_zh = engine.toggle_inline_english(sid);
+        assert!(!keep_zh.inline_english_mode);
+        assert!(keep_zh.committed_text.ends_with("dev"));
+
+        // 5. Smart numeric colon exemption (`12:30` -> `:` stays half-width!)
+        let _ = engine.process_key(sid, key(b'1', 0x12), 300);
+        let _ = engine.process_key(sid, key(b'2', 0x13), 300);
+        let colon_resp = engine.process_key(sid, key(b':', 0x29), 300);
+        assert_eq!(colon_resp.committed_text, ":");
+
+        // 6. Bracket paging (`]`) and `;` 2nd-candidate quick selection + `clear_user_habits`
+        for b in *b"shi" {
+            let _ = engine.process_key(sid, key(b, 0), 300);
+        }
+        let paged = engine.process_key(sid, key(b']', 0x1E), 300);
+        assert_eq!(paged.page_index, 1);
+        let second_on_p2 = paged.candidates[1].text.clone();
+        let quick_sel = engine.process_key(sid, key(b';', 0x29), 300);
+        assert!(quick_sel.committed_text.ends_with(&second_on_p2));
+
+        assert!(engine.status().learned_habits > 0);
+        engine.clear_user_habits();
+        assert_eq!(engine.status().learned_habits, 0);
     }
 }

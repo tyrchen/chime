@@ -35,13 +35,28 @@ public final class ChimeInputController: IMKInputController {
     }
 
     override public func menu() -> NSMenu! {
-        let isCnPunct: Bool = MainActor.assumeIsolated {
-            ChimeEngineBridge.shared.getConfig()?.chinese_punctuation ?? true
+        let key = ObjectIdentifier(self)
+        let (cfg, isEng): (ChimeConfigDTO, Bool) = MainActor.assumeIsolated {
+            (
+                ChimeEngineBridge.shared.getConfig() ?? .default,
+                ChimeEngineBridge.shared.isInlineEnglish(controllerKey: key)
+            )
         }
 
         let menu = NSMenu(title: "Chime")
 
-        let punctTitle = isCnPunct ? "切换至英文半角标点 (.,)   ⌃." : "切换至中文全角标点 (。，)   ⌃."
+        let modeTitle = isEng ? "切换至中文输入模式 (中)   ⇧" : "切换至英文输入模式 (英)   ⇧"
+        let modeItem = NSMenuItem(
+            title: modeTitle,
+            action: #selector(toggleEnglishMode(_:)),
+            keyEquivalent: ""
+        )
+        modeItem.target = self
+        menu.addItem(modeItem)
+
+        let punctTitle = cfg.chinese_punctuation
+            ? "切换至英文半角标点 (.,)   ⌃."
+            : "切换至中文全角标点 (。，)   ⌃."
         let punctItem = NSMenuItem(
             title: punctTitle,
             action: #selector(togglePunctuationMode(_:)),
@@ -49,6 +64,16 @@ public final class ChimeInputController: IMKInputController {
         )
         punctItem.target = self
         menu.addItem(punctItem)
+
+        let panguItem = NSMenuItem(
+            title: "中英文与数字前后自动插入空格",
+            action: #selector(togglePanguSpacingMode(_:)),
+            keyEquivalent: ""
+        )
+        panguItem.state = cfg.pangu_spacing ? .on : .off
+        panguItem.target = self
+        menu.addItem(panguItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let prefsItem = NSMenuItem(
@@ -78,10 +103,34 @@ public final class ChimeInputController: IMKInputController {
         return menu
     }
 
+    @objc public func toggleEnglishMode(_ sender: Any?) {
+        let key = ObjectIdentifier(self)
+        MainActor.assumeIsolated {
+            let resp = ChimeEngineBridge.shared.toggleEnglish(controllerKey: key)
+            ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
+            if resp.show_status_toast {
+                let caret = ChimeEngineBridge.shared.caretRect(for: key)
+                StatusToastPanel.shared.show(badge: resp.inline_english_mode ? "英" : "中", caretRect: caret)
+            }
+        }
+    }
+
     @objc public func togglePunctuationMode(_ sender: Any?) {
         let key = ObjectIdentifier(self)
         MainActor.assumeIsolated {
             let resp = ChimeEngineBridge.shared.togglePunctuation(controllerKey: key)
+            ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
+            if resp.show_status_toast {
+                let caret = ChimeEngineBridge.shared.caretRect(for: key)
+                StatusToastPanel.shared.show(badge: resp.chinese_punctuation ? "中。" : "英.", caretRect: caret)
+            }
+        }
+    }
+
+    @objc public func togglePanguSpacingMode(_ sender: Any?) {
+        let key = ObjectIdentifier(self)
+        MainActor.assumeIsolated {
+            let resp = ChimeEngineBridge.shared.togglePanguSpacing(controllerKey: key)
             ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
         }
     }
@@ -127,9 +176,6 @@ public final class ChimeInputController: IMKInputController {
         let isCtrlPeriod = ctrlOnly && (keyCode == 0x2F || event.charactersIgnoringModifiers == ".")
         let secure = IsSecureEventInputEnabled()
 
-        // Opportunistically observe up to 96 UTF-16 code units before the cursor from host apps
-        // that implement `selectedRange` + `attributedSubstring` so the sliding context window
-        // stays locked onto real document text even across mouse clicks or edits!
         let observedLeftContext: String? = {
             if secure || type != .keyDown {
                 return nil
@@ -146,6 +192,9 @@ public final class ChimeInputController: IMKInputController {
             return nil
         }()
 
+        var isModeToggleToast = false
+        var isPunctToggleToast = false
+
         let response: ChimeResponse? = MainActor.assumeIsolated {
             ChimeEngineBridge.shared.registerClient(controllerKey: key, client: unsafeClientObj)
             if let observedLeftContext {
@@ -156,17 +205,22 @@ public final class ChimeInputController: IMKInputController {
             }
 
             if type == .flagsChanged {
-                return ChimeEngineBridge.shared.pollLeftShiftTap(
+                let toggled = ChimeEngineBridge.shared.pollModifierToggle(
                     controllerKey: key,
                     keyCode: keyCode,
-                    shiftDown: shiftDown,
+                    flags: flags,
                     timestamp: timestamp
                 )
+                if toggled != nil {
+                    isModeToggleToast = true
+                }
+                return toggled
             }
             guard type == .keyDown else {
                 return nil
             }
             if isCtrlPeriod {
+                isPunctToggleToast = true
                 return ChimeEngineBridge.shared.togglePunctuation(controllerKey: key)
             }
             return ChimeEngineBridge.shared.processKey(
@@ -182,7 +236,24 @@ public final class ChimeInputController: IMKInputController {
         guard let resp = response else {
             return false
         }
-        applyClientOutput(controllerKey: key, resp: resp, client: client)
+        let validRect = applyClientOutput(controllerKey: key, resp: resp, client: client)
+
+        if resp.show_status_toast && (isModeToggleToast || isPunctToggleToast) {
+            MainActor.assumeIsolated {
+                let rect = validRect ?? ChimeEngineBridge.shared.caretRect(for: key)
+                if isModeToggleToast {
+                    StatusToastPanel.shared.show(
+                        badge: resp.inline_english_mode ? "英" : "中",
+                        caretRect: rect
+                    )
+                } else if isPunctToggleToast {
+                    StatusToastPanel.shared.show(
+                        badge: resp.chinese_punctuation ? "中。" : "英.",
+                        caretRect: rect
+                    )
+                }
+            }
+        }
         return resp.handled
     }
 
@@ -193,11 +264,12 @@ public final class ChimeInputController: IMKInputController {
         }
     }
 
+    @discardableResult
     private func applyClientOutput(
         controllerKey: ObjectIdentifier,
         resp: ChimeResponse,
         client: IMKTextInput
-    ) {
+    ) -> NSRect? {
         if !resp.committed_text.isEmpty {
             client.insertText(
                 resp.committed_text,
@@ -216,6 +288,7 @@ public final class ChimeInputController: IMKInputController {
                 replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
             )
             MainActor.assumeIsolated {
+                ChimeEngineBridge.shared.recordObservedCaretRect(controllerKey: controllerKey, rect: validRect)
                 if resp.ghost_text.isEmpty {
                     CandidatePanel.shared.hide()
                 } else {
@@ -226,7 +299,7 @@ public final class ChimeInputController: IMKInputController {
                     )
                 }
             }
-            return
+            return validRect
         }
 
         let nsPreedit = resp.preedit_text as NSString
@@ -243,5 +316,6 @@ public final class ChimeInputController: IMKInputController {
                 observedCaretRect: validRect
             )
         }
+        return validRect
     }
 }

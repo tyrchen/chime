@@ -1,0 +1,680 @@
+# Closed-class modern Mandarin grammatical morphemes and functional constructions.
+# Strictly restricted to closed grammatical classes (pronouns, copula/modals, classifiers,
+# aspect/structural particles, directional/potential verbal clitics, and locative clitics)
+# that word-based newspaper tokenizers split into separate tokens.
+# Open-domain nouns, verbs, and phrases belong in the corpus dictionary (`core.imedict`) + LLM.
+
+grammar_entries:
+  # Personal, demonstrative & interrogative pronouns
+  - surface: "我"
+    pinyin: "wo"
+    log_prob: -2.45
+  - surface: "你"
+    pinyin: "ni"
+    log_prob: -2.65
+  - surface: "他"
+    pinyin: "ta"
+    log_prob: -2.55
+  - surface: "她"
+    pinyin: "ta"
+    log_prob: -3.35
+  - surface: "它"
+    pinyin: "ta"
+    log_prob: -3.55
+  - surface: "我们"
+    pinyin: "wo men"
+    log_prob: -2.95
+  - surface: "你们"
+    pinyin: "ni men"
+    log_prob: -3.35
+  - surface: "他们"
+    pinyin: "ta men"
+    log_prob: -3.10
+  - surface: "她们"
+    pinyin: "ta men"
+    log_prob: -3.55
+  - surface: "自己"
+    pinyin: "zi ji"
+    log_prob: -3.15
+  - surface: "大家"
+    pinyin: "da jia"
+    log_prob: -3.20
+  - surface: "这"
+    pinyin: "zhe"
+    log_prob: -2.85
+  - surface: "那"
+    pinyin: "na"
+    log_prob: -2.95
+  - surface: "哪"
+    pinyin: "na"
+    log_prob: -3.25
+  - surface: "谁"
+    pinyin: "shui"
+    log_prob: -3.05
+  - surface: "谁"
+    pinyin: "shei"
+    log_prob: -3.25
+  - surface: "什么"
+    pinyin: "shen me"
+    log_prob: -3.05
+  - surface: "怎么"
+    pinyin: "zen me"
+    log_prob: -3.15
+  - surface: "为什么"
+    pinyin: "wei shen me"
+    log_prob: -3.25
+  - surface: "这样"
+    pinyin: "zhe yang"
+    log_prob: -3.15
+  - surface: "那样"
+    pinyin: "na yang"
+    log_prob: -3.35
+  - surface: "这么"
+    pinyin: "zhe me"
+    log_prob: -3.10
+  - surface: "那么"
+    pinyin: "na me"
+    log_prob: -3.15
+  - surface: "多么"
+    pinyin: "duo me"
+    log_prob: -3.45
+  - surface: "这里"
+    pinyin: "zhe li"
+    log_prob: -3.05
+  - surface: "那里"
+    pinyin: "na li"
+    log_prob: -3.15
+  - surface: "哪里"
+    pinyin: "na li"
+    log_prob: -3.10
+
+  # Core structural, aspect, copula, negation, modal & prepositional functors
+  - surface: "的"
+    pinyin: "de"
+    log_prob: -2.05
+  - surface: "地"
+    pinyin: "di"
+    log_prob: -3.05
+  - surface: "地"
+    pinyin: "de"
+    log_prob: -3.80
+  - surface: "得"
+    pinyin: "de"
+    log_prob: -3.45
+  - surface: "得"
+    pinyin: "dei"
+    log_prob: -3.75
+  - surface: "是"
+    pinyin: "shi"
+    log_prob: -2.40
+  - surface: "在"
+    pinyin: "zai"
+    log_prob: -2.75
+  - surface: "再"
+    pinyin: "zai"
+    log_prob: -2.95
+  - surface: "有"
+    pinyin: "you"
+    log_prob: -2.75
+  - surface: "没有"
+    pinyin: "mei you"
+    log_prob: -3.05
+  - surface: "了"
+    pinyin: "le"
+    log_prob: -2.45
+  - surface: "着"
+    pinyin: "zhe"
+    log_prob: -2.85
+  - surface: "过"
+    pinyin: "guo"
+    log_prob: -2.95
+  - surface: "不"
+    pinyin: "bu"
+    log_prob: -2.65
+  - surface: "没"
+    pinyin: "mei"
+    log_prob: -2.85
+  - surface: "很"
+    pinyin: "hen"
+    log_prob: -2.85
+  - surface: "真"
+    pinyin: "zhen"
+    log_prob: -3.05
+  - surface: "最"
+    pinyin: "zui"
+    log_prob: -3.00
+  - surface: "更"
+    pinyin: "geng"
+    log_prob: -3.05
+  - surface: "太"
+    pinyin: "tai"
+    log_prob: -3.05
+  - surface: "也"
+    pinyin: "ye"
+    log_prob: -2.75
+  - surface: "都"
+    pinyin: "dou"
+    log_prob: -2.75
+  - surface: "就"
+    pinyin: "jiu"
+    log_prob: -2.75
+  - surface: "才"
+    pinyin: "cai"
+    log_prob: -3.05
+  - surface: "还"
+    pinyin: "hai"
+    log_prob: -2.75
+  - surface: "又"
+    pinyin: "you"
+    log_prob: -3.05
+  - surface: "和"
+    pinyin: "he"
+    log_prob: -2.95
+  - surface: "与"
+    pinyin: "yu"
+    log_prob: -3.35
+  - surface: "把"
+    pinyin: "ba"
+    log_prob: -2.95
+  - surface: "被"
+    pinyin: "bei"
+    log_prob: -3.10
+  - surface: "给"
+    pinyin: "gei"
+    log_prob: -3.00
+  - surface: "让"
+    pinyin: "rang"
+    log_prob: -3.05
+  - surface: "对"
+    pinyin: "dui"
+    log_prob: -2.95
+  - surface: "跟"
+    pinyin: "gen"
+    log_prob: -2.95
+  - surface: "向"
+    pinyin: "xiang"
+    log_prob: -3.20
+  - surface: "从"
+    pinyin: "cong"
+    log_prob: -3.10
+  - surface: "比"
+    pinyin: "bi"
+    log_prob: -3.15
+  - surface: "吗"
+    pinyin: "ma"
+    log_prob: -2.80
+  - surface: "吧"
+    pinyin: "ba"
+    log_prob: -2.75
+  - surface: "呢"
+    pinyin: "ne"
+    log_prob: -2.90
+  - surface: "啊"
+    pinyin: "a"
+    log_prob: -3.05
+  - surface: "呀"
+    pinyin: "ya"
+    log_prob: -3.25
+  - surface: "啦"
+    pinyin: "la"
+    log_prob: -3.30
+  - surface: "想"
+    pinyin: "xiang"
+    log_prob: -2.90
+  - surface: "要"
+    pinyin: "yao"
+    log_prob: -2.80
+  - surface: "会"
+    pinyin: "hui"
+    log_prob: -2.80
+  - surface: "能"
+    pinyin: "neng"
+    log_prob: -2.90
+  - surface: "可以"
+    pinyin: "ke yi"
+    log_prob: -2.95
+  - surface: "应该"
+    pinyin: "ying gai"
+    log_prob: -3.05
+  - surface: "能够"
+    pinyin: "neng gou"
+    log_prob: -3.20
+  - surface: "需要"
+    pinyin: "xu yao"
+    log_prob: -3.20
+  - surface: "一起"
+    pinyin: "yi qi"
+    log_prob: -3.05
+  - surface: "正在"
+    pinyin: "zheng zai"
+    log_prob: -3.15
+  - surface: "已经"
+    pinyin: "yi jing"
+    log_prob: -3.15
+  - surface: "如果"
+    pinyin: "ru guo"
+    log_prob: -3.20
+  - surface: "因为"
+    pinyin: "yin wei"
+    log_prob: -3.20
+  - surface: "所以"
+    pinyin: "suo yi"
+    log_prob: -3.25
+  - surface: "但是"
+    pinyin: "dan shi"
+    log_prob: -3.15
+  - surface: "或者"
+    pinyin: "huo zhe"
+    log_prob: -3.35
+
+  # Closed-class pronoun/adverb + copula/modal clitic frames
+  - surface: "我是"
+    pinyin: "wo shi"
+    log_prob: -2.90
+  - surface: "你是"
+    pinyin: "ni shi"
+    log_prob: -3.00
+  - surface: "他是"
+    pinyin: "ta shi"
+    log_prob: -2.85
+  - surface: "她是"
+    pinyin: "ta shi"
+    log_prob: -3.55
+  - surface: "它是"
+    pinyin: "ta shi"
+    log_prob: -3.75
+  - surface: "这是"
+    pinyin: "zhe shi"
+    log_prob: -2.95
+  - surface: "那是"
+    pinyin: "na shi"
+    log_prob: -3.10
+  - surface: "都是"
+    pinyin: "dou shi"
+    log_prob: -3.05
+  - surface: "也是"
+    pinyin: "ye shi"
+    log_prob: -3.05
+  - surface: "就是"
+    pinyin: "jiu shi"
+    log_prob: -2.95
+  - surface: "还是"
+    pinyin: "hai shi"
+    log_prob: -3.05
+  - surface: "不是"
+    pinyin: "bu shi"
+    log_prob: -2.90
+  - surface: "只是"
+    pinyin: "zhi shi"
+    log_prob: -3.20
+  - surface: "可是"
+    pinyin: "ke shi"
+    log_prob: -3.30
+  - surface: "是谁"
+    pinyin: "shi shui"
+    log_prob: -3.15
+  - surface: "是谁"
+    pinyin: "shi shei"
+    log_prob: -3.35
+  - surface: "还有"
+    pinyin: "hai you"
+    log_prob: -3.05
+  - surface: "只有"
+    pinyin: "zhi you"
+    log_prob: -3.15
+  - surface: "不要"
+    pinyin: "bu yao"
+    log_prob: -3.05
+  - surface: "只要"
+    pinyin: "zhi yao"
+    log_prob: -3.20
+  - surface: "不会"
+    pinyin: "bu hui"
+    log_prob: -3.05
+  - surface: "不能"
+    pinyin: "bu neng"
+    log_prob: -3.05
+  - surface: "都会"
+    pinyin: "dou hui"
+    log_prob: -3.15
+  - surface: "也会"
+    pinyin: "ye hui"
+    log_prob: -3.20
+  - surface: "就会"
+    pinyin: "jiu hui"
+    log_prob: -3.10
+  - surface: "才会"
+    pinyin: "cai hui"
+    log_prob: -3.25
+  - surface: "还会"
+    pinyin: "hai hui"
+    log_prob: -3.25
+  - surface: "给我"
+    pinyin: "gei wo"
+    log_prob: -3.15
+  - surface: "给你"
+    pinyin: "gei ni"
+    log_prob: -3.25
+  - surface: "给他"
+    pinyin: "gei ta"
+    log_prob: -3.35
+  - surface: "给她"
+    pinyin: "gei ta"
+    log_prob: -3.45
+  - surface: "让我"
+    pinyin: "rang wo"
+    log_prob: -3.25
+  - surface: "跟我"
+    pinyin: "gen wo"
+    log_prob: -3.20
+  - surface: "跟你"
+    pinyin: "gen ni"
+    log_prob: -3.25
+
+  # Closed-class numeral / demonstrative + classifier frames
+  - surface: "一"
+    pinyin: "yi"
+    log_prob: -2.55
+  - surface: "个"
+    pinyin: "ge"
+    log_prob: -2.95
+  - surface: "一个"
+    pinyin: "yi ge"
+    log_prob: -3.00
+  - surface: "两个"
+    pinyin: "liang ge"
+    log_prob: -3.15
+  - surface: "三个"
+    pinyin: "san ge"
+    log_prob: -3.25
+  - surface: "四个"
+    pinyin: "si ge"
+    log_prob: -3.40
+  - surface: "五个"
+    pinyin: "wu ge"
+    log_prob: -3.45
+  - surface: "十个"
+    pinyin: "shi ge"
+    log_prob: -3.55
+  - surface: "半个"
+    pinyin: "ban ge"
+    log_prob: -3.45
+  - surface: "几个"
+    pinyin: "ji ge"
+    log_prob: -3.20
+  - surface: "每个"
+    pinyin: "mei ge"
+    log_prob: -3.25
+  - surface: "这个"
+    pinyin: "zhe ge"
+    log_prob: -3.05
+  - surface: "那个"
+    pinyin: "na ge"
+    log_prob: -3.15
+  - surface: "哪个"
+    pinyin: "na ge"
+    log_prob: -3.30
+  - surface: "整个"
+    pinyin: "zheng ge"
+    log_prob: -3.25
+  - surface: "这些"
+    pinyin: "zhe xie"
+    log_prob: -3.10
+  - surface: "那些"
+    pinyin: "na xie"
+    log_prob: -3.15
+  - surface: "哪些"
+    pinyin: "na xie"
+    log_prob: -3.25
+  - surface: "一些"
+    pinyin: "yi xie"
+    log_prob: -3.15
+  - surface: "一点"
+    pinyin: "yi dian"
+    log_prob: -3.15
+  - surface: "有点"
+    pinyin: "you dian"
+    log_prob: -3.10
+  - surface: "一下"
+    pinyin: "yi xia"
+    log_prob: -3.15
+  - surface: "一会儿"
+    pinyin: "yi hui er"
+    log_prob: -3.25
+  - surface: "这种"
+    pinyin: "zhe zhong"
+    log_prob: -3.10
+  - surface: "那种"
+    pinyin: "na zhong"
+    log_prob: -3.20
+  - surface: "一种"
+    pinyin: "yi zhong"
+    log_prob: -3.15
+  - surface: "这件"
+    pinyin: "zhe jian"
+    log_prob: -3.20
+  - surface: "一位"
+    pinyin: "yi wei"
+    log_prob: -3.35
+  - surface: "一只"
+    pinyin: "yi zhi"
+    log_prob: -3.35
+  - surface: "一条"
+    pinyin: "yi tiao"
+    log_prob: -3.35
+  - surface: "一张"
+    pinyin: "yi zhang"
+    log_prob: -3.35
+  - surface: "一件"
+    pinyin: "yi jian"
+    log_prob: -3.35
+  - surface: "一块"
+    pinyin: "yi kuai"
+    log_prob: -3.35
+  - surface: "一杯"
+    pinyin: "yi bei"
+    log_prob: -3.40
+  - surface: "一本"
+    pinyin: "yi ben"
+    log_prob: -3.40
+  - surface: "一次"
+    pinyin: "yi ci"
+    log_prob: -3.20
+  - surface: "一场"
+    pinyin: "yi chang"
+    log_prob: -3.35
+  - surface: "一段"
+    pinyin: "yi duan"
+    log_prob: -3.35
+  - surface: "一套"
+    pinyin: "yi tao"
+    log_prob: -3.40
+  - surface: "一份"
+    pinyin: "yi fen"
+    log_prob: -3.35
+  - surface: "一把"
+    pinyin: "yi ba"
+    log_prob: -3.35
+  - surface: "一双"
+    pinyin: "yi shuang"
+    log_prob: -3.35
+  - surface: "一碗"
+    pinyin: "yi wan"
+    log_prob: -3.35
+  - surface: "一辆"
+    pinyin: "yi liang"
+    log_prob: -3.35
+  - surface: "一座"
+    pinyin: "yi zuo"
+    log_prob: -3.35
+  - surface: "一家"
+    pinyin: "yi jia"
+    log_prob: -3.30
+  - surface: "一间"
+    pinyin: "yi jian"
+    log_prob: -3.40
+  - surface: "一瓶"
+    pinyin: "yi ping"
+    log_prob: -3.45
+  - surface: "一朵"
+    pinyin: "yi duo"
+    log_prob: -3.45
+  - surface: "一颗"
+    pinyin: "yi ke"
+    log_prob: -3.40
+  - surface: "一棵"
+    pinyin: "yi ke"
+    log_prob: -3.45
+  - surface: "一首"
+    pinyin: "yi shou"
+    log_prob: -3.40
+  - surface: "一封"
+    pinyin: "yi feng"
+    log_prob: -3.45
+  - surface: "一束"
+    pinyin: "yi shu"
+    log_prob: -3.45
+  - surface: "一顿"
+    pinyin: "yi dun"
+    log_prob: -3.45
+  - surface: "一项"
+    pinyin: "yi xiang"
+    log_prob: -3.35
+
+  # Closed-class locative clitics (`方位附着语素`)
+  - surface: "里的"
+    pinyin: "li de"
+    log_prob: -2.95
+  - surface: "里有"
+    pinyin: "li you"
+    log_prob: -3.05
+  - surface: "里面"
+    pinyin: "li mian"
+    log_prob: -3.15
+  - surface: "上的"
+    pinyin: "shang de"
+    log_prob: -3.00
+  - surface: "上有"
+    pinyin: "shang you"
+    log_prob: -3.15
+  - surface: "上面"
+    pinyin: "shang mian"
+    log_prob: -3.15
+  - surface: "下的"
+    pinyin: "xia de"
+    log_prob: -3.20
+  - surface: "下面"
+    pinyin: "xia mian"
+    log_prob: -3.20
+  - surface: "中的"
+    pinyin: "zhong de"
+    log_prob: -3.10
+  - surface: "外的"
+    pinyin: "wai de"
+    log_prob: -3.30
+  - surface: "内的"
+    pinyin: "nei de"
+    log_prob: -3.30
+  - surface: "前的"
+    pinyin: "qian de"
+    log_prob: -3.30
+  - surface: "后的"
+    pinyin: "hou de"
+    log_prob: -3.20
+  - surface: "边的"
+    pinyin: "bian de"
+    log_prob: -3.25
+
+  # Closed-class directional & potential complement clitics (`趋向/可能补语语素`)
+  - surface: "起来"
+    pinyin: "qi lai"
+    log_prob: -3.05
+  - surface: "出来"
+    pinyin: "chu lai"
+    log_prob: -3.05
+  - surface: "下来"
+    pinyin: "xia lai"
+    log_prob: -3.10
+  - surface: "过来"
+    pinyin: "guo lai"
+    log_prob: -3.10
+  - surface: "回来"
+    pinyin: "hui lai"
+    log_prob: -3.10
+  - surface: "上来"
+    pinyin: "shang lai"
+    log_prob: -3.25
+  - surface: "进来"
+    pinyin: "jin lai"
+    log_prob: -3.25
+  - surface: "出去"
+    pinyin: "chu qu"
+    log_prob: -3.15
+  - surface: "下去"
+    pinyin: "xia qu"
+    log_prob: -3.10
+  - surface: "过去"
+    pinyin: "guo qu"
+    log_prob: -3.10
+  - surface: "回去"
+    pinyin: "hui qu"
+    log_prob: -3.15
+  - surface: "上去"
+    pinyin: "shang qu"
+    log_prob: -3.20
+  - surface: "进去"
+    pinyin: "jin qu"
+    log_prob: -3.30
+  - surface: "不了"
+    pinyin: "bu liao"
+    log_prob: -3.20
+  - surface: "不起"
+    pinyin: "bu qi"
+    log_prob: -3.20
+  - surface: "不住"
+    pinyin: "bu zhu"
+    log_prob: -3.20
+  - surface: "不到"
+    pinyin: "bu dao"
+    log_prob: -3.10
+  - surface: "不开"
+    pinyin: "bu kai"
+    log_prob: -3.25
+  - surface: "不完"
+    pinyin: "bu wan"
+    log_prob: -3.30
+  - surface: "不上"
+    pinyin: "bu shang"
+    log_prob: -3.30
+  - surface: "不出"
+    pinyin: "bu chu"
+    log_prob: -3.25
+  - surface: "不清"
+    pinyin: "bu qing"
+    log_prob: -3.30
+  - surface: "不懂"
+    pinyin: "bu dong"
+    log_prob: -3.20
+  - surface: "不着"
+    pinyin: "bu zhao"
+    log_prob: -3.25
+
+  # Core self-referential IME domain terms
+  - surface: "双拼"
+    pinyin: "shuang pin"
+    log_prob: -3.85
+  - surface: "全拼"
+    pinyin: "quan pin"
+    log_prob: -4.05
+  - surface: "拼音"
+    pinyin: "pin yin"
+    log_prob: -3.75
+  - surface: "模糊音"
+    pinyin: "mo hu yin"
+    log_prob: -4.15
+  - surface: "输入法"
+    pinyin: "shu ru fa"
+    log_prob: -3.65
+  - surface: "候选词"
+    pinyin: "hou xuan ci"
+    log_prob: -4.10

@@ -247,7 +247,25 @@ class GreedyCompactTokenizer:
         return out
 
 
+def collect_benchmark_5grams() -> set[str]:
+    forbidden: set[str] = set()
+    for p in (Path("benchmarks/dev_suite.tsv"), Path("benchmarks/test_holdout.tsv")):
+        if not p.exists():
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) >= 6:
+                full = "".join(c for c in (cols[3] + cols[5]) if "\u4e00" <= c <= "\u9fa5")
+                for i in range(max(0, len(full) - 4)):
+                    if len(full[i : i + 5]) == 5:
+                        forbidden.add(full[i : i + 5])
+    return forbidden
+
+
 def augment_tech_corpus_from_hf(seed_lines: list[str], target_chars: int = 2_200_000) -> list[str]:
+    forbidden_5grams = collect_benchmark_5grams()
     lines = list(seed_lines[:24])
     chars = sum(len(s) for s in lines)
     tech_keywords = (
@@ -274,13 +292,19 @@ def augment_tech_corpus_from_hf(seed_lines: list[str], target_chars: int = 2_200
                     continue
                 if any(kw in txt for kw in tech_keywords):
                     snippet = txt[:500].replace("\n\n", "\n")
+                    cjk = "".join(c for c in snippet if "\u4e00" <= c <= "\u9fa5")
+                    if any(cjk[i : i + 5] in forbidden_5grams for i in range(max(0, len(cjk) - 4))):
+                        continue
                     lines.append(snippet)
                     chars += len(snippet)
                     if chars >= target_chars:
                         break
         except Exception as exc:
             print(f"  [tech-hf] skipped {repo}: {exc}", flush=True)
-    print(f"[tech] corpus ready: {len(lines):,} passages ({chars / 1e6:.2f}M chars)", flush=True)
+    print(
+        f"[tech] corpus ready: {len(lines):,} passages ({chars / 1e6:.2f}M chars, 0% overlap with {len(forbidden_5grams):,} benchmark 5-grams)",
+        flush=True,
+    )
     return lines
 
 

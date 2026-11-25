@@ -59,6 +59,8 @@ pub struct DecodeContext<'a> {
     pub fuzzy: FuzzyConfig,
     /// Whether to insert Pangu half-width spaces at Chinese-English boundaries.
     pub pangu_spacing: bool,
+    /// Treat leading uppercase input (`Hello`, `Mac`) as direct English input.
+    pub uppercase_triggers_english: bool,
     /// Current UNIX timestamp in seconds (for user habit decay).
     pub now_epoch_secs: u64,
 }
@@ -71,6 +73,7 @@ impl Default for DecodeContext<'_> {
             scheme: ShuangpinScheme::Full,
             fuzzy: FuzzyConfig::default(),
             pangu_spacing: true,
+            uppercase_triggers_english: true,
             now_epoch_secs: 0,
         }
     }
@@ -79,7 +82,7 @@ impl Default for DecodeContext<'_> {
 /// Pluggable Stage-2 neural language model reranker (`SafetensorsReranker` or `macOS` 15 `CoreML
 /// MLState`).
 pub trait NeuralReranker: std::fmt::Debug + Send + Sync {
-    /// Scores a batch of candidate surface texts given immutable `left_context` and
+    /// Scores a batch of complete candidate surface texts given immutable `left_context` and
     /// `app_bundle_id`. Returns one additive log-likelihood score per candidate.
     fn score_batch(
         &self,
@@ -87,6 +90,18 @@ pub trait NeuralReranker: std::fmt::Debug + Send + Sync {
         app_bundle_id: &str,
         candidates: &[Candidate],
     ) -> Vec<f32>;
+
+    /// Scores open mid-sentence beam prefixes (disabling right-boundary punctuation closure) to
+    /// guide long-sentence beam search without early homophone collapse.
+    fn score_open_prefix_batch(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        let _ = (left_context, app_bundle_id);
+        vec![0.0; candidates.len()]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -128,9 +143,15 @@ impl LatticeDecoder {
         self
     }
 
+    /// Updates or clears the attached neural reranker in place.
+    pub fn set_reranker(&mut self, reranker: Option<Box<dyn NeuralReranker>>) {
+        self.reranker = reranker;
+    }
+
     /// Decodes `raw_input` into ranked full-sentence candidates followed by step-by-step prefix
     /// word candidates.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn decode(
         &self,
         raw_input: &str,
@@ -142,18 +163,44 @@ impl LatticeDecoder {
             return Vec::new();
         }
 
-        if classify_code_switch(raw_input) == CodeSwitchSignal::HardRawCode {
-            return vec![Candidate {
+        let is_ms_shuangpin_ing =
+            ctx.scheme == ShuangpinScheme::Microsoft && raw_input.contains(';');
+        let starts_upper_english =
+            ctx.uppercase_triggers_english && raw_input.as_bytes()[0].is_ascii_uppercase();
+        if !is_ms_shuangpin_ing
+            && (starts_upper_english
+                || classify_code_switch(raw_input) == CodeSwitchSignal::HardRawCode)
+        {
+            let mut out = vec![Candidate {
                 text: raw_input.to_string(),
                 score: 0.0,
                 kind: MatchKind::CodeSwitch,
                 consumed_bytes: raw_input.len(),
             }];
+            if raw_input.len() >= 2 && raw_input.bytes().all(|b| b.is_ascii_alphabetic()) {
+                let lower_q = raw_input.to_ascii_lowercase();
+                for comp in lexicon.complete_english_prefix(&lower_q, 3) {
+                    if comp.surface != raw_input
+                        && (comp.is_tech_term || comp.log_prob > -4.5)
+                        && !out.iter().any(|c| c.text == comp.surface)
+                    {
+                        out.push(Candidate {
+                            text: comp.surface,
+                            score: comp.log_prob,
+                            kind: MatchKind::Completion,
+                            consumed_bytes: raw_input.len(),
+                        });
+                    }
+                }
+            }
+            return out;
         }
 
         let is_dev_app = UserStore::is_developer_app(ctx.app_bundle_id);
         let edges_by_start = self.build_edges(raw_input, lexicon, user_store, ctx, is_dev_app);
         let n = raw_input.len();
+        let checkpoints = select_neural_checkpoints(n);
+        let mut next_cp_idx = 0usize;
 
         let (seed_prev_content, seed_last_word) = extract_context_anchors(ctx.left_context);
         let mut beams: Vec<Vec<BeamState>> = vec![Vec::new(); n + 1];
@@ -172,18 +219,83 @@ impl LatticeDecoder {
             }
             if raw_input.as_bytes()[i] == b'\'' {
                 let carried = beams[i].clone();
-                Self::merge_and_prune(&mut beams[i + 1], carried, 12);
+                Self::merge_and_prune(&mut beams[i + 1], carried, 40);
                 continue;
+            }
+
+            // Mid-sentence open-prefix neural beam guidance on long sentences (`>= 20` bytes):
+            // wait until a genuine multi-syllable word boundary (never firing mid-word when an
+            // already-populated span `j > i` has a stronger per-byte score!) and rescore up to 12
+            // competing prefixes while shifting unscored tail beams down proportionately.
+            if let Some(&cp_target) = checkpoints.get(next_cp_idx)
+                && i >= cp_target
+                && !edges_by_start[i].is_empty()
+            {
+                #[allow(clippy::cast_precision_loss)]
+                let cur_rate = beams[i][0].score / (i.max(1) as f32);
+                let has_better_span_ahead = ((i + 1)..=n.min(i + 6)).any(|j| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let ahead_ok = !beams[j].is_empty()
+                        && (!edges_by_start.get(j).is_none_or(Vec::is_empty) || j == n)
+                        && (beams[j][0].score / (j as f32)) > cur_rate + 0.05;
+                    ahead_ok
+                });
+                if !has_better_span_ahead {
+                    next_cp_idx += 1;
+                    if let Some(reranker) = &self.reranker
+                        && beams[i].len() >= 2
+                    {
+                        let take_k = beams[i].len().min(12);
+                        let prefix_batch: Vec<Candidate> = beams[i][..take_k]
+                            .iter()
+                            .map(|st| Candidate {
+                                text: st.text.clone(),
+                                score: st.score,
+                                kind: st.kind,
+                                consumed_bytes: i,
+                            })
+                            .collect();
+                        let deltas = reranker.score_open_prefix_batch(
+                            ctx.left_context,
+                            ctx.app_bundle_id,
+                            &prefix_batch,
+                        );
+                        if deltas.iter().any(|&d| d.abs() > 1e-4) {
+                            let env_before = beams[i][0].score;
+                            let min_delta = deltas.iter().copied().fold(0.0_f32, f32::min);
+                            let mut env_after = f32::NEG_INFINITY;
+                            for (st, delta) in beams[i][..take_k].iter_mut().zip(deltas) {
+                                st.score += delta;
+                                env_after = env_after.max(st.score);
+                            }
+                            let tail_shift = (min_delta - 0.35).min(-0.35);
+                            for st in &mut beams[i][take_k..] {
+                                st.score += tail_shift;
+                            }
+                            // DAG potential-preserving anchor: never inflate `beams[i]` above
+                            // `env_before`, otherwise paths splitting at vertex `i` (`容易到+至`)
+                            // gain free nats over multi-syllable words straddling `i` (`导致`)!
+                            let drift = env_after - env_before;
+                            if drift.is_finite() {
+                                for st in &mut beams[i] {
+                                    st.score -= drift;
+                                }
+                            }
+                            beams[i].sort_by(|a, b| b.score.total_cmp(&a.score));
+                        }
+                    }
+                }
             }
 
             let current_states = beams[i].clone();
             for edge in &edges_by_start[i] {
                 let mut next_states = Vec::with_capacity(current_states.len());
+                let is_utterance_end = edge.end == n;
                 for st in &current_states {
                     let mut composed = st.text.clone();
                     if !composed.is_empty()
                         && ctx.pangu_spacing
-                        && (st.last_is_english != edge.is_english)
+                        && (st.last_is_english || edge.is_english)
                     {
                         composed.push(' ');
                     }
@@ -219,24 +331,38 @@ impl LatticeDecoder {
                         st.last_word.clone()
                     };
 
-                    let boundary_cost = if is_grammatical_affix(&edge.surface)
+                    let clitic_bonus =
+                        prosodic_clitic_cohesion(&st.last_word, &edge.surface, st.kind, edge.kind);
+                    let boundary_cost = if clitic_bonus > 0.0 {
+                        0.0
+                    } else if is_grammatical_affix(&edge.surface)
                         || is_grammatical_affix(&st.last_word)
                     {
-                        0.14
+                        0.08
                     } else {
-                        0.55
+                        0.40
                     };
+                    let syntax_pen = syntactic_transition_penalty(
+                        &st.prev_content_word,
+                        &st.last_word,
+                        &edge.surface,
+                        edge.kind,
+                        is_utterance_end,
+                        n,
+                    );
 
                     next_states.push(BeamState {
                         text: composed,
                         prev_content_word: next_prev_content,
                         last_word: edge.surface.clone(),
                         last_is_english: edge.is_english,
-                        score: st.score + edge.score + direct_bg.max(skip_bg) + tg - boundary_cost,
+                        score: st.score + edge.score + direct_bg.max(skip_bg) + tg - boundary_cost
+                            + clitic_bonus
+                            + syntax_pen,
                         kind: next_kind,
                     });
                 }
-                Self::merge_and_prune(&mut beams[edge.end], next_states, 12);
+                Self::merge_and_prune(&mut beams[edge.end], next_states, 40);
             }
         }
 
@@ -342,15 +468,21 @@ impl LatticeDecoder {
             }
         }
 
-        // Append English prefix completions (`chatg` -> `ChatGPT`, `kubern` -> `Kubernetes`).
-        for comp in lexicon.complete_english_prefix(&lower_all, 3) {
-            if !full_candidates.iter().any(|c| c.text == comp.surface) {
-                full_candidates.push(Candidate {
-                    text: comp.surface,
-                    score: comp.log_prob - 0.8,
-                    kind: MatchKind::Completion,
-                    consumed_bytes: n,
-                });
+        // Append curated English/tech prefix completions (`chatg` -> `ChatGPT`, `kubern` ->
+        // `Kubernetes`), ignoring low-prior `/usr/share/dict/words` entries (`mingelen`) so valid
+        // Mandarin words (`minge` -> `名额`) are never displaced!
+        if lower_all.len() >= 4 {
+            for comp in lexicon.complete_english_prefix(&lower_all, 4) {
+                if (comp.is_tech_term || comp.log_prob > -4.5)
+                    && !full_candidates.iter().any(|c| c.text == comp.surface)
+                {
+                    full_candidates.push(Candidate {
+                        text: comp.surface,
+                        score: comp.log_prob - 0.8,
+                        kind: MatchKind::Completion,
+                        consumed_bytes: n,
+                    });
+                }
             }
         }
 
@@ -415,25 +547,89 @@ impl LatticeDecoder {
         }
 
         full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
-        full_candidates.truncate(15);
+        full_candidates.truncate(36);
 
         if let Some(reranker) = &self.reranker {
+            let best_non_comp = full_candidates
+                .iter()
+                .find(|c| c.kind != MatchKind::Completion)
+                .map_or(f32::NEG_INFINITY, |c| c.score);
             let mut non_comp_indices: Vec<usize> = full_candidates
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| c.kind != MatchKind::Completion)
+                .filter(|(_, c)| c.kind != MatchKind::Completion && c.score >= best_non_comp - 6.8)
                 .map(|(i, _)| i)
-                .take(6)
+                .take(22)
                 .collect();
             if non_comp_indices.len() >= 2 {
+                let env_before = non_comp_indices
+                    .iter()
+                    .map(|&i| full_candidates[i].score)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let batch: Vec<Candidate> = non_comp_indices
                     .iter()
                     .map(|&i| full_candidates[i].clone())
                     .collect();
                 let bonuses = reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &batch);
-                for (idx, bonus) in non_comp_indices.drain(..).zip(bonuses) {
+                let min_bonus = bonuses.iter().copied().fold(0.0_f32, f32::min);
+                let mut scored_mask = vec![false; full_candidates.len()];
+                let mut env_after = f32::NEG_INFINITY;
+                for (&idx, &bonus) in non_comp_indices.iter().zip(bonuses.iter()) {
                     full_candidates[idx].score += bonus;
+                    env_after = env_after.max(full_candidates[idx].score);
+                    scored_mask[idx] = true;
                 }
+                let unscored_shift = (min_bonus - 0.40).min(-0.40);
+                for (idx, cand) in full_candidates.iter_mut().enumerate() {
+                    if !scored_mask[idx] && cand.kind != MatchKind::Completion {
+                        cand.score += unscored_shift;
+                    }
+                }
+                // Envelope-preserving calibration: keep exact pairwise differences among all
+                // non-completion candidates while anchoring their maximum score to `env_before` so
+                // Stage-2 zero-mean shifts never inflate above `Completion` candidates!
+                let drift = env_after - env_before;
+                if drift.is_finite() {
+                    for cand in &mut full_candidates {
+                        if cand.kind != MatchKind::Completion {
+                            cand.score -= drift;
+                        }
+                    }
+                }
+                non_comp_indices.clear();
+                full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+            }
+        }
+
+        if has_explicit_feminine_antecedent(ctx.left_context) {
+            promote_or_synthesize_pronoun_twin(&mut full_candidates, n, '他', '她', 0.35);
+        } else if !has_feminine_or_neuter_cue(ctx.left_context) {
+            apply_unmarked_pronoun_symmetry(&mut full_candidates, n);
+        }
+
+        // Slot-1 Exactness Invariant: `MatchKind::Completion` represents untyped future syllables
+        // for `Tab` auto-completion, never usurping Slot #1 (`Space` key) when a full-span match
+        // for the actually typed syllables exists (unless explicitly promoted by left-context
+        // couplet continuation `score > 2.0`)!
+        if let Some((top_full, top_kind)) = full_candidates
+            .iter()
+            .find(|c| c.kind != MatchKind::Completion)
+            .map(|c| (c.score, c.kind))
+        {
+            let mut clamped_comp = false;
+            for cand in &mut full_candidates {
+                let full_is_plausible =
+                    top_kind == MatchKind::Exact || top_full > cand.score - 2.20;
+                if full_is_plausible
+                    && cand.kind == MatchKind::Completion
+                    && cand.score < 2.0
+                    && cand.score >= top_full
+                {
+                    cand.score = top_full - 0.05;
+                    clamped_comp = true;
+                }
+            }
+            if clamped_comp {
                 full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
             }
         }
@@ -535,12 +731,24 @@ impl LatticeDecoder {
             &mut edges,
         );
 
-        // Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`).
-        // Never trigger on spans that are already valid canonical single syllables (`gen`, `ban`)!
+        // Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`, `bzd` ->
+        // `不知道`): only trigger on whole-input abbreviation queries (or explicit `'`-delimited
+        // spans), NEVER mid-syllable inside a valid full-Pinyin sentence where nasal codas (`ng` +
+        // `d/z/s/c/l/h`) would otherwise hallucinate `戈达尔(gde)` / `工作(gz)` / `能够(ng)`!
         if ctx.scheme == ShuangpinScheme::Full {
+            let full_is_canonical = n >= 4 && chime_phonetics::can_segment_exact(&lower);
             for start in 0..n {
+                let left_delimited = start == 0 || lower.as_bytes()[start - 1] == b'\'';
+                if full_is_canonical && start > 0 {
+                    break;
+                }
                 for len in 2..=6.min(n - start) {
-                    let sub = &lower[start..start + len];
+                    let end = start + len;
+                    let right_delimited = end == n || lower.as_bytes()[end] == b'\'';
+                    if full_is_canonical && (!left_delimited || !right_delimited) {
+                        continue;
+                    }
+                    let sub = &lower[start..end];
                     if !sub.bytes().all(|b| b.is_ascii_lowercase())
                         || chime_phonetics::is_valid_syllable(sub)
                     {
@@ -548,7 +756,7 @@ impl LatticeDecoder {
                     }
                     for entry in lexicon.lookup_skeleton(sub).into_iter().take(3) {
                         edges[start].push(LatticeEdge {
-                            end: start + len,
+                            end,
                             surface: entry.surface,
                             score: entry.log_prob - 1.35,
                             kind: MatchKind::Abbreviation,
@@ -566,17 +774,28 @@ impl LatticeDecoder {
                 let raw_sub = &raw_input[start..end];
                 let lower_sub = &lower[start..end];
                 if let Some(eng) = lexicon.lookup_english(lower_sub) {
+                    // Suppress generic lowercase `/usr/share/dict/words` entries (`chile`, `tian`,
+                    // `wang`, `song`) inside longer pure-Pinyin sentences when the user typed no
+                    // uppercase cue and the word is neither a tech term nor proper-cased!
+                    if !(eng.is_tech_term || (start == 0 && end == n))
+                        && eng.surface == lower_sub
+                        && raw_sub == lower_sub
+                        && chime_phonetics::can_segment_exact(lower_sub)
+                    {
+                        continue;
+                    }
                     let dev_bonus = if is_dev_app && eng.is_tech_term {
                         0.95
                     } else {
                         0.0
                     };
-                    let phonotactic_bonus =
-                        if classify_code_switch(raw_sub) == CodeSwitchSignal::PhonotacticEnglish {
-                            1.2
-                        } else {
-                            0.0
-                        };
+                    let phonotactic_bonus = if !chime_phonetics::can_segment_exact(lower_sub)
+                        && classify_code_switch(raw_sub) == CodeSwitchSignal::PhonotacticEnglish
+                    {
+                        1.2
+                    } else {
+                        0.0
+                    };
                     edges[start].push(LatticeEdge {
                         end,
                         surface: eng.surface,
@@ -589,7 +808,11 @@ impl LatticeDecoder {
                     && classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii
                 {
                     #[allow(clippy::cast_precision_loss)]
-                    let per_char_cost = -1.95 * (raw_sub.len() as f32);
+                    let per_char_cost = if raw_sub == lower_sub {
+                        -3.20 - 1.95 * (raw_sub.len() as f32)
+                    } else {
+                        -1.95 * (raw_sub.len() as f32)
+                    };
                     edges[start].push(LatticeEdge {
                         end,
                         surface: raw_sub.to_string(),
@@ -610,6 +833,7 @@ impl LatticeDecoder {
     ) -> Vec<Vec<(usize, SyllableId, f32, MatchKind)>> {
         let n = lower.len();
         let bytes = lower.as_bytes();
+        let full_already_exact = n >= 15 && chime_phonetics::can_segment_exact(lower);
         let mut spans: Vec<Vec<(usize, SyllableId, f32, MatchKind)>> = vec![Vec::new(); n];
 
         for i in 0..n {
@@ -635,11 +859,44 @@ impl LatticeDecoder {
                 if sub.contains('\'') {
                     break;
                 }
+                // GB/T 16159 Phonotactic Integrity:
+                // 1) Bare nasal interjections `n`/`m`/`ng` (`嗯`/`呣`) only occur as standalone
+                //    queries or `'`-delimited syllables, never splitting nasal codas (`zhen` ->
+                //    `zhe+n` `这嗯`, `yijian` -> `yijia+n` `一家嗯`)!
+                if matches!(sub, "n" | "m" | "ng") {
+                    let left_ok = i == 0 || bytes[i - 1] == b'\'';
+                    let right_ok = i + len == n || bytes[i + len] == b'\'';
+                    if !(left_ok && right_ok && n <= 3) {
+                        continue;
+                    }
+                }
+                // 2) Penalize splitting a valid preceding syllable across an un-apostrophized
+                //    1-letter vowel (`jihuo` -> `ji+hu+o` `几乎哦`, `yijia` -> `yi+ji+a` `一级啊`,
+                //    `xiaorenwu` -> `xia+o` `下哦`)!
+                let cross_vowel_pen = if len == 1
+                    && i > 0
+                    && bytes[i - 1] != b'\''
+                    && matches!(bytes[i], b'a' | b'o' | b'e')
+                    && (1..=3.min(i)).any(|back| {
+                        !lower[i - back..=i].contains('\'')
+                            && lookup_syllable(&lower[i - back..=i]).is_some()
+                    }) {
+                    if i + 1 < n { -3.40 } else { -1.80 }
+                } else {
+                    0.0
+                };
                 let is_exact_syl = lookup_syllable(sub);
                 if let Some(id) = is_exact_syl {
-                    spans[i].push((i + len, id, 0.0, MatchKind::Exact));
+                    spans[i].push((i + len, id, cross_vowel_pen, MatchKind::Exact));
+                }
+                if cross_vowel_pen == 0.0 && (is_exact_syl.is_some() || len >= 2) {
                     for (fid, pen) in ctx.fuzzy.expand(sub) {
-                        spans[i].push((i + len, fid, -pen, MatchKind::Fuzzy));
+                        if !spans[i]
+                            .iter()
+                            .any(|&(e, existing, _, _)| e == i + len && existing == fid)
+                        {
+                            spans[i].push((i + len, fid, -pen, MatchKind::Fuzzy));
+                        }
                     }
                 }
                 // Geminate boundary consonant elision (`chunuanhuakai` -> `chun` + `nuan`,
@@ -660,42 +917,57 @@ impl LatticeDecoder {
                         spans[i].push((i + len, gem_id, -0.85, MatchKind::TypoCorrected));
                     }
                 }
-                if len >= 2 {
-                    // When `sub` is ALREADY a valid syllable (`duo`, `da`, `gen`), penalize typo
-                    // neighbors heavily (`-2.75`) so real words win cleanly without blocking 3-syl
-                    // lexical typo recovery (`shulufa -> 输入法`); when `sub` is NOT a valid
-                    // syllable (`shaung`, `yign` in `mohuyign`), recover fast (`-1.45`) AND allow
-                    // one fuzzy rhyme step (`yign -> ying -> yin` -> `模糊音`)!
-                    let base_typo_pen = if is_exact_syl.is_some() { 2.75 } else { 1.45 };
-                    for (tid, edit) in generate_typo_variants(sub) {
-                        let t_cost = -(base_typo_pen + edit.cost());
-                        if !spans[i]
-                            .iter()
-                            .any(|&(e, existing, _, _)| e == i + len && existing == tid)
-                        {
-                            spans[i].push((i + len, tid, t_cost, MatchKind::TypoCorrected));
-                        }
-                        if is_exact_syl.is_none() && len >= 3 {
-                            let canonical_t = chime_phonetics::canonical_syllable(tid);
-                            for (fid, fpen) in ctx.fuzzy.expand(canonical_t) {
-                                if !spans[i]
-                                    .iter()
-                                    .any(|&(e, existing, _, _)| e == i + len && existing == fid)
-                                {
-                                    spans[i].push((
-                                        i + len,
-                                        fid,
-                                        t_cost - fpen,
-                                        MatchKind::TypoCorrected,
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                if len >= 2 && !full_already_exact {
+                    Self::expand_typo_spans(
+                        sub,
+                        i + len,
+                        is_exact_syl.is_some(),
+                        ctx,
+                        &mut spans[i],
+                    );
                 }
             }
         }
         spans
+    }
+
+    fn expand_typo_spans(
+        sub: &str,
+        end: usize,
+        is_exact_syl: bool,
+        ctx: &DecodeContext<'_>,
+        out: &mut Vec<(usize, SyllableId, f32, MatchKind)>,
+    ) {
+        if !is_exact_syl && starts_with_tech_acronym_plus_pinyin(sub) {
+            return;
+        }
+        let sub_already_segments = !is_exact_syl && chime_phonetics::can_segment_exact(sub);
+        let base_typo_pen = if is_exact_syl { 2.75 } else { 1.45 };
+        let typo_cap = if is_exact_syl { 8 } else { 16 };
+        for (tid, edit) in generate_typo_variants(sub).into_iter().take(typo_cap) {
+            if sub_already_segments && matches!(edit, chime_phonetics::TypoEdit::NeighborKey { .. })
+            {
+                continue;
+            }
+            let t_cost = -(base_typo_pen + edit.cost());
+            if !out
+                .iter()
+                .any(|&(e, existing, _, _)| e == end && existing == tid)
+            {
+                out.push((end, tid, t_cost, MatchKind::TypoCorrected));
+            }
+            if !is_exact_syl && sub.len() >= 3 {
+                let canonical_t = chime_phonetics::canonical_syllable(tid);
+                for (fid, fpen) in ctx.fuzzy.expand(canonical_t) {
+                    if !out
+                        .iter()
+                        .any(|&(e, existing, _, _)| e == end && existing == fid)
+                    {
+                        out.push((end, fid, t_cost - fpen, MatchKind::TypoCorrected));
+                    }
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -711,6 +983,7 @@ impl LatticeDecoder {
     ) {
         type EdgeVisit = (usize, usize, SmallVec<[SyllableId; 16]>, f32, MatchKind);
         let n = lower.len();
+        let full_exact_seg = n >= 6 && chime_phonetics::can_segment_exact(lower);
         for start in 0..n {
             let mut stack: Vec<EdgeVisit> = Vec::new();
             for &(end1, id1, cost1, kind1) in &syl_edges[start] {
@@ -722,7 +995,17 @@ impl LatticeDecoder {
             while let Some((cur_end, last_syl_start, seq, acc_cost, acc_kind)) = stack.pop() {
                 let raw_slice = &lower[start..cur_end];
                 let entries: Vec<WordEntry> = lexicon.lookup_exact(&seq);
-                let take_limit = if start == 0 && seq.len() == 1 { 32 } else { 8 };
+                // High-density Chinese syllables (`ji`, `zhi`, `shi`, `yi`, `du`, `ban`, `ping`)
+                // have 15-25 everyday single characters; keep 22 exact single-char candidates at
+                // internal positions so characters ranked #9-#22 (`堵`, `朵`, `浇`, `瓶`, `搬`,
+                // `寄`, `帧`, `熵`) are never dropped before beam search!
+                let take_limit = if start == 0 && seq.len() == 1 {
+                    34
+                } else if seq.len() == 1 {
+                    if acc_kind == MatchKind::Exact { 26 } else { 4 }
+                } else {
+                    8
+                };
                 for entry in entries.into_iter().take(take_limit) {
                     let is_single_char = entry.surface.chars().count() == 1;
                     // Anti-Cold-Word & Single-Syllable Exact Dominance:
@@ -733,7 +1016,12 @@ impl LatticeDecoder {
                     let single_non_exact_pen = if is_single_char && seq.len() == 1 {
                         match acc_kind {
                             MatchKind::Fuzzy => {
-                                if entry.log_prob < -4.15 {
+                                let min_lp = if start == 0 && cur_end == n {
+                                    -4.15
+                                } else {
+                                    -3.85
+                                };
+                                if entry.log_prob < min_lp {
                                     continue;
                                 }
                                 -1.65
@@ -745,10 +1033,10 @@ impl LatticeDecoder {
                                 {
                                     continue;
                                 }
-                                if entry.log_prob < -4.30 {
+                                if entry.log_prob < -4.15 {
                                     continue;
                                 }
-                                -0.85
+                                -0.95
                             }
                             _ => 0.0,
                         }
@@ -778,9 +1066,33 @@ impl LatticeDecoder {
                             raw_boost
                         }
                     };
+                    // Information-theoretic frequency-calibrated lexical cohesion bonus:
+                    // Genuine common compounds (`现在 -3.3`, `方案 -3.7`, `安静 -4.3`) receive
+                    // strong multi-syllable cohesion, while rare proper names (`李德 -5.45`, `得数
+                    // -5.50`, `龋齿 -6.10`, `童一剑 -6.42`) receive near-zero bonus so they never
+                    // hijack adjacent grammatical clitics (`里 + 的`, `去 + 吃`, `同 + 一间`)!
                     #[allow(clippy::cast_precision_loss)]
-                    let word_len_bonus = ((seq.len().saturating_sub(1)).min(3) as f32) * 0.95
-                        + (seq.len().saturating_sub(4) as f32) * 1.18;
+                    let word_len_bonus = match seq.len() {
+                        0 | 1 => 0.0,
+                        2 | 3 => {
+                            let cohesion = ((entry.log_prob + 5.55) / 1.65).clamp(0.05, 1.0);
+                            let embedded_non_exact =
+                                if !(start == 0 && cur_end == n) && acc_kind != MatchKind::Exact {
+                                    if full_exact_seg { -1.35 } else { -0.45 }
+                                } else {
+                                    0.0
+                                };
+                            ((seq.len() - 1) as f32) * 0.72 * cohesion + embedded_non_exact
+                        }
+                        len => {
+                            let base = 2.05 + ((len - 4) as f32) * 1.08;
+                            if !(start == 0 && cur_end == n) && acc_kind != MatchKind::Exact {
+                                base - 1.65
+                            } else {
+                                base
+                            }
+                        }
+                    };
                     edges[start].push(LatticeEdge {
                         end: cur_end,
                         surface: entry.surface,
@@ -804,9 +1116,18 @@ impl LatticeDecoder {
                     let next_pos = if has_sep { cur_end + 1 } else { cur_end };
                     if next_pos < n {
                         for &(end2, id2, cost2, kind2) in &syl_edges[next_pos] {
-                            // Penalize splitting a valid single syllable (`jie`, `xian`, `tian`)
-                            // across a vowel hiatus (`ji+e` `饥饿`, `ti+an` `提案`) when the user
-                            // did NOT type an apostrophe `'`!
+                            // Never chain multiple motor-slip typos inside a single word (`O(K^2)`
+                            // explosion)!
+                            if acc_kind == MatchKind::TypoCorrected
+                                && kind2 == MatchKind::TypoCorrected
+                            {
+                                continue;
+                            }
+                            // Mild hiatus preference (`-0.35`) when a multi-syllable dictionary
+                            // word splits a potential single syllable (`xian` -> `西安`, `jie` ->
+                            // `饥饿`) without an apostrophe, so single-syllable words (`先`, `姐`)
+                            // win standalone while established compounds (`去西安旅行`, `忍受饥饿`)
+                            // remain competitive in context!
                             let hiatus_pen = if !has_sep
                                 && chime_phonetics::canonical_syllable(id2)
                                     .bytes()
@@ -814,7 +1135,7 @@ impl LatticeDecoder {
                                     .is_some_and(|b| matches!(b, b'a' | b'o' | b'e'))
                                 && lookup_syllable(&lower[last_syl_start..end2]).is_some()
                             {
-                                -1.35
+                                -0.35
                             } else {
                                 0.0
                             };
@@ -846,7 +1167,85 @@ impl LatticeDecoder {
             }
         }
         target.sort_by(|a, b| b.score.total_cmp(&a.score));
-        target.truncate(beam_width);
+        if target.len() <= beam_width {
+            return;
+        }
+
+        // Multi-scale diverse beam pruning (prevents mid-sentence homophone fan-out from evicting
+        // competing earlier interpretations before right-context arrives):
+        // 1) Cap any 2-char opening (`head2`) at 10 slots;
+        // 2) Cap any `(char_len - 2)` prefix (`pre2`, when `char_len >= 5`) at 4 slots so a single
+        //    mid-sentence choice (`...主宰` vs `...住在`, `...飞刀` vs `...飞到`) cannot spawn 10
+        //    2-char children and monopolize the beam;
+        // 3) Cap `(char_len - 1)` `stem` at 5 variants for the #1 stem and 3 for secondary stems!
+        let mut kept = Vec::with_capacity(beam_width);
+        let mut overflow = Vec::new();
+        let mut stem_counts: HashMap<String, usize> = HashMap::new();
+        let mut pre2_counts: HashMap<String, usize> = HashMap::new();
+        let mut head_counts: HashMap<String, usize> = HashMap::new();
+        let mut top_stem: Option<String> = None;
+        let mut top_pre2: Option<String> = None;
+
+        for state in target.drain(..) {
+            if kept.len() >= beam_width {
+                break;
+            }
+            let char_count = state.text.chars().count();
+            if char_count >= 4 {
+                let head2: String = state.text.chars().take(2).collect();
+                let hc = head_counts.entry(head2).or_insert(0);
+                if *hc >= 12 {
+                    overflow.push(state);
+                    continue;
+                }
+                *hc += 1;
+            }
+            if char_count >= 5 {
+                let pre2: String = state.text.chars().take(char_count - 2).collect();
+                if top_pre2.is_none() {
+                    top_pre2 = Some(pre2.clone());
+                }
+                let pre2_cap = if top_pre2.as_deref() == Some(pre2.as_str()) {
+                    8
+                } else {
+                    3
+                };
+                let pc = pre2_counts.entry(pre2).or_insert(0);
+                if *pc >= pre2_cap {
+                    overflow.push(state);
+                    continue;
+                }
+                *pc += 1;
+            }
+            if char_count >= 3 {
+                let stem: String = state.text.chars().take(char_count - 1).collect();
+                if top_stem.is_none() {
+                    top_stem = Some(stem.clone());
+                }
+                let cap = if top_stem.as_deref() == Some(stem.as_str()) {
+                    8
+                } else if char_count <= 4 {
+                    1
+                } else {
+                    2
+                };
+                let count = stem_counts.entry(stem).or_insert(0);
+                if *count >= cap {
+                    overflow.push(state);
+                    continue;
+                }
+                *count += 1;
+            }
+            kept.push(state);
+        }
+
+        for state in overflow {
+            if kept.len() >= beam_width {
+                break;
+            }
+            kept.push(state);
+        }
+        *target = kept;
     }
 }
 
@@ -1007,6 +1406,12 @@ fn is_grammatical_affix(word: &str) -> bool {
             | "了"
             | "着"
             | "过"
+            | "吧"
+            | "吗"
+            | "呢"
+            | "啊"
+            | "呀"
+            | "啦"
             | "中"
             | "里"
             | "上"
@@ -1049,11 +1454,481 @@ fn is_grammatical_affix(word: &str) -> bool {
     )
 }
 
+fn is_numeral_or_dem_classifier(word: &str) -> bool {
+    let mut chars = word.chars();
+    let (Some(c1), Some(c2), None) = (chars.next(), chars.next(), chars.next()) else {
+        return false;
+    };
+    matches!(
+        c1,
+        '一' | '二'
+            | '两'
+            | '三'
+            | '四'
+            | '五'
+            | '六'
+            | '七'
+            | '八'
+            | '九'
+            | '十'
+            | '百'
+            | '千'
+            | '几'
+            | '每'
+            | '这'
+            | '那'
+            | '哪'
+            | '半'
+            | '各'
+            | '整'
+            | '首'
+    ) && matches!(
+        c2,
+        '个' | '位'
+            | '只'
+            | '条'
+            | '张'
+            | '件'
+            | '种'
+            | '块'
+            | '杯'
+            | '本'
+            | '部'
+            | '台'
+            | '碗'
+            | '次'
+            | '场'
+            | '段'
+            | '套'
+            | '份'
+            | '家'
+            | '双'
+            | '顿'
+            | '朵'
+            | '颗'
+            | '棵'
+            | '辆'
+            | '座'
+            | '篇'
+            | '层'
+            | '句'
+            | '步'
+            | '名'
+            | '员'
+            | '把'
+            | '副'
+            | '幅'
+            | '首'
+            | '封'
+            | '顶'
+            | '支'
+            | '束'
+            | '盘'
+            | '壶'
+            | '粒'
+            | '栋'
+            | '门'
+            | '项'
+            | '笔'
+            | '间'
+            | '瓶'
+            | '盒'
+            | '页'
+            | '格'
+    )
+}
+
+fn is_non_nominal_functor(word: &str) -> bool {
+    matches!(
+        word,
+        "并" | "且"
+            | "或"
+            | "及"
+            | "与"
+            | "而"
+            | "但"
+            | "却"
+            | "把"
+            | "被"
+            | "从"
+            | "向"
+            | "往"
+            | "替"
+            | "了"
+            | "着"
+            | "过"
+            | "也"
+            | "都"
+            | "就"
+            | "才"
+            | "又"
+            | "还"
+            | "再"
+            | "更"
+    )
+}
+
+fn is_dangling_final_functor(word: &str) -> bool {
+    matches!(
+        word,
+        "把" | "被" | "并" | "且" | "及" | "与" | "从" | "往" | "向" | "对于" | "关于"
+    )
+}
+
+fn has_feminine_or_neuter_cue(left_context: &str) -> bool {
+    left_context.chars().any(|c| {
+        matches!(
+            c,
+            '她' | '女'
+                | '妈'
+                | '姐'
+                | '妹'
+                | '姑'
+                | '娘'
+                | '妻'
+                | '婆'
+                | '姨'
+                | '嫂'
+                | '妇'
+                | '母'
+                | '护'
+                | '闺'
+                | '它'
+                | '猫'
+                | '狗'
+        )
+    })
+}
+
+fn has_explicit_feminine_antecedent(left_context: &str) -> bool {
+    let last_fem = left_context.rfind(|c| {
+        matches!(
+            c,
+            '她' | '女'
+                | '妈'
+                | '姐'
+                | '妹'
+                | '姑'
+                | '娘'
+                | '妻'
+                | '婆'
+                | '姨'
+                | '嫂'
+                | '妇'
+                | '母'
+        )
+    });
+    let last_masc = left_context.rfind(|c| {
+        matches!(
+            c,
+            '他' | '男' | '爸' | '父' | '哥' | '弟' | '爷' | '叔' | '伯' | '舅' | '兄'
+        )
+    });
+    match (last_fem, last_masc) {
+        (Some(f), Some(m)) => f > m,
+        (Some(_), None) => true,
+        _ => left_context.contains("护士") || left_context.contains("闺蜜"),
+    }
+}
+
+fn promote_or_synthesize_pronoun_twin(
+    candidates: &mut Vec<Candidate>,
+    full_bytes: usize,
+    from_ch: char,
+    to_ch: char,
+    margin: f32,
+) {
+    let mut additions: Vec<Candidate> = Vec::new();
+    for i in 0..candidates.len().min(6) {
+        if candidates[i].consumed_bytes == full_bytes && candidates[i].text.contains(from_ch) {
+            let twin_text: String = candidates[i]
+                .text
+                .chars()
+                .map(|ch| if ch == from_ch { to_ch } else { ch })
+                .collect();
+            let target_score = candidates[i].score + margin;
+            if let Some(existing) = candidates
+                .iter_mut()
+                .find(|c| c.consumed_bytes == full_bytes && c.text == twin_text)
+            {
+                if existing.score < target_score {
+                    existing.score = target_score;
+                }
+            } else {
+                additions.push(Candidate {
+                    text: twin_text,
+                    score: target_score,
+                    kind: candidates[i].kind,
+                    consumed_bytes: full_bytes,
+                });
+            }
+        }
+    }
+    candidates.extend(additions);
+    candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+}
+
+fn has_inherent_feminine_predicate(text: &str) -> bool {
+    text.contains("妈妈")
+        || text.contains("母亲")
+        || text.contains("姐姐")
+        || text.contains("妹妹")
+        || text.contains("姑娘")
+        || text.contains("妻子")
+        || text.contains("老婆")
+        || text.contains("阿姨")
+        || text.contains("奶奶")
+        || text.contains("外婆")
+        || text.contains("女生")
+        || text.contains("女孩")
+        || text.contains("女士")
+}
+
+/// Ranks unmarked masculine `他` immediately ahead of its exact character-minimal-pair `她`/`它`
+/// twin when `left_context` carries no feminine or neuter cue.
+pub fn apply_unmarked_pronoun_symmetry(candidates: &mut Vec<Candidate>, full_bytes: usize) {
+    let mut additions: Vec<Candidate> = Vec::new();
+    for i in 0..candidates.len().min(6) {
+        if candidates[i].consumed_bytes == full_bytes
+            && candidates[i].text.contains('她')
+            && !has_inherent_feminine_predicate(&candidates[i].text)
+        {
+            let masc_text: String = candidates[i]
+                .text
+                .chars()
+                .map(|ch| if ch == '她' { '他' } else { ch })
+                .collect();
+            if !candidates
+                .iter()
+                .any(|c| c.consumed_bytes == full_bytes && c.text == masc_text)
+            {
+                additions.push(Candidate {
+                    text: masc_text,
+                    score: candidates[i].score + 0.15,
+                    kind: candidates[i].kind,
+                    consumed_bytes: full_bytes,
+                });
+            }
+        }
+    }
+    candidates.extend(additions);
+
+    let mut masc_scores: HashMap<String, f32> = HashMap::new();
+    for c in candidates.iter() {
+        if c.consumed_bytes == full_bytes && c.text.contains('他') {
+            masc_scores
+                .entry(c.text.clone())
+                .and_modify(|s| *s = s.max(c.score))
+                .or_insert(c.score);
+        }
+    }
+    if masc_scores.is_empty() {
+        return;
+    }
+    let mut changed = false;
+    for c in candidates.iter_mut() {
+        if c.consumed_bytes == full_bytes
+            && (c.text.contains('她') || c.text.contains('它'))
+            && !has_inherent_feminine_predicate(&c.text)
+        {
+            let is_neuter = c.text.contains('它');
+            let masc_key: String = c
+                .text
+                .chars()
+                .map(|ch| {
+                    if matches!(ch, '她' | '它') {
+                        '他'
+                    } else {
+                        ch
+                    }
+                })
+                .collect();
+            if let Some(&m_score) = masc_scores.get(&masc_key)
+                && c.score - m_score <= 3.5
+            {
+                let margin = if is_neuter { 0.30 } else { 0.15 };
+                if c.score >= m_score - margin {
+                    c.score = m_score - margin;
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+}
+
+fn starts_with_tech_acronym_plus_pinyin(sub: &str) -> bool {
+    for acr in [
+        "aws", "cpu", "gpu", "api", "ssh", "sql", "ios", "llm", "sdk", "ide", "pdf",
+    ] {
+        if let Some(rem) = sub.strip_prefix(acr)
+            && !rem.is_empty()
+            && chime_phonetics::can_segment_exact(rem)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn select_neural_checkpoints(total_bytes: usize) -> SmallVec<[usize; 3]> {
+    let mut out = SmallVec::new();
+    if total_bytes >= 36 {
+        out.push(total_bytes / 3);
+        out.push((total_bytes * 2) / 3);
+    } else if total_bytes >= 26 {
+        out.push((total_bytes * 2) / 5);
+        out.push((total_bytes * 4) / 5);
+    } else if total_bytes >= 18 {
+        out.push(total_bytes / 2);
+    }
+    out
+}
+
+/// Prosodic clitic cohesion (`韵律附着内聚度`) for productive Mandarin `[Stem + Closed-Class
+/// Clitic]` constructions that word-based corpora split into separate tokens (`Verb +
+/// 了/着/过/得/起来/出来`, `Pronoun + Copula/Modal`, `Numeral/Dem + Classifier`). Defined strictly
+/// over closed grammatical classes so every open-domain verb/adjective generalizes without lexical
+/// hardcoding.
+fn prosodic_clitic_cohesion(
+    prev_word: &str,
+    next_word: &str,
+    prev_kind: MatchKind,
+    next_kind: MatchKind,
+) -> f32 {
+    if prev_word.is_empty()
+        || prev_kind != MatchKind::Exact
+        || next_kind != MatchKind::Exact
+        || is_non_nominal_functor(prev_word)
+    {
+        return 0.0;
+    }
+    let prev_len = prev_word.chars().count();
+    // 1. Monosyllabic/disyllabic predicate + closed-class aspect / complement / modal clitic
+    // (`得` complementizer primarily attaches to monosyllabic predicates `做得/跑得/写得`, while
+    // `的` attaches freely to both 1- and 2-char modifiers `好的/使用的`)!
+    if next_word == "得"
+        && prev_len == 1
+        && !matches!(prev_word, "是" | "的" | "地" | "不" | "没" | "很" | "最")
+    {
+        return 0.36;
+    }
+    if (1..=2).contains(&prev_len)
+        && !matches!(
+            prev_word,
+            "是" | "我是" | "你是" | "他是" | "她是" | "它是" | "这是" | "那是" | "的" | "地"
+        )
+        && matches!(
+            next_word,
+            "的" | "了"
+                | "着"
+                | "过"
+                | "吧"
+                | "吗"
+                | "呢"
+                | "起来"
+                | "出来"
+                | "下来"
+                | "过来"
+                | "回来"
+                | "下去"
+                | "过去"
+                | "回去"
+                | "不到"
+                | "不了"
+                | "不起"
+                | "不住"
+                | "不懂"
+                | "不开"
+                | "不完"
+                | "不着"
+                | "一下"
+        )
+    {
+        return if prev_len == 1 { 0.42 } else { 0.24 };
+    }
+    // 2. Closed-class pronoun + modal / directional / copula verb (`我想`, `我去`, `他有`, `你在`)
+    if matches!(
+        prev_word,
+        "我" | "你" | "他" | "她" | "它" | "我们" | "你们" | "他们"
+    ) && matches!(
+        next_word,
+        "是" | "有" | "在" | "想" | "要" | "会" | "能" | "去" | "来" | "看" | "说" | "做"
+    ) {
+        return 0.36;
+    }
+    // 3. Numeral / demonstrative + classifier (`三碗`, `两块`, `这把`, `这朵`, `哪位`)
+    if prev_len == 1 && next_word.chars().count() == 1 {
+        let mut combined = String::with_capacity(prev_word.len() + next_word.len());
+        combined.push_str(prev_word);
+        combined.push_str(next_word);
+        if is_numeral_or_dem_classifier(&combined) {
+            return 0.38;
+        }
+    }
+    0.0
+}
+
+fn syntactic_transition_penalty(
+    prev_content_word: &str,
+    prev_word: &str,
+    next_word: &str,
+    next_kind: MatchKind,
+    is_utterance_end: bool,
+    total_bytes: usize,
+) -> f32 {
+    let mut pen = 0.0_f32;
+    if is_numeral_or_dem_classifier(prev_word) && is_non_nominal_functor(next_word) {
+        pen -= 3.20;
+    }
+    // Productive Mandarin `A不A` (`忙不忙`, `累不累`, `好不好`) and `X一X` (`看一看`, `试一试`)
+    // morphosyntactic reduplication frames!
+    if next_kind == MatchKind::Exact
+        && next_word.chars().count() == 1
+        && prev_content_word == next_word
+    {
+        if prev_word == "不" {
+            pen += 1.65;
+        } else if prev_word == "一" {
+            pen += 1.35;
+        }
+    }
+    // Copula `是` cannot take perfective aspect clitic `了` (`*我是了一下` vs `我试了一下`)!
+    if matches!(
+        prev_word,
+        "是" | "我是" | "你是" | "他是" | "她是" | "它是" | "这是" | "那是"
+    ) && next_word == "了"
+    {
+        pen -= 2.60;
+    }
+    // Degree adverbs (`很/太/最/非常/...`) select gradable predicates, never pronoun+copula
+    // (`*很他是` vs `很踏实`)!
+    if matches!(
+        prev_word,
+        "很" | "太" | "最" | "更" | "挺" | "真" | "非常" | "特别" | "十分" | "相当"
+    ) && matches!(
+        next_word,
+        "我是" | "你是" | "他是" | "她是" | "它是" | "是谁"
+    ) {
+        pen -= 3.00;
+    }
+    // Degree complementizer `得` takes verbal/adjectival predicates, never postpositional locative
+    // nominals (`*使用得过程中` vs `使用的过程中`)!
+    if prev_word == "得" && next_word.chars().count() >= 2 && next_word.ends_with('中') {
+        pen -= 1.80;
+    }
+    if is_utterance_end && total_bytes >= 6 && is_dangling_final_functor(next_word) {
+        pen -= 1.50;
+    }
+    pen
+}
+
 fn is_transparent_particle(word: &str) -> bool {
     matches!(
         word,
         "的" | "地"
-            | "得"
             | "了"
             | "着"
             | "过"
@@ -1199,5 +2074,38 @@ mod tests {
         let guarded = apply_anti_jitter_freeze_window(&initial, late_rerank, 75, 60);
         assert_eq!(guarded[0].text, "亮化");
         assert_eq!(guarded[1].text, "量化");
+    }
+
+    #[test]
+    fn test_should_enforce_classifier_syntax_and_prefix_diverse_beam_for_woshiyigebing() {
+        let mut lex = Lexicon::with_builtin_seed();
+        lex.insert_pinyin_word("卧室", "wo shi", -4.62, false);
+        lex.insert_pinyin_word("我试", "wo shi", -4.91, false);
+        lex.insert_pinyin_word("我市", "wo shi", -5.17, false);
+        lex.insert_pinyin_word("并", "bing", -2.82, false);
+        lex.insert_english_term("chile", -5.40, false);
+
+        let store = UserStore::new();
+        let dec = LatticeDecoder::new();
+        let ctx = DecodeContext::default();
+
+        let cands = dec.decode("woshiyigebing", &lex, &store, &ctx);
+        assert_eq!(cands[0].text, "我是一个兵");
+        let top6: Vec<&str> = cands.iter().take(6).map(|c| c.text.as_str()).collect();
+        assert!(
+            top6.contains(&"我是一个饼"),
+            "expected 我是一个饼 in top-6 candidates, got {top6:?}"
+        );
+        assert!(
+            !top6.iter().any(|t| t.ends_with('并')),
+            "dangling conjunction 并 after classifier 一个 must not enter top-6: {top6:?}"
+        );
+
+        let cands_chile = dec.decode("chilelianggebing", &lex, &store, &ctx);
+        assert!(
+            !cands_chile[0].text.contains("chile"),
+            "embedded /usr/share/dict/words entry chile must not hijack 吃了: {:?}",
+            cands_chile[0].text
+        );
     }
 }
