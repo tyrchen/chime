@@ -396,4 +396,58 @@ mod tests {
             "Developer routing should apply stronger weight in Ghostty than Obsidian"
         );
     }
+
+    #[test]
+    fn test_batched_candidate_scoring_matches_individual_and_poetic_cadence_routing() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        TinyModelBuilder::write_demo_bundle(dir.path(), &[("今天", "使用"), ("使用", "模型")])
+            .unwrap_or_else(|_| std::process::abort());
+        let reranker =
+            SafetensorsReranker::load_dir(dir.path()).unwrap_or_else(|_| std::process::abort());
+        let mut cache = MlxPrefixCache::new();
+        reranker
+            .mlx_model
+            .ensure_prefix_cached(&[0, 2, 3], &mut cache)
+            .unwrap_or_else(|_| std::process::abort());
+
+        let batch = vec![vec![2_u32], vec![2, 3], vec![3, 2, 3, 2]];
+        let batched_lps = reranker
+            .mlx_model
+            .score_candidates_joint_lps(&cache, &batch)
+            .unwrap_or_else(|_| std::process::abort());
+        for (idx, single) in batch.iter().enumerate() {
+            let solo = reranker
+                .mlx_model
+                .score_candidates_joint_lps(&cache, std::slice::from_ref(single))
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(
+                (batched_lps[idx] - solo[0]).abs() < 5e-3,
+                "batched score {} != solo {} at idx {idx}",
+                batched_lps[idx],
+                solo[0]
+            );
+        }
+
+        // Verify 5/7-char poetic cadence routing vs colloquial modern Mandarin
+        let poem_scale = LoraRouting::Classical.effective_scale(
+            1.0,
+            "md.obsidian",
+            "空山新雨后，",
+            &["天气晚来秋".to_string()],
+        );
+        let colloq_scale = LoraRouting::Classical.effective_scale(
+            1.0,
+            "md.obsidian",
+            "今天吃什么，",
+            &["火锅".to_string()],
+        );
+        assert!(
+            poem_scale >= 0.70,
+            "expected poetic cadence activation, got {poem_scale}"
+        );
+        assert!(
+            colloq_scale.abs() < 1e-6,
+            "expected 0.0 on colloquial prose, got {colloq_scale}"
+        );
+    }
 }

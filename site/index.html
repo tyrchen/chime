@@ -37,11 +37,11 @@
             Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器，二阶段在本地 Metal GPU 上运行 6 层 4-bit 蒸馏版 Qwen3（单步 0.72 ms），并支持像游戏卡带一样按需挂载 <strong>2 MB 级别的领域 LoRA 与百万词条 .imepack 扩展包</strong>。
           </p>
           <div class="cta-row">
-            <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.6.0-macos-arm64.pkg">
+            <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.0-macos-arm64.pkg">
               <span class="btn-main" data-i18n="hero.dlPkg">下载 macOS 安装包 (.pkg)</span>
-              <span class="btn-meta">Chime v0.6.0 · Apple Silicon · ~84 MB</span>
+              <span class="btn-meta">Chime v0.7.0 · Apple Silicon · ~74 MB</span>
             </a>
-            <a class="btn btn-secondary" id="dl-zip" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.6.0-macos-arm64.zip">
+            <a class="btn btn-secondary" id="dl-zip" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.0-macos-arm64.zip">
               <span class="btn-main" data-i18n="hero.dlZip">便携版 Chime.app (.zip)</span>
               <span class="btn-meta" data-i18n="hero.dlZipSub">解压拖入 ~/Library/Input Methods</span>
             </a>
@@ -108,7 +108,7 @@
           <p class="eyebrow" data-i18n="arch.eyebrow">Base Model + Multi-LoRA Sidecar</p>
           <h2 data-i18n="arch.title">为什么是「一个冻结基础模型 + 一组热插拔卡带」？</h2>
           <p data-i18n="arch.desc">
-            纯统计词库不懂语境同音词（如「保障公民的权利」与「滥用国家的权力」），而只挂 LoRA 却缺词条时，一阶段束搜索又无法召回《水调歌头》或《雨霖铃》的词牌领字。Chime 用 <code>.imepack</code> 卡带把<strong>零拷贝词典召回</strong>与<strong>低秩神经重排</strong>合二为一。
+            纯统计词库不懂语境同音词（如「保障权利」与「滥用权力」），而只挂 LoRA 却缺词条时，一阶段束搜索又无法召回《水调歌头》或《雨霖铃》的词牌领字。Chime 用 <code>.imepack</code> 卡带把<strong>零拷贝词典召回</strong>与<strong>低秩神经重排</strong>合二为一。
           </p>
         </div>
 

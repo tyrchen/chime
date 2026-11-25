@@ -13,8 +13,8 @@ use mlx_rs::{
     fast::{ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention},
     nn::{log_softmax, silu},
     ops::{
-        DequantizeOptions, QuantizedMatmulOptions, concatenate, dequantize, indexing::TryIndexOp,
-        quantized_matmul,
+        DequantizeOptions, QuantizedMatmulOptions, broadcast_to, concatenate, dequantize,
+        indexing::TryIndexOp, quantized_matmul,
     },
     transforms::eval,
 };
@@ -76,13 +76,9 @@ impl LoraRouting {
                 }
             }
             Self::Classical => {
-                // Hard-gate classical Chinese adapter to `0.0` outside classical context so archaic
-                // priors never leak into everyday modern Mandarin!
-                if looks_classical_context(left_context, candidate_texts) {
-                    base_scale
-                } else {
-                    0.0
-                }
+                // Smoothly gate classical Chinese adapter by archaic cues and 5/7-char poetic
+                // cadence, while keeping `0.0` in everyday modern Mandarin!
+                base_scale * classical_context_strength(left_context, candidate_texts)
             }
         }
     }
@@ -110,18 +106,55 @@ fn is_developer_bundle(bundle_id: &str) -> bool {
     .any(|kw| lower.contains(kw))
 }
 
-fn looks_classical_context(left_context: &str, candidate_texts: &[String]) -> bool {
-    const CLASSICAL_CUES: &[char] = &[
+fn classical_context_strength(left_context: &str, candidate_texts: &[String]) -> f32 {
+    const HARD_CLASSICAL_CUES: &[char] = &[
         '之', '乎', '者', '也', '矣', '焉', '哉', '兮', '夫', '盖', '岂', '莫', '勿', '君', '吾',
-        '汝', '尔', '樽', '阙', '霭', '婵', '娟', '潇', '湘', '沧', '浪', '阑', '珊',
+        '汝', '尔', '樽', '阙', '霭', '婵', '娟', '潇', '湘', '沧', '浪', '阑', '珊', '琵', '琶',
+        '霓', '裳', '戍', '烽', '燧', '渚', '猿', '槛', '帘',
     ];
-    if left_context.chars().any(|c| CLASSICAL_CUES.contains(&c)) {
-        return true;
+    const MODERN_COLLOQUIAL_STOP: &[char] = &[
+        '的', '了', '吗', '呢', '吧', '啊', '哦', '哈', '呀', '嘛', '咱', '啥', '挺', '特', '什',
+        '么', '怎', '这', '那', '哪',
+    ];
+
+    if left_context
+        .chars()
+        .any(|c| HARD_CLASSICAL_CUES.contains(&c))
+    {
+        return 1.0;
     }
-    candidate_texts.iter().any(|c| {
+    if candidate_texts.iter().any(|c| {
         c.chars().count() >= 5
-            && (c.contains('，') || c.chars().any(|ch| CLASSICAL_CUES.contains(&ch)))
-    })
+            && (c.contains('，') || c.chars().any(|ch| HARD_CLASSICAL_CUES.contains(&ch)))
+    }) {
+        return 1.0;
+    }
+
+    // Detect symmetric 5+5 or 7+7 regulated verse couplet cadence (e.g. `沧海月明珠有泪，` +
+    // `蓝田日暖玉生烟`, `空山新雨后，` + `天气晚来秋`) even without archaic function particles!
+    let trimmed = left_context.trim();
+    if let Some(stripped) = trimmed.strip_suffix(['，', '。', '？', '！', '；']) {
+        let last_clause = stripped
+            .rsplit(['，', '。', '？', '！', '；', '\n'])
+            .next()
+            .unwrap_or(stripped);
+        let cjk_len = last_clause
+            .chars()
+            .filter(|c| ('\u{4e00}'..='\u{9fa5}').contains(c))
+            .count();
+        let all_cjk = cjk_len == last_clause.chars().count();
+        let has_colloquial = last_clause
+            .chars()
+            .any(|c| MODERN_COLLOQUIAL_STOP.contains(&c));
+        let has_matching_couplet_cand = candidate_texts
+            .iter()
+            .any(|cand| cand.chars().count() == cjk_len);
+        if all_cjk && (cjk_len == 5 || cjk_len == 7) && !has_colloquial && has_matching_couplet_cand
+        {
+            return 0.75;
+        }
+    }
+    0.0
 }
 
 /// Specification for mounting a `.safetensors` `LoRA` adapter onto `MlxTransformer`.
@@ -338,9 +371,19 @@ impl MlxEmbedding {
     }
 
     fn lookup(&self, step_tokens: &[i32], step_len: i32, d: i32) -> Result<Array, NeuralError> {
+        self.lookup_batch(step_tokens, 1, step_len, d)
+    }
+
+    fn lookup_batch(
+        &self,
+        batch_tokens: &[i32],
+        batch_size: i32,
+        step_len: i32,
+        d: i32,
+    ) -> Result<Array, NeuralError> {
         match self {
             Self::Dense(arr) => {
-                let ids_arr = Array::from_slice(step_tokens, &[1, step_len]);
+                let ids_arr = Array::from_slice(batch_tokens, &[batch_size, step_len]);
                 arr.take_axis(&ids_arr, 0).map_err(mlx_err)
             }
             Self::Quantized {
@@ -350,7 +393,7 @@ impl MlxEmbedding {
                 group_size,
                 bits,
             } => {
-                let ids_1d = Array::from_slice(step_tokens, &[step_len]);
+                let ids_1d = Array::from_slice(batch_tokens, &[batch_size * step_len]);
                 let w_rows = weight.take_axis(&ids_1d, 0).map_err(mlx_err)?;
                 let s_rows = scales.take_axis(&ids_1d, 0).map_err(mlx_err)?;
                 let b_rows = biases.take_axis(&ids_1d, 0).map_err(mlx_err)?;
@@ -365,7 +408,7 @@ impl MlxEmbedding {
                     },
                 )
                 .map_err(mlx_err)?
-                .reshape(&[1, step_len, d])
+                .reshape(&[batch_size, step_len, d])
                 .map_err(mlx_err)
             }
         }
@@ -679,15 +722,12 @@ impl MlxTransformer {
             .loras
             .iter()
             .map(|a| {
-                a.routing.effective_scale(
-                    a.base_scale,
-                    app_bundle_id,
-                    left_context,
-                    candidate_texts,
-                )
+                a.routing
+                    .effective_scale(a.base_scale, app_bundle_id, left_context, candidate_texts)
+                    .clamp(0.0, 0.80)
             })
             .collect();
-        let total: f32 = raw.iter().map(|s| s.max(0.0)).sum();
+        let total: f32 = raw.iter().copied().sum();
         if total > 0.90 {
             let norm_factor = 0.90 / total;
             for s in &mut raw {
@@ -859,11 +899,14 @@ impl MlxTransformer {
         self.score_candidates_joint_lps_with_scales(cache, cands, &default_scales)
     }
 
-    /// Computes exact unnormalized joint log-likelihoods under explicit `lora_scales`.
+    /// Computes exact unnormalized joint log-likelihoods under explicit `lora_scales` using a
+    /// **single batched `[B_cand, L_max]` Metal forward pass** over shared broadcast `past_kv` and
+    /// on-GPU `take_along_axis` target log-probability gathering!
     ///
     /// # Errors
     ///
     /// Returns [`NeuralError::Safetensors`] if an MLX Metal kernel fails during continuation pass.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn score_candidates_joint_lps_with_scales(
         &self,
         cache: &MlxPrefixCache,
@@ -874,60 +917,65 @@ impl MlxTransformer {
             return Ok(vec![0.0; cands.len()]);
         }
 
-        let mut unique_conts: HashMap<Vec<i32>, usize> = HashMap::with_capacity(cands.len());
-        let mut lazy_arrays: Vec<Array> = Vec::with_capacity(cands.len());
-        let mut cand_cont_slot: Vec<Option<usize>> = vec![None; cands.len()];
-
-        for (c_idx, cand_ids) in cands.iter().enumerate() {
-            if cand_ids.len() > 1 {
-                let cont_i32: Vec<i32> = cand_ids[..cand_ids.len() - 1]
-                    .iter()
-                    .map(|&id| i32::try_from(id).unwrap_or(0))
-                    .collect();
-                let slot = if let Some(&existing) = unique_conts.get(&cont_i32) {
-                    existing
-                } else {
-                    let lps = self.forward_continuation_lps_lazy(
-                        &cont_i32,
-                        cache.cached_tokens.len(),
-                        &cache.keys,
-                        &cache.values,
-                        lora_scales,
-                    )?;
-                    let idx = lazy_arrays.len();
-                    lazy_arrays.push(lps);
-                    unique_conts.insert(cont_i32, idx);
-                    idx
-                };
-                cand_cont_slot[c_idx] = Some(slot);
-            }
-        }
-
-        if !lazy_arrays.is_empty() {
-            eval(&lazy_arrays).map_err(mlx_err)?;
-        }
-
-        let vocab = self.config.vocab_size;
         let mut results = vec![0.0_f32; cands.len()];
+        let mut multi_rows: Vec<usize> = Vec::with_capacity(cands.len());
+        let mut max_cont_len = 0usize;
 
         for (c_idx, cand_ids) in cands.iter().enumerate() {
             if cand_ids.is_empty() {
                 continue;
             }
             let first_idx = (cand_ids[0] as usize).min(cache.next_token_log_probs.len() - 1);
-            let mut total_lp = cache.next_token_log_probs[first_idx];
+            results[c_idx] = cache.next_token_log_probs[first_idx];
+            if cand_ids.len() > 1 {
+                multi_rows.push(c_idx);
+                max_cont_len = max_cont_len.max(cand_ids.len() - 1);
+            }
+        }
 
-            if let Some(slot) = cand_cont_slot[c_idx] {
-                let slice = lazy_arrays[slot].as_slice::<f32>();
-                for (step, &target_tok) in cand_ids[1..].iter().enumerate() {
-                    let t_idx = (target_tok as usize).min(vocab - 1);
-                    if let Some(&val) = slice.get(step * vocab + t_idx) {
-                        total_lp += val;
-                    }
+        if multi_rows.is_empty() {
+            return Ok(results);
+        }
+
+        let vocab_max = i32::try_from(self.config.vocab_size.saturating_sub(1)).unwrap_or(0);
+        let batch_size = multi_rows.len();
+        let mut input_flat = vec![0_i32; batch_size * max_cont_len];
+        let mut target_flat = vec![0_i32; batch_size * max_cont_len];
+
+        for (row_idx, &c_idx) in multi_rows.iter().enumerate() {
+            let cand_ids = &cands[c_idx];
+            let steps = cand_ids.len() - 1;
+            let row_base = row_idx * max_cont_len;
+            for s in 0..steps {
+                input_flat[row_base + s] =
+                    i32::try_from(cand_ids[s]).unwrap_or(0).clamp(0, vocab_max);
+                target_flat[row_base + s] = i32::try_from(cand_ids[s + 1])
+                    .unwrap_or(0)
+                    .clamp(0, vocab_max);
+            }
+        }
+
+        let gathered = self.forward_batched_target_lps(
+            &input_flat,
+            &target_flat,
+            batch_size as i32,
+            max_cont_len as i32,
+            cache.cached_tokens.len(),
+            &cache.keys,
+            &cache.values,
+            lora_scales,
+        )?;
+        eval([&gathered]).map_err(mlx_err)?;
+
+        let slice = gathered.as_slice::<f32>();
+        for (row_idx, &c_idx) in multi_rows.iter().enumerate() {
+            let steps = cands[c_idx].len() - 1;
+            let row_base = row_idx * max_cont_len;
+            for s in 0..steps {
+                if let Some(&val) = slice.get(row_base + s) {
+                    results[c_idx] += val;
                 }
             }
-
-            results[c_idx] = total_lp;
         }
 
         Ok(results)
@@ -959,6 +1007,7 @@ impl MlxTransformer {
         l_idx: usize,
         layer: &MlxLayer,
         hidden: &Array,
+        batch_size: i32,
         step_len: i32,
         offset_i32: i32,
         past_kv: Option<(&Array, &Array)>,
@@ -1004,7 +1053,7 @@ impl MlxTransformer {
         }
 
         let mut q_reshaped = q_lin
-            .reshape(&[1, step_len, n_heads, head_dim])
+            .reshape(&[batch_size, step_len, n_heads, head_dim])
             .map_err(mlx_err)?;
         if let Some(qn) = &layer.q_norm {
             q_reshaped =
@@ -1013,7 +1062,7 @@ impl MlxTransformer {
         let q_heads = q_reshaped.transpose_axes(&[0, 2, 1, 3]).map_err(mlx_err)?;
 
         let mut k_reshaped = k_lin
-            .reshape(&[1, step_len, n_kv, head_dim])
+            .reshape(&[batch_size, step_len, n_kv, head_dim])
             .map_err(mlx_err)?;
         if let Some(kn) = &layer.k_norm {
             k_reshaped =
@@ -1022,7 +1071,7 @@ impl MlxTransformer {
         let k_heads = k_reshaped.transpose_axes(&[0, 2, 1, 3]).map_err(mlx_err)?;
 
         let v_heads = v_lin
-            .reshape(&[1, step_len, n_kv, head_dim])
+            .reshape(&[batch_size, step_len, n_kv, head_dim])
             .map_err(mlx_err)?
             .transpose_axes(&[0, 2, 1, 3])
             .map_err(mlx_err)?;
@@ -1049,10 +1098,22 @@ impl MlxTransformer {
         .map_err(mlx_err)?;
 
         let (k_full, v_full) = if let Some((pk, pv)) = past_kv {
-            (
-                concatenate(&[pk, &k_rope], 2).map_err(mlx_err)?,
-                concatenate(&[pv, &v_heads], 2).map_err(mlx_err)?,
-            )
+            if batch_size > 1 && pk.shape().first().copied().unwrap_or(1) == 1 {
+                let past_len = pk.shape().get(2).copied().unwrap_or(0);
+                let past_keys_batch =
+                    broadcast_to(pk, &[batch_size, n_kv, past_len, head_dim]).map_err(mlx_err)?;
+                let past_vals_batch =
+                    broadcast_to(pv, &[batch_size, n_kv, past_len, head_dim]).map_err(mlx_err)?;
+                (
+                    concatenate(&[&past_keys_batch, &k_rope], 2).map_err(mlx_err)?,
+                    concatenate(&[&past_vals_batch, &v_heads], 2).map_err(mlx_err)?,
+                )
+            } else {
+                (
+                    concatenate(&[pk, &k_rope], 2).map_err(mlx_err)?,
+                    concatenate(&[pv, &v_heads], 2).map_err(mlx_err)?,
+                )
+            }
         } else {
             (k_rope, v_heads)
         };
@@ -1067,7 +1128,7 @@ impl MlxTransformer {
         let attn_flat = attn
             .transpose_axes(&[0, 2, 1, 3])
             .map_err(mlx_err)?
-            .reshape(&[1, step_len, q_out_dim])
+            .reshape(&[batch_size, step_len, q_out_dim])
             .map_err(mlx_err)?;
         let attn_proj = layer.o_proj.forward_with_stacked_lora(
             &attn_flat,
@@ -1127,6 +1188,7 @@ impl MlxTransformer {
                 l_idx,
                 layer,
                 &hidden,
+                1,
                 step_len,
                 offset_i32,
                 past_kv,
@@ -1155,19 +1217,27 @@ impl MlxTransformer {
         Ok((last_logits, next_keys, next_vals))
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    fn forward_continuation_lps_lazy(
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::too_many_arguments
+    )]
+    fn forward_batched_target_lps(
         &self,
-        cont_tokens: &[i32],
+        input_flat: &[i32],
+        target_flat: &[i32],
+        batch_size: i32,
+        step_len: i32,
         pos_offset: usize,
         past_keys: &[Array],
         past_vals: &[Array],
         lora_scales: &[f32],
     ) -> Result<Array, NeuralError> {
-        let step_len = cont_tokens.len() as i32;
         let offset_i32 = pos_offset as i32;
         let d = self.config.hidden_size as i32;
-        let mut hidden = self.embed_tokens.lookup(cont_tokens, step_len, d)?;
+        let mut hidden = self
+            .embed_tokens
+            .lookup_batch(input_flat, batch_size, step_len, d)?;
 
         for (l_idx, layer) in self.layers.iter().enumerate() {
             let past_kv = past_keys.get(l_idx).zip(past_vals.get(l_idx));
@@ -1175,6 +1245,7 @@ impl MlxTransformer {
                 l_idx,
                 layer,
                 &hidden,
+                batch_size,
                 step_len,
                 offset_i32,
                 past_kv,
@@ -1190,7 +1261,12 @@ impl MlxTransformer {
             .forward(&out_norm)?
             .as_dtype(MlxDtype::Float32)
             .map_err(mlx_err)?;
-        log_softmax(&logits, -1).map_err(mlx_err)
+        let lps = log_softmax(&logits, -1).map_err(mlx_err)?;
+        let target_arr = Array::from_slice(target_flat, &[batch_size, step_len, 1]);
+        lps.take_along_axis(&target_arr, -1)
+            .map_err(mlx_err)?
+            .reshape(&[batch_size * step_len])
+            .map_err(mlx_err)
     }
 }
 

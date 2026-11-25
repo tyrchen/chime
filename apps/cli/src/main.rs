@@ -752,7 +752,7 @@ fn run_golden_eval(
         Case {
             category: "semantic-quanli-1",
             scheme: ShuangpinScheme::Full,
-            left_ctx: "法庭依法保障公民的",
+            left_ctx: "依法保障",
             app: "md.obsidian",
             keys: "quanli",
             expected_top1: "权利",
@@ -760,7 +760,7 @@ fn run_golden_eval(
         Case {
             category: "semantic-quanli-2",
             scheme: ShuangpinScheme::Full,
-            left_ctx: "严禁滥用国家的",
+            left_ctx: "严禁滥用",
             app: "md.obsidian",
             keys: "quanli",
             expected_top1: "权力",
@@ -788,6 +788,22 @@ fn run_golden_eval(
             app: "md.obsidian",
             keys: "shuruga",
             expected_top1: "输入法",
+        },
+        Case {
+            category: "geminate-elision-nn",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "chunuanhuakai",
+            expected_top1: "春暖花开",
+        },
+        Case {
+            category: "geminate-elision-gg",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "无边落木萧萧下，",
+            app: "md.obsidian",
+            keys: "bujinchangjiangungunlai",
+            expected_top1: "不尽长江滚滚来",
         },
         Case {
             category: "tongue-twister",

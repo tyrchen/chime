@@ -2,7 +2,7 @@
 
 #set document(
   title: "Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges",
-  author: "Tyr Chen",
+  author: "Tian Chen",
 )
 
 #set page(
@@ -77,7 +77,7 @@
         via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges
       ]
       #v(7pt)
-      #text(size: 10.4pt, weight: "semibold")[Tyr Chen]
+      #text(size: 10.4pt, weight: "semibold")[Tian Chen]
       #v(2pt)
       #text(size: 8.9pt, fill: rgb("#52525b"))[
         Independent Systems & Machine Learning Research · `tyr.chen@gmail.com` · #link("https://github.com/tyrchen/chime")[`github.com/tyrchen/chime`]
@@ -97,7 +97,7 @@
       #v(3pt)
       #set par(justify: true, leading: 0.50em)
       #set text(size: 8.85pt)
-      Applying Large Language Models (LLMs) to client-side Pinyin Input Method Editors (IMEs) faces a strict systems trilemma: human typing demands sub-10 ms keystroke latency without candidate-bar jitter, operating systems enforce tight resident memory budgets ($< 100$ MB) alongside zero-network privacy guarantees, and real-world input spans open-domain vocabulary from bilingual code identifiers to classical literature and idiosyncratic personal style. Existing generative Pinyin-to-Character (P2C) LLMs violate latency budgets via autoregressive decoding and suffer catastrophic representation collapse under aggressive layer pruning or out-of-vocabulary (OOV) blindness when relying solely on parameter-efficient adapters. We present *Chime*, a 100% offline neural IME for Apple Silicon that resolves this trilemma through lexical-neural co-design. First, we formalize *Recall–Rerank Decoupling* and *Probability-Space Separation*, pairing a $< 0.8$ ms zero-copy `mmap` dual-track lattice decoder (`CHIMED02`) with a prefix-cached causal language model reranker that isolates equal-span homophone scoring from variable-horizon lookahead completions. Second, we compress the 28-layer `Qwen3-0.6B` (1.19 GB FP16) into a 6-layer, 24,576-vocab 4-bit MLX student (*64.17 MB*, $18.6 times$ smaller); whereas naive layer skipping collapses pre-head teacher alignment to $cos(bold(u)_S, bold(u)_T) = 0.019$ and halves homophone accuracy to 43.8%, our *Manifold-Aligned Layer Distillation* restores $cos(bold(u)_S, bold(u)_T) = 0.861$, matching the 28-layer teacher's 87.5% zero-shot stress accuracy and achieving 100% (42/42) end-to-end IME accuracy at *1.37 ms* 6-candidate Metal reranking latency ($3.91 times$ faster). Third, we introduce pluggable *`.imepack` cartridges* that co-mount zero-copy lexical slices (`pack.imedict`) with 2.07 MB Rank-8 `LoRA` sidecars. By concatenating adapter matrices into *Rank-Stacked GEMMs* and bounding weights via a *Simplex-Gated Context Router*, Chime reduces 6-adapter marginal latency overhead by $49.3 times$ ($3.38 times$ total speedup at $K=6$), eliminates multi-adapter register drift, and captures the optimal zero-shot FP16$arrow.r$INT4 transfer scale ($gamma^* approx 0.50$).
+      Applying Large Language Models (LLMs) to client-side Pinyin Input Method Editors (IMEs) faces a strict systems trilemma: human typing demands sub-10 ms keystroke latency without candidate-bar jitter, operating systems enforce tight resident memory budgets ($< 100$ MB) alongside zero-network privacy guarantees, and real-world input spans open-domain vocabulary from bilingual code identifiers to classical literature and idiosyncratic personal style. Existing generative Pinyin-to-Character (P2C) LLMs violate latency budgets via autoregressive decoding and suffer catastrophic representation collapse under aggressive layer pruning or out-of-vocabulary (OOV) blindness when relying solely on parameter-efficient adapters. We present *Chime*, a 100% offline neural IME for Apple Silicon that resolves this trilemma through lexical-neural co-design. First, we formalize *Recall–Rerank Decoupling* and *Probability-Space Separation*, pairing a $< 0.8$ ms zero-copy `mmap` dual-track lattice decoder (`CHIMED02`) with a batched prefix-cached causal language model reranker that isolates equal-span homophone scoring from variable-horizon lookahead completions. Second, we compress the 28-layer `Qwen3-0.6B` (1.19 GB FP16) into a 6-layer, 24,576-vocab 4-bit MLX student (*64.17 MB*, $18.6 times$ smaller); whereas naive layer skipping collapses pre-head teacher alignment to $cos(bold(u)_S, bold(u)_T) = 0.022$ and halves homophone accuracy to 43.8%, our *Manifold-Aligned Layer Distillation* restores $cos(bold(u)_S, bold(u)_T) = 0.853$, matching the 28-layer teacher's *93.8%* (15/16) zero-shot stress accuracy and achieving *100%* (44/44) end-to-end IME accuracy at *0.86 ms* 6-candidate Metal reranking latency ($6.15 times$ faster than 28-layer 4-bit). Third, we introduce pluggable *`.imepack` cartridges* that co-mount zero-copy lexical slices (`pack.imedict`) with *Q4-Manifold Aligned* 2.07 MB Rank-8 `LoRA` sidecars. Combining *Rank-Stacked GEMM Fusion*, *Batched Broadcast KV-Gather*, and a *Couplet-Aware Simplex Router* cuts 6-adapter reranking latency from 10.82 ms to *1.45 ms* (*$7.46 times$ speedup*, $+39.6 thin mu"s"$/adapter), eliminates multi-adapter register drift, and removes FP16$arrow.r$INT4 scale overshoot ($-0.270$ nats classical NLL gain).
     ]
   ]
   #v(5pt)
@@ -133,13 +133,13 @@ In this paper, we design, implement, and empirically evaluate *Chime*, an open-s
 
 Our primary contributions are fourfold:
 - *Recall–Rerank Co-Design & Measure Separation (§3)*: We prove that Stage-2 neural rescoring is upper-bounded by Stage-1 pool recall and must separate equal-span homophone hypotheses $cal(C)_n$ from lookahead completions $cal(C)_"comp"$ to avoid cross-horizon probability distortion, paired with sublinear length calibration $|c|^(-0.42)$ across heterogeneous BPE tokenizations.
-- *Manifold-Aligned 6-Layer Student Distillation (§4)*: Combining vocabulary pruning ($151,936 arrow.r 24,576$ tokens), frozen tied embeddings, trajectory MSE, pre-head cosine alignment, and dual-temperature KL distillation, we compress `Qwen3-0.6B` by $18.6 times$ into a 64.17 MB 4-bit MLX student that matches the 28-layer teacher's zero-shot disambiguation accuracy (87.5%) at $3.91 times$ lower latency (1.37 ms).
-- *Rank-Stacked `.imepack` Cartridges & Simplex Gating (§5)*: We package zero-copy `pack.imedict` slices alongside 2.07 MB Rank-8 `LoRA`s into hot-swappable cartridges. Our *Rank-Stacked GEMM Fusion* collapses $2K$ low-rank dispatches per projection into 2 fused GEMMs ($3.38 times$ speedup at $K=6$, $+30.6 thin mu"s"$ marginal cost/adapter), while our *Simplex-Gated Context Router* prevents register superposition and hits the theoretical optimum ($gamma^* approx 0.50$) of zero-shot FP16$arrow.r$INT4 adapter transfer.
-- *System Evaluation & Longitudinal Personalization (§6)*: Across classical Chinese (266K entries, 231K `Tab` chains), developer code-switching, and an air-gapped 815K-character pre-LLM longitudinal personal corpus (2013–2020), Chime achieves 42/42 (100%) benchmark accuracy and $9 times$ classical recall gain ($10.0% arrow.r 90.0%$).
+- *Manifold-Aligned 6-Layer Student Distillation (§4)*: Combining vocabulary pruning ($151,936 arrow.r 24,576$ tokens), frozen tied embeddings, trajectory MSE, pre-head cosine alignment, and dual-temperature KL distillation, we compress `Qwen3-0.6B` by $18.6 times$ into a 64.17 MB 4-bit MLX student that matches the 28-layer teacher's zero-shot disambiguation accuracy (93.8%) at *0.86 ms* 6-candidate batched reranking ($6.15 times$ faster).
+- *Rank-Stacked `.imepack` Cartridges & Q4-Manifold Alignment (§5)*: We package zero-copy `pack.imedict` slices alongside 2.07 MB Rank-8 `LoRA`s into hot-swappable cartridges. Combining *Rank-Stacked GEMM Fusion* with *Batched Broadcast KV-Gather* (`take_along_axis`) cuts 6-adapter reranking from 10.82 ms to *1.45 ms* (*$7.46 times$ speedup*, $+39.6 thin mu"s"$ marginal cost/adapter), while *Q4-Manifold LoRA Training* and our *Simplex-Gated Router* eliminate multi-adapter register drift and INT4 transfer overshoot.
+- *System Evaluation & Longitudinal Personalization (§6)*: Across classical Chinese (266K entries, 231K `Tab` chains), developer code-switching, and an air-gapped 815K-character pre-LLM longitudinal personal corpus (2013–2020), Chime achieves *44/44 (100%)* benchmark accuracy and $9 times$ classical recall gain ($10.0% arrow.r 90.0%$).
 
 = Related Work
 
-*Statistical and Graph-Based Pinyin Decoding.* Classical P2C engines model conversion as Viterbi search over word lattices weighted by character/word $n$-grams @chen2000new and double-array tries @yoshinaga1992double. @jia2014joint introduced a joint graph model integrating QWERTY typo correction with P2C conversion. While sub-millisecond and memory-frugal, finite-context $n$-grams fail on long-range semantic homophones (e.g., 保障公民的*权利* vs. 滥用国家的*权力* across intervening clauses).
+*Statistical and Graph-Based Pinyin Decoding.* Classical P2C engines model conversion as Viterbi search over word lattices weighted by character/word $n$-grams @chen2000new and double-array tries @yoshinaga1992double. @jia2014joint introduced a joint graph model integrating QWERTY typo correction with P2C conversion. While sub-millisecond and memory-frugal, finite-context $n$-grams fail on context-sensitive homophones (e.g., 保障*权利* [safeguard rights] vs. 滥用*权力* [abuse power], especially across intervening modifiers).
 
 *Neural and LLM-Based Input Methods.* @zhang2019open augmented neural P2C with online open-vocabulary sampling. @xu2022pert proposed `PERT`, a bidirectional encoder pre-trained directly on Pinyin sequences. With the rise of generative LLMs, @tan2022exploring adapted frozen Chinese GPT to P2C, observing severe degradation on abbreviated Pinyin due to combinatorial candidate explosion. `GeneInput` @ding2023geneinput unified full-mode key-to-character generation via prompting and RLHF, `AttnInput` @gui2025attninput attached a Pinyin side-network to linear RWKV models, and `HuoziIME` @shan2026huoziime explored on-device LLM personalization via hierarchical memory. Unlike these end-to-end generative designs—which struggle with sub-5 ms keystroke budgets, multi-syllable typo graphs, and exact casing for code-switching—Chime retains deterministic $O(log N)$ lattice recall in Stage 1 and deploys a prefix-cached causal SLM strictly as a constant-depth parallel rescorer in Stage 2.
 
@@ -153,10 +153,11 @@ Given a raw ASCII keystroke sequence $bold(k) = k_(1:n)$, surrounding left docum
 $ bold(w)^* = arg max_(bold(w) in cal(G)(bold(k))) [& S_"lex" (bold(w), bold(k) | bold(c)_L, a) \ & + lambda dot S_"slm" (bold(w) | bold(c)_L, a)] $ <eq-joint>
 where $cal(G)(bold(k))$ is the dual-track segmentation lattice constructed over byte spans $[i, j) subset.eq [0, n)$.
 
-To achieve $< 0.8$ ms Stage-1 construction without memory bloat, Chime compiles static and cartridge lexicons into `CHIMED02`, a 48-byte-header immutable binary image mapped directly into virtual memory via `mmap` (`memmap2`). Rather than expanding fuzzy Pinyin permutations offline—which multiplies dictionary size by $2^6$—Stage 1 evaluates an algebraic equivalence relation $cal(F)(s)$ (`z`$harpoons.rtlb$`zh`, `an`$harpoons.rtlb$`ang`, `in`$harpoons.rtlb$`ing`, etc.) dynamically at span-lookup time, alongside three 1-edit motor-noise operators on raw slice $bold(k)_(i:j)$:
+To achieve $< 0.8$ ms Stage-1 construction without memory bloat, Chime compiles static and cartridge lexicons into `CHIMED02`, a 48-byte-header immutable binary image mapped directly into virtual memory via `mmap` (`memmap2`). Rather than expanding fuzzy Pinyin permutations offline—which multiplies dictionary size by $2^6$—Stage 1 evaluates an algebraic equivalence relation $cal(F)(s)$ (`z`$harpoons.rtlb$`zh`, `an`$harpoons.rtlb$`ang`, `in`$harpoons.rtlb$`ing`, etc.) dynamically at span-lookup time, alongside four 1-edit motor-noise operators on raw slice $bold(k)_(i:j)$:
 1. *Adjacent transposition* (`shaung` $arrow.r$ `shuang`, `uq` $arrow.r$ `qu`, cost $delta_"swap" = 1.05$);
 2. *QWERTY Euclidean neighbor substitution* ($d^2 <= 1.85$ key pitches, e.g., `shuruga` $arrow.r$ `shurufa`, cost $0.85 + 0.45 d^2$);
-3. *Accidental key-repeat deletion* (`niian` $arrow.r$ `nian`, cost $delta_"rep" = 1.10$).
+3. *Accidental key-repeat deletion* (`niian` $arrow.r$ `nian`, cost $delta_"rep" = 1.10$);
+4. *Geminate boundary consonant elision* (`chunuan` $arrow.r$ `chun`+`nuan` 春暖, `jiangun` $arrow.r$ `jiang`+`gun` 江滚 when a shared coda/onset `n` or `g` is pressed once before a vowel, cost $delta_"gem" = 0.85$).
 
 Multi-syllable exact phrases, idioms, and merged classical clauses up to 16 syllables are traversed via depth-first span expansion gated at every step by an $O(log N)$ binary search (`has_longer_pinyin_prefix`) over sorted 16-byte `pinyin_groups`, pruning dead typo branches immediately at length 1–2. Simultaneously, a parallel code-switching track scores canonical-case English identifiers (`macos` $arrow.r$ `macOS`, `chatgpt` $arrow.r$ `ChatGPT`) and camelCase tokens (`useEffect`) with automatic Pangu boundary spacing.
 
@@ -220,7 +221,7 @@ We eliminate this bottleneck via *Rank-Stacked GEMM Fusion*. At cartridge mount 
 $ bold(A)_"cat"^top &= [ bold(A)_1^top thin dots thin bold(A)_K^top ] in RR^(d_"in" times R), \ bold(B)_"cat"^top &= [ bold(B)_1 thin dots thin bold(B)_K ]^top in RR^(R times d_"out") $ <eq-stacked>
 For any dynamic routing vector $bold(gamma) = (gamma_1, dots, gamma_K) in RR^K$, let $bold(g) = "repeat"(bold(gamma), r) in RR^(1 times 1 times R)$ replicate each scalar $gamma_k$ across its $r$ rank channels. By block-matrix associativity, @eq-unfused reduces to *two* GEMMs and one broadcast multiply regardless of $K$:
 $ Delta bold(y) = ((bold(x) bold(A)_"cat"^top) circle.tiny bold(g)) bold(B)_"cat"^top $ <eq-fused>
-When $bold(gamma) = bold(0)$, the LoRA branch is bypassed entirely (0 FLOPs). Furthermore, `MlxPrefixCache` tags cached KV tensors with the quantized signature $"round"(10^3 bold(gamma))$, reusing prefix KV states across consecutive keystrokes whenever routing weights remain unchanged and recomputing the 16–96 token prefix ($approx 1.5$ ms) only upon regime transitions.
+When $bold(gamma) = bold(0)$, the LoRA branch is bypassed entirely (0 FLOPs). Furthermore, rather than evaluating multi-token candidates via $B$ sequential `[1, L, d]` forward passes and copying `[L, 24576]` log-softmax distributions (`~590` KB) back to CPU, Chime packs all multi-token continuations into a *single right-padded `[B, L_max]` batch tensor*, zero-copy broadcasts `MlxPrefixCache` along axis 0 (`[1, H_kv, T_ctx, D]` $arrow.r$ `[B, H_kv, T_ctx, D]`), applies lower-right causal masking (which prevents valid positions $t < ell_b$ from attending to right-padding $t >= ell_b$), and extracts only the target log-probabilities via on-GPU `take_along_axis` (`<= 128` bytes GPU$arrow.r$CPU readout, a $4,600 times$ bandwidth reduction).
 
 #place(
   top + center,
@@ -231,23 +232,23 @@ When $bold(gamma) = bold(0)$, the LoRA branch is bypassed entirely (0 FLOPs). Fu
     fig-scaling-and-transfer(),
     kind: image,
     caption: [
-      *(a)* Measured 6-candidate Metal reranking latency (`p50`, ms) as mounted Rank-8 cartridges scale from $K=0$ to $6$: Rank-Stacked GEMM Fusion flattens the $O(K)$ kernel-launch ramp ($+1.51$ ms/adapter $arrow.r +0.03$ ms/adapter, $3.38 times$ speedup at $K=6$). *(b)* Zero-shot transfer of an FP16-trained `classics` LoRA onto the 4-bit quantized base model exhibits a convex U-shaped NLL curve achieving its global minimum at $gamma^* = 0.50$ ($-0.161$ nats) before quantization cross-terms cause overshoot at $gamma = 1.0$.
+      *(a)* Measured 6-candidate Metal reranking latency (`p50`, ms) across $K=0 dots 6$ Rank-8 cartridges: Rank-Stacked GEMMs flatten the $O(K)$ kernel ramp (`10.82` $arrow.r$ `3.29` ms), and Batched Broadcast KV-Gather cuts it further to *0.87 ms* ($K=0$) and *1.45 ms* ($K=6$, *$7.46 times$ speedup*). *(b)* Classical validation NLL vs. adapter scale $gamma$: zero-shot transfer of an FP16-trained LoRA overshoots at $gamma = 1.0$ (`6.071`), whereas *Q4-Manifold Aligned LoRA* training directly on dequantized 4-bit weights eliminates overshoot and deepens NLL reduction by 68% (`5.978` $arrow.r$ *5.708*).
     ],
   ) <fig-scaling>
 ]
 
-== Register Superposition & Zero-Shot INT4 Transfer
+== Register Superposition & Q4-Manifold Alignment
 
 Mounting multiple domain adapters simultaneously reveals two subtle statistical interactions that degrade naive additive LoRA composition:
 
-1. *Register Superposition Drift*: Domain packs (`classics-poetry`, `tech-developer`, and long-form essay packs) are predominantly trained on *formal written corpora*. In written text, formal homophones such as 多达 (#emph["up to"]) vastly outnumber spoken interrogatives like 多大 (#emph["how large"]). Summing three adapters with uncalibrated unit scales ($sum_k gamma_k = 2.85$) constructively amplifies their shared written-register direction and pushes pre-norm activations into SwiGLU non-linear saturation, dropping colloquial accuracy from 8/8 to 6/8 and classical NLL from 5.978 to 7.598 (@tab-routing).
-2. *Zero-Shot FP16$arrow.r$INT4 Scale Shift*: Community and personal `LoRA`s are conveniently trained against the clean FP16 student $bold(W)$, yet deployed onto the 4-bit quantized base $hat(bold(W)) = bold(W) + bold(E)_Q$. Expanding expected token NLL $cal(L)(hat(bold(W)) + gamma Delta bold(W))$ to second order around $bold(W)$ yields:
+1. *Register Superposition Drift*: Domain packs (`classics-poetry`, `tech-developer`, and long-form essay packs) are predominantly trained on *formal written corpora*. In written text, formal compounds such as 多达 (#emph["up to"]) vastly outnumber spoken interrogatives like 多大 (#emph["how large"]). Summing three adapters with uncalibrated scales ($sum_k gamma_k = 2.85$) constructively amplifies their shared written-register direction and pushes pre-norm activations into SwiGLU non-linear saturation, dropping classical accuracy to 5/8 and spiking NLL from 5.978 to 7.136 (@tab-routing).
+2. *FP16$arrow.r$INT4 Manifold Shift & Q4-Aligned Training*: Community `LoRA`s trained against the clean FP16 student $bold(W)$ and mounted zero-shot onto the 4-bit quantized base $hat(bold(W)) = bold(W) + bold(E)_Q$ incur quantization cross-terms in expected NLL:
 $ cal(L)(hat(bold(W)) + gamma Delta bold(W)) &approx cal(L)(bold(W)) + gamma chevron.l nabla cal(L), Delta bold(W) chevron.r \ & quad + frac(1, 2) norm(bold(E)_Q + gamma Delta bold(W))_(bold(H))^2 $ <eq-taylor>
-Minimizing with respect to $gamma$ gives $gamma^* = (- chevron.l nabla cal(L), Delta bold(W) chevron.r - chevron.l bold(E)_Q, Delta bold(W) chevron.r_(bold(H))) / norm(Delta bold(W))_(bold(H))^2$. Because quantization noise $bold(E)_Q$ perturbs intermediate feature covariance across 6 cascaded layers, full unit step $gamma = 1.0$ overshoots the quantized valley, whereas attenuated $gamma^* approx 0.45$–$0.55$ achieves significant NLL gains with *zero quantization-aware retraining* (@fig-scaling (b)).
+Minimizing @eq-taylor gives $gamma^* = (- chevron.l nabla cal(L), Delta bold(W) chevron.r - chevron.l bold(E)_Q, Delta bold(W) chevron.r_(bold(H))) / norm(Delta bold(W))_(bold(H))^2$: full unit step $gamma = 1.0$ overshoots (`6.071`), whereas $gamma^* approx 0.50$ recovers `-0.161` nats (@fig-scaling (b), blue). Crucially, training `LoRA` directly on the *exact dequantized 4-bit runtime manifold* $hat(bold(W))$ allows $Delta bold(W) = bold(B) bold(A)$ to simultaneously adapt domain priors and compensate for group-64 quantization residuals $bold(E)_Q$, eliminating $gamma = 1.0$ overshoot above base and achieving *-0.270 nats* (`5.708`) at $gamma = 0.65$ (@fig-scaling (b), green).
 
-Chime resolves both phenomena via a *Simplex-Bounded Context-Gated Router*:
-- *Hard Domain Gating*: `Classical` routing sets $tilde(gamma)_k = 0$ unless classical lexical particles (`之乎者也矣焉哉兮`) or verse rhythms appear in $(bold(c)_L, cal(B))$; `Developer` sets $tilde(gamma)_k = s_k$ on code/ASCII cues, $0.25 s_k$ in terminal/IDE bundle IDs, and $0$ in chat/prose apps; `Always` (personal style) attenuates to $0.45 s_k$ on short $<= 2$-char colloquial inputs.
-- *Simplex Gain Cap*: Active weights are projected onto the $ell_1$ ball $sum_(k=1)^K gamma_k <= Gamma_"max" = 0.90$ via $gamma_k = tilde(gamma)_k dot min(1, Gamma_"max" / sum_j tilde(gamma)_j)$, bounding total perturbation norm and naturally placing multi-pack mixtures inside the $[0.35, 0.55]$ INT4 transfer sweet spot.
+Chime combines Q4-Manifold alignment with a *Couplet-Aware Simplex Router*:
+- *Domain & Couplet Gating*: `Classical` routing activates on archaic particles (`之乎者也矣焉哉兮`) or symmetric $5+5$ / $7+7$ regulated-verse couplet cadence (`空山新雨后，` + `天气晚来秋`), while staying strictly $0$ on colloquial Mandarin; `Developer` activates on ASCII/code cues ($1.0 s_k$) or IDE bundle IDs ($0.25 s_k$); `Always` attenuates to $0.45 s_k$ on short $<= 2$-char colloquial inputs.
+- *Sub-Simplex Gain Cap*: Individual scales are clamped to $gamma_k <= 0.80$ (guarding third-party FP16 `LoRA`s) and projected onto $sum_(k=1)^K gamma_k <= Gamma_"max" = 0.90$.
 
 = Experiments & Analysis
 
@@ -265,30 +266,31 @@ All runtime and latency experiments are conducted natively on an Apple Silicon M
 )[
   #figure(
     table(
-      columns: (2.10fr, 0.82fr, 0.72fr, 0.86fr, 0.96fr, 0.86fr, 0.90fr),
+      columns: (2.38fr, 0.80fr, 0.70fr, 0.84fr, 0.96fr, 0.84fr, 0.84fr),
       align: (left, right, right, right, right, right, right),
       stroke: none,
       inset: (x: 4.5pt, y: 4.2pt),
       toprule,
       [*Model Checkpoint*], [*Size*], [*Compr.*], [*$cos(bold(u)_S, bold(u)_T)$*], [*Stress Acc.*], [*Margin $Delta ell$*], [*Rerank-6 p50*],
       midrule,
-      [`Qwen3-0.6B` (28L, 152K, FP16)], [1191.5 MB], [$1.0 times$], [1.0000], [87.5% (14/16)], [+5.48 nats], [$approx 14.2$ ms],
-      [`Qwen3-28L` (24K vocab, 4-bit)], [249.95 MB], [$4.8 times$], [1.0000], [87.5% (14/16)], [+5.43 nats], [5.34 ms],
-      [`Qwen3-6L-NaiveSkip` (4-bit)], [64.15 MB], [$18.6 times$], [#text(fill: rgb("#be123c"))[0.0191]], [#text(fill: rgb("#be123c"))[43.8% (7/16)]], [+0.10 nats], [1.49 ms],
-      [`Qwen3-6L-Distilled` (FP16)], [228.03 MB], [$5.2 times$], [0.8287], [87.5% (14/16)], [+5.99 nats], [2.65 ms],
-      [`Qwen3-6L-Distilled` (8-bit)], [121.15 MB], [$9.8 times$], [0.8287], [87.5% (14/16)], [+5.99 nats], [1.64 ms],
-      [*`Qwen3-6L-Chime` (4-bit, Ours)*], [*64.17 MB*], [*$18.6 times$*], [*0.8613*], [*87.5% (14/16)*], [*+6.11 nats*], [*1.37 ms*],
+      [`Qwen3-0.6B` (28L, 152K, FP16)], [1191.5 MB], [$1.0 times$], [1.0000], [93.8% (15/16)], [+5.27 nats], [$approx 14.2$ ms],
+      [`Qwen3-28L` (24K vocab, 4-bit)], [249.95 MB], [$4.8 times$], [1.0000], [93.8% (15/16)], [+5.22 nats], [5.29 ms],
+      [`Qwen3-6L-NaiveSkip` (4-bit)], [64.15 MB], [$18.6 times$], [#text(fill: rgb("#be123c"))[0.0221]], [#text(fill: rgb("#be123c"))[43.8% (7/16)]], [+0.14 nats], [2.33 ms],
+      [`Qwen3-6L-Distilled` (FP16)], [228.03 MB], [$5.2 times$], [0.8125], [93.8% (15/16)], [+5.91 nats], [4.07 ms],
+      [`Qwen3-6L-Distilled` (8-bit)], [121.15 MB], [$9.8 times$], [0.8125], [93.8% (15/16)], [+5.91 nats], [3.44 ms],
+      [`Qwen3-6L-Chime` (4-bit, Seq.)], [64.17 MB], [$18.6 times$], [0.8531], [93.8% (15/16)], [+6.02 nats], [1.35 ms],
+      [*`Qwen3-6L-Chime` (4-bit, Batched)*], [*64.17 MB*], [*$18.6 times$*], [*0.8531*], [*93.8% (15/16)*], [*+6.02 nats*], [*0.86 ms*],
       bottomrule,
     ),
     caption: [
-      *Teacher-to-Student Compression & Manifold Alignment Pareto Frontier* on Apple Silicon Metal (`T=16` prefix tokens + 6 homophone candidates). Naive 6-layer skipping destroys representation alignment ($cos = 0.0191$), whereas our manifold-aligned distillation recovers 100% of the 28-layer teacher's disambiguation accuracy in 64.17 MB at $3.91 times$ faster reranking.
+      *Teacher-to-Student Compression & Batched Metal Reranking Pareto Frontier* (`T=16` prefix tokens + 6 homophone candidates). Naive 6-layer skipping destroys representation alignment ($cos = 0.0221$), whereas manifold-aligned distillation + batched KV-gather recovers 100% of the 28-layer teacher's accuracy (15/16) in 64.17 MB at *0.86 ms* ($6.15 times$ faster than 28L 4-bit).
     ],
   ) <tab-pareto>
 ]
 
 == Main Results & Ablation Studies
 
-*1. Distillation & Quantization Pareto Frontier (@tab-pareto).* Vocabulary pruning + 4-bit group-64 quantization compresses the 28-layer teacher to 249.95 MB (5.34 ms reranking). Skipping directly to 6 layers cuts size to 64.15 MB and latency to 1.49 ms, but collapses pre-head cosine similarity to $0.0191$ and drops zero-shot minimal-pair accuracy from 14/16 to 7/16 (mean log-likelihood margin $+0.10$ nats). Our 1,600-step manifold-aligned distillation restores $cos(bold(u)_S, bold(u)_T) = 0.8613$, achieving *14/16 (87.5%)* zero-shot stress accuracy, *+6.11 nats* mean margin, *0.91 ms* 16-token prefill, *0.77 ms* 1-step continuation, and *1.37 ms* 6-candidate batch reranking—well inside the 10 ms frame-0 synchronous budget. On the full 42-case Chime IME suite (covering full/abbreviated Pinyin, Xiaohe/Ziranma Shuangpin, fuzzy rhymes, neighbor/swap/repeat typos, code-switching, punctuation, and poetry chaining), Chime achieves *42/42 (100%)* Top-1 accuracy.
+*1. Distillation & Batched Reranking Pareto Frontier (@tab-pareto).* Vocabulary pruning + 4-bit group-64 quantization compresses the 28-layer teacher to 249.95 MB (5.29 ms reranking). Skipping directly to 6 layers cuts size to 64.15 MB, but collapses pre-head cosine similarity to $0.0221$ and drops zero-shot minimal-pair accuracy from 15/16 to 7/16 (mean margin $+0.14$ nats). Our 1,600-step manifold-aligned distillation restores $cos(bold(u)_S, bold(u)_T) = 0.8531$, achieving *15/16 (93.8%)* zero-shot stress accuracy and *+6.02 nats* mean margin, while Batched Broadcast KV-Gather reduces 6-candidate reranking from 1.35 ms to *0.86 ms*—sub-millisecond on a laptop GPU! On the expanded 44-case Chime IME suite (covering full/abbreviated Pinyin, Xiaohe/Ziranma Shuangpin, fuzzy rhymes, neighbor/swap/repeat/geminate typos, code-switching, punctuation, and poetry chaining), Chime achieves *44/44 (100%)* Top-1 accuracy.
 
 #figure(
   table(
@@ -299,18 +301,18 @@ All runtime and latency experiments are conducted natively on an Apple Silicon M
     toprule,
     [*Configuration*], [*Verse Top-1*], [*Cls. NLL*], [*Pers. NLL*],
     midrule,
-    [C0: Modern Base Only], [10.0% (3/30)], [5.978], [5.628],
-    [C1: `LoRA` Sidecar Only], [10.0% (3/30)], [5.817], [5.227],
-    [C2: `pack.imedict` Only], [90.0% (27/30)], [5.978], [5.628],
-    [*C3: Full `.imepack`*], [*90.0% (27/30)*], [*5.817*], [*5.227*],
+    [C0: Modern Base Only], [10.0% (3/30)], [5.978], [5.754],
+    [C1: `LoRA` Sidecar Only], [10.0% (3/30)], [5.708], [5.287],
+    [C2: `pack.imedict` Only], [90.0% (27/30)], [5.978], [5.754],
+    [*C3: Full `.imepack`*], [*90.0% (27/30)*], [*5.708*], [*5.287*],
     bottomrule,
   ),
   caption: [
-    *Empirical Verification of Recall–Rerank Decoupling* on 30 held-out classical verses outside the core seed and held-out prose validation blocks. `LoRA` alone reduces domain NLL ($-0.161$ classical, $-0.401$ personal) yet yields *0%* gain on OOV verses without `pack.imedict`.
+    *Empirical Verification of Recall–Rerank Decoupling* on 30 held-out classical verses outside the core seed and held-out Q4 prose validation blocks. Q4-aligned `LoRA` reduces domain NLL ($-0.270$ classical, $-0.467$ personal) yet yields *0%* gain on OOV verses without `pack.imedict`.
   ],
 ) <tab-decouple>
 
-*2. Lexical-Neural Decoupling (@tab-decouple).* Evaluating 30 held-out classical Tang/Song/Guwen verses against a modern-only base lexicon empirically confirms Proposition 1: mounting `classics_lora.safetensors` alone (`C1`) lowers classical validation NLL from 5.978 to 5.817 (and personal `LoRA` lowers held-out personal essay NLL by *-0.401 nats*, from $5.628 arrow.r 5.227$), yet verse Top-1 accuracy remains stuck at *3/30 (10.0%)* because Stage-1 never proposes OOV verses. Co-mounting the full `.imepack` (`C3`) boosts Top-1 conversion $9 times$ to *27/30 (90.0%)* while retaining neural disambiguation and 231,593 `Tab` continuation chains.
+*2. Lexical-Neural Decoupling (@tab-decouple).* Evaluating 30 held-out classical Tang/Song/Guwen verses against a modern-only base lexicon empirically confirms Proposition 1: mounting Q4-aligned `classics_lora.safetensors` alone (`C1`) lowers classical validation NLL by *-0.270 nats* ($5.978 arrow.r 5.708$, perplexity $394.7 arrow.r 301.2$) and personal `LoRA` lowers held-out personal essay NLL by *-0.467 nats* ($5.754 arrow.r 5.287$), yet verse Top-1 accuracy remains stuck at *3/30 (10.0%)* because Stage-1 never proposes OOV verses. Co-mounting the full `.imepack` (`C3`) boosts Top-1 conversion $9 times$ to *27/30 (90.0%)* while retaining neural disambiguation and 231,593 `Tab` continuation chains.
 
 #figure(
   table(
@@ -322,42 +324,42 @@ All runtime and latency experiments are conducted natively on an Apple Silicon M
     [*Routing ($K=3$)*], [*Colloq.*], [*Class.*], [*Dev.*], [*NLL*],
     midrule,
     [R0: Base ($gamma = bold(0)$)], [8/8 (+8.4)], [8/8 (+4.3)], [8/8 (+9.3)], [5.978],
-    [R1: Uncalib. Sum], [#text(fill: rgb("#be123c"))[6/8 (+3.8)]], [#text(fill: rgb("#be123c"))[5/8 (+1.9)]], [8/8 (+6.7)], [#text(fill: rgb("#be123c"))[7.598]],
-    [R2: Uniform $1/K$], [8/8 (+7.5)], [8/8 (+4.3)], [8/8 (+9.2)], [5.982],
-    [*R3: Simplex-Gated*], [*8/8 (+8.8)*], [*8/8 (+4.3)*], [*8/8 (+9.4)*], [*5.937*],
+    [R1: Uncalib. Sum], [#text(fill: rgb("#be123c"))[7/8 (+3.6)]], [#text(fill: rgb("#be123c"))[5/8 (+1.9)]], [8/8 (+6.8)], [#text(fill: rgb("#be123c"))[7.136]],
+    [R2: Uniform $1/K$], [8/8 (+7.7)], [8/8 (+4.5)], [8/8 (+9.4)], [5.851],
+    [*R3: Simplex-Gated*], [*8/8 (+9.0)*], [*8/8 (+4.4)*], [*8/8 (+9.7)*], [*5.781*],
     bottomrule,
   ),
   caption: [
-    *Multi-LoRA Interference vs. Simplex-Gated Routing* with 3 concurrent packs (`classics` + `tech` + `personal`). Cells show Top-1 wins and mean margin (nats). Uncalibrated summation (`R1`) induces severe register drift and activation overshoot.
+    *Multi-LoRA Interference vs. Simplex-Gated Routing* with 3 concurrent Q4-aligned packs (`classics` + `tech` + `personal`). Cells show Top-1 wins and mean margin (nats).
   ],
 ) <tab-routing>
 
-*3. Multi-LoRA Interference & Routing (@tab-routing).* When all three packs are mounted concurrently, naive additive summation (`R1`, $sum gamma_k = 2.85$) degrades colloquial accuracy to 6/8 (margin halved from $+8.4 arrow.r +3.8$ nats), classical accuracy to 5/8, and explodes classical NLL to 7.598. Uniform $1/K$ averaging (`R2`) avoids saturation but dilutes colloquial margin ($+7.5$ vs. $+8.4$) and erases classical NLL gains ($5.982$). Our Simplex-Gated Router (`R3`) achieves *8/8* across all three regimes with the *highest margins* in colloquial ($+8.83$ nats) and developer ($+9.40$ nats) probes and the *lowest NLL* ($5.937$).
+*3. Multi-LoRA Interference & Routing (@tab-routing).* With three concurrent packs, naive summation (`R1`, $sum gamma_k = 2.85$) halves colloquial margin ($+8.4 arrow.r +3.6$ nats), drops classical accuracy to 5/8, and spikes NLL to 7.136. Uniform $1/K$ averaging (`R2`) dilutes colloquial margin ($+7.7$). Our Couplet-Aware Simplex Router (`R3`) achieves *8/8* across all three regimes with the *highest margins* in colloquial ($+9.00$ nats) and developer ($+9.73$ nats) probes and the *lowest NLL* ($5.781$).
 
 #figure(
   table(
-    columns: (0.48fr, 1.05fr, 1.00fr, 1.00fr, 0.85fr),
+    columns: (0.42fr, 0.98fr, 0.98fr, 1.05fr, 0.85fr),
     align: (center, right, right, right, right),
     stroke: none,
-    inset: (x: 4pt, y: 3.8pt),
+    inset: (x: 3.5pt, y: 3.8pt),
     toprule,
-    [*$K$*], [*Unfused p50*], [*Fused p50*], [*Fused p95*], [*Speedup*],
+    [*$K$*], [*Unfused*], [*Stacked*], [*Batched+Stk*], [*Speedup*],
     midrule,
-    [0], [1.42 ms], [1.43 ms], [1.67 ms], [$1.00 times$],
-    [1], [2.93 ms], [2.95 ms], [3.07 ms], [$0.99 times$],
-    [2], [4.50 ms], [*3.01 ms*], [3.12 ms], [*$1.50 times$*],
-    [3], [6.00 ms], [*3.01 ms*], [3.11 ms], [*$1.99 times$*],
-    [4], [7.55 ms], [*3.03 ms*], [3.15 ms], [*$2.49 times$*],
-    [5], [8.99 ms], [*3.09 ms*], [3.34 ms], [*$2.90 times$*],
-    [6], [10.47 ms], [*3.10 ms*], [*3.20 ms*], [*$3.38 times$*],
+    [0], [1.34 ms], [1.37 ms], [*0.87 ms*], [*$1.55 times$*],
+    [1], [2.90 ms], [2.95 ms], [*1.25 ms*], [*$2.32 times$*],
+    [2], [4.57 ms], [2.93 ms], [*1.38 ms*], [*$3.31 times$*],
+    [3], [6.12 ms], [3.15 ms], [*1.45 ms*], [*$4.21 times$*],
+    [4], [7.85 ms], [3.00 ms], [*1.41 ms*], [*$5.57 times$*],
+    [5], [9.37 ms], [3.11 ms], [*1.44 ms*], [*$6.52 times$*],
+    [6], [10.82 ms], [3.29 ms], [*1.45 ms*], [*$7.46 times$*],
     bottomrule,
   ),
   caption: [
-    *Rank-Stacked GEMM Fusion Scaling* ($K=0 dots 6$ mounted Rank-8 adapters). Marginal latency from $K=1 arrow.r 6$ drops from $+1,508 thin mu"s"$/adapter (unfused) to *$+30.6 thin mu"s"$/adapter* (fused)—a *$49.3 times$ reduction* in per-adapter overhead.
+    *Multi-LoRA Scaling on Metal* ($K=0 dots 6$ Rank-8 adapters, 6-candidate p50). Combining Rank-Stacked GEMMs with Batched KV-Gather reduces $K=6$ latency from 10.82 ms to *1.45 ms* ($+39.6 thin mu"s"$/adapter from $K=1 arrow.r 6$, *$7.46 times$ speedup*).
   ],
 ) <tab-scaling>
 
-*4. Kernel Fusion Scaling & Length Calibration (@tab-scaling & Exp. 5).* As mounted adapters grow from $K=1$ to $6$, Rank-Stacked GEMM Fusion keeps 6-candidate p50 reranking virtually flat (`2.95 ms` $arrow.r$ `3.10 ms`, p95 `3.20 ms`), cutting marginal per-adapter latency by *$49.3 times$* compared to sequential execution (`10.47 ms`). Finally, sweeping length-normalization exponent $alpha in [0, 1]$ in @eq-rerank confirms that character-count scaling preserves 14/16 stress accuracy across all $alpha$, while $alpha = 0.42$ paired with Probability-Space Separation (Proposition 2) uniquely achieves *42/42 (100%)* end-to-end accuracy—preventing both dilution on 9-character sentences ($alpha >= 0.9$, where `今天我们使用本模型` flips to `试用`) and horizon penalties on poem completions (`君不见` + context $arrow.r$ `君不见高堂明镜悲白发`).
+*4. Kernel Fusion, Batched KV-Gather & Length Calibration (@tab-scaling & Exp. 5).* As mounted adapters grow from $K=1$ to $6$, Rank-Stacked GEMMs + Batched KV-Gather hold 6-candidate reranking at *1.25 ms $arrow.r$ 1.45 ms* ($+39.6 thin mu"s"$/adapter vs. $+1,584 thin mu"s"$/adapter unfused—a *$40.0 times$ reduction* in marginal adapter cost and *$7.46 times$ total speedup*). Sweeping length-normalization exponent $alpha in [0, 1]$ in @eq-rerank confirms that character-count scaling preserves 15/16 stress accuracy across all $alpha$, while $alpha = 0.42$ paired with Probability-Space Separation uniquely achieves *44/44 (100%)* end-to-end accuracy.
 
 == Qualitative Case Studies
 

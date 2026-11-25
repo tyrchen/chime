@@ -61,7 +61,7 @@
       [
         • Layered `CHIMED02` `.imedict` stack\
         • Dynamic fuzzy syllable algebra\
-        • Spatial, swap & repeat typo edges\
+        • Swap, neighbor, repeat & geminate edges\
         • Modeless EN + $O(log C)$ `Tab` chains\
         • *Measure split*: Exact pool $cal(C)_n$ vs. lookahead pool $cal(C)_"comp"$
       ],
@@ -71,13 +71,13 @@
     text(size: 11pt, weight: "bold", fill: teal)[$arrow.r$],
     arch-box(
       "3. Stage-2 Metal SLM + Multi-LoRA",
-      "1.4–3.0 ms · Unified Memory",
+      "0.86–1.45 ms · Unified Memory",
       [
         • Frozen 4-bit `Qwen3-6L` (*64.17 MB*, $V=24,576$)\
-        • Persistent GPU `MlxPrefixCache` on $bold(c)_L$\
-        • *Rank-Stacked Sidecar* ($r=8$, *2.07 MB* per pack):\
+        • Batched `[B, L]` broadcast `MlxPrefixCache` + GPU `take_along_axis`\
+        • *Q4-Aligned Rank-Stacked LoRA* ($r=8$, *2.07 MB*):\
           $Delta bold(y) = ((bold(x) bold(A)_"cat"^top) circle.tiny bold(g)(bold(c)_L, a)) bold(B)_"cat"^top$\
-        • Simplex-gated router: $sum_k gamma_k <= 0.90$
+        • Couplet-aware simplex router: $sum_k gamma_k <= 0.90$
       ],
       blue-soft,
       blue,
@@ -146,8 +146,9 @@
         #place(dx: 24pt, dy: h, line(length: w, stroke: 0.7pt + ink))
 
         // X-axis ticks K = 0..6
-        #let unfused = ((0, 1.424), (1, 2.928), (2, 4.504), (3, 6.002), (4, 7.550), (5, 8.986), (6, 10.468))
-        #let fused   = ((0, 1.428), (1, 2.948), (2, 3.008), (3, 3.014), (4, 3.030), (5, 3.094), (6, 3.101))
+        #let unfused = ((0, 1.344), (1, 2.900), (2, 4.565), (3, 6.119), (4, 7.849), (5, 9.373), (6, 10.822))
+        #let fused   = ((0, 1.372), (1, 2.945), (2, 2.926), (3, 3.151), (4, 2.997), (5, 3.110), (6, 3.290))
+        #let batched = ((0, 0.866), (1, 1.252), (2, 1.381), (3, 1.454), (4, 1.408), (5, 1.437), (6, 1.450))
 
         #for k in range(0, 7) {
           let x = 24pt + (k / 6.0) * w
@@ -168,10 +169,10 @@
         #for (k, v) in unfused {
           let x = 24pt + (k / 6.0) * w
           let y = h - (v / 12.0) * h
-          place(dx: x - 2.2pt, dy: y - 2.2pt, circle(radius: 2.2pt, fill: crimson))
+          place(dx: x - 2.1pt, dy: y - 2.1pt, circle(radius: 2.1pt, fill: crimson))
         }
 
-        // Fused polyline (teal)
+        // Rank-Stacked Only polyline (blue, dashed)
         #for i in range(0, 6) {
           let (k1, v1) = fused.at(i)
           let (k2, v2) = fused.at(i + 1)
@@ -179,22 +180,39 @@
           let y1 = h - (v1 / 12.0) * h
           let x2 = 24pt + (k2 / 6.0) * w
           let y2 = h - (v2 / 12.0) * h
-          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: 1.4pt + teal))
+          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: (thickness: 1.1pt, paint: blue, dash: "densely-dashed")))
         }
         #for (k, v) in fused {
           let x = 24pt + (k / 6.0) * w
           let y = h - (v / 12.0) * h
-          place(dx: x - 2.2pt, dy: y - 2.2pt, rect(width: 4.4pt, height: 4.4pt, fill: teal))
+          place(dx: x - 2.0pt, dy: y - 2.0pt, rect(width: 4.0pt, height: 4.0pt, fill: blue))
+        }
+
+        // Batched KV-Gather + Rank-Stacked polyline (emerald, solid)
+        #for i in range(0, 6) {
+          let (k1, v1) = batched.at(i)
+          let (k2, v2) = batched.at(i + 1)
+          let x1 = 24pt + (k1 / 6.0) * w
+          let y1 = h - (v1 / 12.0) * h
+          let x2 = 24pt + (k2 / 6.0) * w
+          let y2 = h - (v2 / 12.0) * h
+          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: 1.5pt + emerald))
+        }
+        #for (k, v) in batched {
+          let x = 24pt + (k / 6.0) * w
+          let y = h - (v / 12.0) * h
+          place(dx: x - 2.2pt, dy: y - 2.2pt, circle(radius: 2.2pt, fill: emerald))
         }
 
         // Annotations
-        #place(dx: 92pt, dy: 24pt, text(size: 6.4pt, weight: "bold", fill: crimson)[Unfused Sequential (10.47 ms)])
-        #place(dx: 88pt, dy: h - (3.10 / 12.0) * h + 5pt, text(size: 6.4pt, weight: "bold", fill: teal)[Rank-Stacked Fused (3.10 ms, 3.38×)])
+        #place(dx: 84pt, dy: 22pt, text(size: 6.1pt, weight: "bold", fill: crimson)[Unfused Sequential (10.82 ms)])
+        #place(dx: 92pt, dy: h - (3.29 / 12.0) * h - 10pt, text(size: 6.0pt, weight: "bold", fill: blue)[Rank-Stacked Only (3.29 ms)])
+        #place(dx: 62pt, dy: h - (1.45 / 12.0) * h + 5pt, text(size: 6.2pt, weight: "bold", fill: emerald)[Batched KV + Rank-Stacked (1.45 ms, 7.46×)])
       ]
     ]
   ],
 
-  // Panel (b): Zero-Shot FP16 -> INT4 LoRA Transfer Scale Curve
+  // Panel (b): FP16 Zero-Shot vs Q4-Manifold Aligned LoRA Scale Curves
   block(
     width: 100%,
     stroke: 0.6pt + border-col,
@@ -203,22 +221,22 @@
     fill: white,
   )[
     #align(center)[
-      #text(size: 7.8pt, weight: "bold", fill: ink)[(b) Zero-Shot FP16$arrow.r$INT4 LoRA Scale Curve (NLL)]
+      #text(size: 7.8pt, weight: "bold", fill: ink)[(b) FP16 Zero-Shot vs. Q4-Manifold LoRA Scale ($gamma$)]
     ]
     #v(4pt)
     #let w = 205pt
     #let h = 112pt
-    #let ymin = 5.78
+    #let ymin = 5.65
     #let ymax = 6.10
     #align(center)[
       #box(width: w + 30pt, height: h + 22pt)[
-        // Shaded Simplex sweet spot [0.35, 0.55]
-        #let sx1 = 26pt + 0.35 * w
-        #let sx2 = 26pt + 0.55 * w
+        // Shaded Simplex sweet spot [0.40, 0.75]
+        #let sx1 = 26pt + 0.40 * w
+        #let sx2 = 26pt + 0.75 * w
         #place(dx: sx1, dy: 0pt, rect(width: sx2 - sx1, height: h, fill: emerald-soft))
-        #place(dx: sx1 + 2pt, dy: 5pt, text(size: 6.0pt, weight: "bold", fill: emerald)[Simplex\ sweet spot])
+        #place(dx: sx1 + 3pt, dy: 4pt, text(size: 5.9pt, weight: "bold", fill: emerald)[Calibrated router zone])
 
-        #for (val, lbl) in ((5.80, "5.80"), (5.90, "5.90"), (6.00, "6.00"), (6.10, "6.10")) {
+        #for (val, lbl) in ((5.70, "5.70"), (5.80, "5.80"), (5.90, "5.90"), (6.00, "6.00"), (6.10, "6.10")) {
           let y = h - ((val - ymin) / (ymax - ymin)) * h
           place(dx: 26pt, dy: y, line(length: w, stroke: 0.4pt + rgb("#e4e4e7")))
           place(dx: 0pt, dy: y - 4pt, box(width: 22pt, align(right, text(size: 6.3pt, fill: muted)[#lbl])))
@@ -227,7 +245,7 @@
         // Base NLL horizontal reference (5.978)
         #let ybase = h - ((5.978 - ymin) / (ymax - ymin)) * h
         #place(dx: 26pt, dy: ybase, line(length: w, stroke: (thickness: 0.6pt, paint: muted, dash: "dotted")))
-        #place(dx: 30pt, dy: ybase - 9pt, text(size: 6.1pt, fill: muted)[4-bit Base ($gamma = 0$: 5.978)])
+        #place(dx: 30pt, dy: ybase - 8.5pt, text(size: 6.0pt, fill: muted)[4-bit Base ($gamma = 0$: 5.978)])
 
         // Axes
         #place(dx: 26pt, dy: 0pt, line(end: (0pt, h), stroke: 0.7pt + ink))
@@ -239,7 +257,7 @@
         }
         #place(dx: 26pt + w / 2 - 42pt, dy: h + 13pt, text(size: 6.8pt, fill: ink)[Effective Adapter Scale ($gamma$)])
 
-        #let pts = (
+        #let pts_fp16 = (
           (0.0, 5.9780),
           (0.2, 5.8416),
           (0.35, 5.8178),
@@ -248,24 +266,48 @@
           (0.8, 5.9042),
           (1.0, 6.0707),
         )
-        #for i in range(0, pts.len() - 1) {
-          let (g1, n1) = pts.at(i)
-          let (g2, n2) = pts.at(i + 1)
+        #let pts_q4 = (
+          (0.0, 5.9780),
+          (0.2, 5.8112),
+          (0.35, 5.7607),
+          (0.5, 5.7265),
+          (0.65, 5.7078),
+          (0.8, 5.7186),
+          (1.0, 5.8063),
+        )
+        #for i in range(0, pts_fp16.len() - 1) {
+          let (g1, n1) = pts_fp16.at(i)
+          let (g2, n2) = pts_fp16.at(i + 1)
           let x1 = 26pt + g1 * w
           let y1 = h - ((n1 - ymin) / (ymax - ymin)) * h
           let x2 = 26pt + g2 * w
           let y2 = h - ((n2 - ymin) / (ymax - ymin)) * h
-          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: 1.4pt + blue))
+          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: (thickness: 1.2pt, paint: blue, dash: "densely-dashed")))
         }
-        #for (g, n) in pts {
+        #for (g, n) in pts_fp16 {
           let x = 26pt + g * w
           let y = h - ((n - ymin) / (ymax - ymin)) * h
-          place(dx: x - 2.3pt, dy: y - 2.3pt, circle(radius: 2.3pt, fill: blue))
+          place(dx: x - 2.0pt, dy: y - 2.0pt, rect(width: 4.0pt, height: 4.0pt, fill: blue))
         }
-        #let xmin_opt = 26pt + 0.5 * w
-        #let ymin_opt = h - ((5.8174 - ymin) / (ymax - ymin)) * h
-        #place(dx: xmin_opt - 24pt, dy: ymin_opt + 5pt, text(size: 6.3pt, weight: "bold", fill: blue)[Min 5.817 ($gamma = 0.50$)])
-        #place(dx: 26pt + 0.72 * w, dy: 12pt, text(size: 6.1pt, fill: crimson)[INT4 overshoot\ ($gamma = 1.0$: 6.071)])
+
+        #for i in range(0, pts_q4.len() - 1) {
+          let (g1, n1) = pts_q4.at(i)
+          let (g2, n2) = pts_q4.at(i + 1)
+          let x1 = 26pt + g1 * w
+          let y1 = h - ((n1 - ymin) / (ymax - ymin)) * h
+          let x2 = 26pt + g2 * w
+          let y2 = h - ((n2 - ymin) / (ymax - ymin)) * h
+          place(dx: 0pt, dy: 0pt, line(start: (x1, y1), end: (x2, y2), stroke: 1.5pt + emerald))
+        }
+        #for (g, n) in pts_q4 {
+          let x = 26pt + g * w
+          let y = h - ((n - ymin) / (ymax - ymin)) * h
+          place(dx: x - 2.2pt, dy: y - 2.2pt, circle(radius: 2.2pt, fill: emerald))
+        }
+
+        #place(dx: 26pt + 0.67 * w, dy: 9pt, text(size: 5.9pt, fill: crimson)[FP16 zero-shot\ overshoot (6.071)])
+        #place(dx: 26pt + 0.24 * w, dy: h - ((5.8174 - ymin) / (ymax - ymin)) * h - 10pt, text(size: 5.9pt, weight: "bold", fill: blue)[FP16 Zero-Shot (5.817)])
+        #place(dx: 26pt + 0.34 * w, dy: h - ((5.7078 - ymin) / (ymax - ymin)) * h - 10.5pt, text(size: 6.1pt, weight: "bold", fill: emerald)[Q4-Aligned Min 5.708 ($-0.270$)])
       ]
     ]
   ],

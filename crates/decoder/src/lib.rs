@@ -642,6 +642,24 @@ impl LatticeDecoder {
                         spans[i].push((i + len, fid, -pen, MatchKind::Fuzzy));
                     }
                 }
+                // Geminate boundary consonant elision (`chunuanhuakai` -> `chun` + `nuan`,
+                // `xiniankuaile` -> `xin` + `nian`, `changjiangungunlai` -> `jiang` + `gun`):
+                // when a typist presses a shared boundary `n` or `g` once instead of twice!
+                if len >= 2
+                    && i + len + 1 < n
+                    && matches!(bytes[i + len], b'n' | b'g')
+                    && matches!(bytes[i + len + 1], b'a' | b'e' | b'i' | b'o' | b'u' | b'v')
+                {
+                    let extended = &lower[i..=i + len];
+                    if !extended.contains('\'')
+                        && let Some(gem_id) = lookup_syllable(extended)
+                        && !spans[i]
+                            .iter()
+                            .any(|&(e, existing, _, _)| e == i + len && existing == gem_id)
+                    {
+                        spans[i].push((i + len, gem_id, -0.85, MatchKind::TypoCorrected));
+                    }
+                }
                 if len >= 2 {
                     // When `sub` is ALREADY a valid syllable (`duo`, `da`, `gen`), penalize typo
                     // neighbors heavily (`-2.75`) so real words win cleanly without blocking 3-syl

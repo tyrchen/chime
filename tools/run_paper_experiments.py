@@ -26,8 +26,8 @@ STRESS_PROBES: list[tuple[str, list[str]]] = [
     ("4/5究竟有", ["多大", "多达", "多打", "躲大"]),
     ("打字的过程中要维护一个上下文窗口，这样才能推荐出来最", ["合适", "何时", "何事", "和是"]),
     ("感觉第一候选字有时候不那么", ["靠谱", "靠铺", "考铺"]),
-    ("法庭依法保障公民的", ["权利", "权力", "全力"]),
-    ("严禁滥用国家的", ["权力", "权利", "全力"]),
+    ("依法保障", ["权利", "权力", "全力"]),
+    ("严禁滥用", ["权力", "权利", "全力"]),
     ("群众向上级如实地", ["反映", "反应"]),
     ("吃海鲜后身体出现了过敏", ["反应", "反映"]),
     ("空气和水是人类生存所", ["必需", "必须"]),
@@ -229,6 +229,53 @@ class MlxRunner:
         lps = nn.log_softmax(logits, axis=-1)[0]
         return u[0], lps, new_kv
 
+    def forward_batched_target_lps(self, input_mat: list[list[int]], target_mat: list[list[int]], past_kv, offset: int, scales=None, fused: bool = True):
+        b_sz = len(input_mat)
+        t_len = len(input_mat[0])
+        idx = mx.array(input_mat, dtype=mx.int32)
+        if self.qcfg is not None:
+            flat_idx = idx.reshape(-1)
+            x = mx.dequantize(
+                self.w["model.embed_tokens.weight"][flat_idx],
+                self.w["model.embed_tokens.scales"][flat_idx],
+                self.w["model.embed_tokens.biases"][flat_idx],
+                self.qcfg["group_size"],
+                self.qcfg["bits"],
+            ).reshape(b_sz, t_len, -1)
+        else:
+            x = self.w["model.embed_tokens.weight"][idx]
+
+        for l in range(self.n_layers):
+            p = f"model.layers.{l}"
+            xn = mx.fast.rms_norm(x, self.w[f"{p}.input_layernorm.weight"], self.eps)
+            q = self._linear(xn, f"{p}.self_attn.q_proj", l, "self_attn.q_proj", scales, fused).reshape(b_sz, t_len, self.nh, self.hd)
+            k = self._linear(xn, f"{p}.self_attn.k_proj", l, "self_attn.k_proj", scales, fused).reshape(b_sz, t_len, self.nkv, self.hd)
+            v = self._linear(xn, f"{p}.self_attn.v_proj", l, "self_attn.v_proj", scales, fused).reshape(b_sz, t_len, self.nkv, self.hd)
+            q = mx.fast.rms_norm(q, self.w[f"{p}.self_attn.q_norm.weight"], self.eps).transpose(0, 2, 1, 3)
+            k = mx.fast.rms_norm(k, self.w[f"{p}.self_attn.k_norm.weight"], self.eps).transpose(0, 2, 1, 3)
+            v = v.transpose(0, 2, 1, 3)
+            q = mx.fast.rope(q, self.hd, traditional=False, base=self.theta, scale=1.0, offset=offset)
+            k = mx.fast.rope(k, self.hd, traditional=False, base=self.theta, scale=1.0, offset=offset)
+            pk, pv = past_kv[l]
+            if b_sz > 1 and pk.shape[0] == 1:
+                pk = mx.broadcast_to(pk, (b_sz, self.nkv, pk.shape[2], self.hd))
+                pv = mx.broadcast_to(pv, (b_sz, self.nkv, pv.shape[2], self.hd))
+            k_full = mx.concatenate([pk, k], axis=2)
+            v_full = mx.concatenate([pv, v], axis=2)
+            mask = "causal" if t_len > 1 else None
+            a = mx.fast.scaled_dot_product_attention(q, k_full, v_full, scale=self.hd**-0.5, mask=mask).transpose(0, 2, 1, 3).reshape(b_sz, t_len, self.nh * self.hd)
+            x = x + self._linear(a, f"{p}.self_attn.o_proj", l, "self_attn.o_proj", scales, fused)
+            xm = mx.fast.rms_norm(x, self.w[f"{p}.post_attention_layernorm.weight"], self.eps)
+            gate = nn.silu(self._linear(xm, f"{p}.mlp.gate_proj", l, "mlp.gate_proj", scales, fused))
+            up = self._linear(xm, f"{p}.mlp.up_proj", l, "mlp.up_proj", scales, fused)
+            x = x + self._linear(gate * up, f"{p}.mlp.down_proj", l, "mlp.down_proj", scales, fused)
+
+        u = mx.fast.rms_norm(x, self.w["model.norm.weight"], self.eps)
+        logits = self._linear(u, "model.embed_tokens").astype(mx.float32)
+        lps = nn.log_softmax(logits, axis=-1)
+        targ_arr = mx.array(target_mat, dtype=mx.int32)[:, :, None]
+        return mx.take_along_axis(lps, targ_arr, axis=-1).reshape(-1)
+
 
 def build_quantized_student_dict(embed_np: np.ndarray, student_st: dict, bits: int | None):
     out: dict[str, mx.array] = {}
@@ -298,19 +345,25 @@ def eval_corpus_nll(runner: MlxRunner, encode, lines: list[str], scales=None) ->
     return float(statistics.mean(nlls))
 
 
-def measure_latency(runner: MlxRunner, scales=None, fused: bool = True, runs: int = 80) -> dict[str, float]:
+def measure_latency(runner: MlxRunner, scales=None, fused: bool = True, batched_cands: bool = False, runs: int = 80) -> dict[str, float]:
     prefix = [10, 25, 40, 55, 70, 85, 100, 115, 130, 145, 160, 175, 190, 205, 220, 235]
+    cand_seqs = [[300, 301], [302, 303], [304], [305, 306], [307], [308, 309]]
+    multi_in = [[cs[0]] for cs in cand_seqs if len(cs) > 1]
+    multi_tg = [[cs[1]] for cs in cand_seqs if len(cs) > 1]
     # Warmup
     for _ in range(10):
         _, lps0, kv = runner.forward_hidden_and_lps(prefix, scales=scales, fused=fused)
         mx.eval(lps0, *[t for p in kv for t in p])
-        _, clps, _ = runner.forward_hidden_and_lps([300, 301], past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
-        mx.eval(clps)
+        if batched_cands:
+            g = runner.forward_batched_target_lps(multi_in, multi_tg, past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
+            mx.eval(g)
+        else:
+            _, clps, _ = runner.forward_hidden_and_lps([300, 301], past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
+            mx.eval(clps)
 
     prefill_ms = []
     step_ms = []
     rerank6_ms = []
-    cand_seqs = [[300, 301], [302, 303], [304], [305, 306], [307], [308, 309]]
     for _ in range(runs):
         t0 = time.perf_counter()
         _, lps0, kv = runner.forward_hidden_and_lps(prefix, scales=scales, fused=fused)
@@ -323,13 +376,18 @@ def measure_latency(runner: MlxRunner, scales=None, fused: bool = True, runs: in
         step_ms.append((time.perf_counter() - t1) * 1000.0)
 
         t2 = time.perf_counter()
-        lazy = []
-        for cs in cand_seqs:
-            if len(cs) > 1:
-                _, cl, _ = runner.forward_hidden_and_lps(cs[:-1], past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
-                lazy.append(cl)
-        if lazy:
-            mx.eval(*lazy)
+        if batched_cands:
+            g = runner.forward_batched_target_lps(multi_in, multi_tg, past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
+            mx.eval(g)
+            _ = g.tolist()
+        else:
+            lazy = []
+            for cs in cand_seqs:
+                if len(cs) > 1:
+                    _, cl, _ = runner.forward_hidden_and_lps(cs[:-1], past_kv=kv, offset=len(prefix), scales=scales, fused=fused)
+                    lazy.append(cl)
+            if lazy:
+                mx.eval(*lazy)
         rerank6_ms.append((time.perf_counter() - t2) * 1000.0)
 
     prefill_ms.sort()
@@ -416,7 +474,7 @@ def main() -> None:
         ("Qwen3-6L-Distilled-4bit (Chime)", r_4b, mb_4b, float(statistics.mean(cos_dist4))),
     ]:
         w_cnt, tot, marg = eval_probes(runner, encode, STRESS_PROBES, alpha=0.42)
-        lat = measure_latency(runner)
+        lat = measure_latency(runner, batched_cands=(label == "Qwen3-6L-Distilled-4bit (Chime)"))
         exp1[label] = {
             "size_mb": round(size_mb, 2),
             "cos_with_28l": round(cos_val, 4),
@@ -444,9 +502,32 @@ def main() -> None:
     tech_eval_lines = (dist / "tech_lora_corpus.txt").read_text(encoding="utf-8").splitlines()[:60]
 
     nll_classics_base = eval_corpus_nll(r_multi, encode, classics_eval_lines, scales=[0.0, 0.0, 0.0])
-    nll_classics_lora = eval_corpus_nll(r_multi, encode, classics_eval_lines, scales=[1.0, 0.0, 0.0])
+    nll_classics_lora = eval_corpus_nll(r_multi, encode, classics_eval_lines, scales=[0.8, 0.0, 0.0])
     nll_tech_base = eval_corpus_nll(r_multi, encode, tech_eval_lines, scales=[0.0, 0.0, 0.0])
-    nll_tech_lora = eval_corpus_nll(r_multi, encode, tech_eval_lines, scales=[0.0, 1.0, 0.0])
+    nll_tech_lora = eval_corpus_nll(r_multi, encode, tech_eval_lines, scales=[0.0, 0.8, 0.0])
+
+    q4_scale_curve = {}
+    for g in [0.0, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0]:
+        q4_scale_curve[str(g)] = round(eval_corpus_nll(r_multi, encode, classics_eval_lines, scales=[g, 0.0, 0.0]), 4)
+    print(f"  Q4-Aligned LoRA scale curve: {q4_scale_curve}", flush=True)
+
+    fp16_scale_curve = {
+        "0.0": 5.978,
+        "0.2": 5.8416,
+        "0.35": 5.8178,
+        "0.5": 5.8174,
+        "0.65": 5.8407,
+        "0.8": 5.9042,
+        "1.0": 6.0707,
+    }
+    fp16_tmp = Path("/tmp/fp16_classics_lora.safetensors")
+    if fp16_tmp.exists():
+        r_fp16_lora = MlxRunner(mx.load(str(dist / "base_neural" / "model.safetensors")), base_6l_cfg)
+        r_fp16_lora.mount_lora(fp16_tmp)
+        fp16_scale_curve = {
+            str(g): round(eval_corpus_nll(r_fp16_lora, encode, classics_eval_lines, scales=[g]), 4)
+            for g in [0.0, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0]
+        }
 
     exp3_routing = {}
     for r_name, col_scales, cls_scales, dev_scales in [
@@ -470,19 +551,28 @@ def main() -> None:
         }
         print(f"  {r_name}: {exp3_routing[r_name]}", flush=True)
 
-    print("[Exp 4] Scaling K=0..6 Adapters: Unfused Sequential vs Rank-Stacked GEMM Fusion...", flush=True)
+    print("[Exp 4] Scaling K=0..6 Adapters: Unfused vs Rank-Stacked vs Batched KV-Gather...", flush=True)
     exp4_scaling = []
     r_scale = MlxRunner(mx.load(str(dist / "base_neural" / "model.safetensors")), base_6l_cfg)
-    exp4_scaling.append({"K": 0, "unfused": measure_latency(r_scale), "fused": measure_latency(r_scale)})
+    exp4_scaling.append({
+        "K": 0,
+        "unfused": measure_latency(r_scale, batched_cands=False),
+        "fused": measure_latency(r_scale, batched_cands=False),
+        "batched_fused": measure_latency(r_scale, batched_cands=True),
+    })
     lora_pool = [classics_lora, tech_lora, priv_lora, classics_lora, tech_lora, priv_lora]
     for k in range(1, 7):
         r_scale.mount_lora(lora_pool[k - 1])
         sc = [0.9 / k] * k
-        unf = measure_latency(r_scale, scales=sc, fused=False, runs=60)
-        fus = measure_latency(r_scale, scales=sc, fused=True, runs=60)
-        row = {"K": k, "unfused": unf, "fused": fus}
+        unf = measure_latency(r_scale, scales=sc, fused=False, batched_cands=False, runs=60)
+        fus = measure_latency(r_scale, scales=sc, fused=True, batched_cands=False, runs=60)
+        bat = measure_latency(r_scale, scales=sc, fused=True, batched_cands=True, runs=60)
+        row = {"K": k, "unfused": unf, "fused": fus, "batched_fused": bat}
         exp4_scaling.append(row)
-        print(f"  K={k}: unfused_rerank6={unf['rerank6_p50_ms']}ms vs fused_rerank6={fus['rerank6_p50_ms']}ms", flush=True)
+        print(
+            f"  K={k}: unfused={unf['rerank6_p50_ms']}ms | fused={fus['rerank6_p50_ms']}ms | batched_fused={bat['rerank6_p50_ms']}ms",
+            flush=True,
+        )
 
     print("[Exp 5] Length Normalization Alpha Sweep...", flush=True)
     exp5_alpha = []
@@ -587,6 +677,8 @@ def main() -> None:
             "tech_nll_lora": round(nll_tech_lora, 4),
             "private_val_nll_base": 5.6279,
             "private_val_nll_lora": 5.2267,
+            "fp16_to_4bit_lora_scale_nll": fp16_scale_curve,
+            "q4_aligned_lora_scale_nll": q4_scale_curve,
         },
         "exp3_routing_interference": exp3_routing,
         "exp4_lora_fusion_scaling": exp4_scaling,

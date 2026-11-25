@@ -373,6 +373,12 @@ def train_one_lora(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layers-st", type=Path, default=Path("/content/layers_6l_fp16.safetensors"))
+    parser.add_argument(
+        "--q4-model-dir",
+        type=Path,
+        default=None,
+        help="Optional 4-bit quantized runtime directory (`dist/base_neural`): dequantizes exact runtime 4-bit weights so LoRA trains directly on the quantized manifold without gamma=1.0 overshoot!",
+    )
     parser.add_argument("--vocab", type=Path, default=Path("/content/vocab.json"))
     parser.add_argument("--classics-txt", type=Path, default=Path("/content/classics_lora_corpus.txt"))
     parser.add_argument("--tech-txt", type=Path, default=Path("/content/tech_lora_corpus.txt"))
@@ -409,22 +415,79 @@ def main() -> None:
     orig_cfg = json.loads((snap / "config.json").read_text(encoding="utf-8"))
     vocab_strings = json.loads(args.vocab.read_text(encoding="utf-8"))
 
-    hf_tok = AutoTokenizer.from_pretrained(str(snap))
-    bos_id = 151643
-    selected_old_ids = [bos_id, bos_id]
-    for piece in vocab_strings[2:]:
-        ids = hf_tok.encode(piece, add_special_tokens=False)
-        selected_old_ids.append(ids[0] if len(ids) == 1 else bos_id)
+    if args.q4_model_dir is not None and (args.q4_model_dir / "model.safetensors").exists():
+        import mlx.core as mx
+        import numpy as np
 
-    teacher_st = load_file(str(snap / "model.safetensors"))
-    embed_pruned = (
-        teacher_st["model.embed_tokens.weight"]
-        .index_select(0, torch.tensor(selected_old_ids, dtype=torch.long))
-        .contiguous()
-    )
-    del teacher_st
+        q4_cfg = json.loads((args.q4_model_dir / "config.json").read_text(encoding="utf-8"))
+        q_gs = q4_cfg["quantization"]["group_size"]
+        q_bits = q4_cfg["quantization"]["bits"]
+        q4_w = mx.load(str(args.q4_model_dir / "model.safetensors"))
+        emb_deq = mx.dequantize(
+            q4_w["model.embed_tokens.weight"],
+            q4_w["model.embed_tokens.scales"],
+            q4_w["model.embed_tokens.biases"],
+            q_gs,
+            q_bits,
+        ).astype(mx.float16)
+        mx.eval(emb_deq)
+        embed_pruned = torch.from_numpy(np.array(emb_deq)).contiguous()
+        student_st: dict[str, torch.Tensor] = {
+            "model.norm.weight": torch.from_numpy(np.array(q4_w["model.norm.weight"].astype(mx.float32))).contiguous()
+        }
+        for l_idx in range(6):
+            p = f"model.layers.{l_idx}"
+            for norm_suf in (
+                "input_layernorm.weight",
+                "post_attention_layernorm.weight",
+                "self_attn.q_norm.weight",
+                "self_attn.k_norm.weight",
+            ):
+                student_st[f"{p}.{norm_suf}"] = torch.from_numpy(
+                    np.array(q4_w[f"{p}.{norm_suf}"].astype(mx.float32))
+                ).contiguous()
+            for proj in (
+                "self_attn.q_proj",
+                "self_attn.k_proj",
+                "self_attn.v_proj",
+                "self_attn.o_proj",
+                "mlp.gate_proj",
+                "mlp.up_proj",
+                "mlp.down_proj",
+            ):
+                w_deq = mx.dequantize(
+                    q4_w[f"{p}.{proj}.weight"],
+                    q4_w[f"{p}.{proj}.scales"],
+                    q4_w[f"{p}.{proj}.biases"],
+                    q_gs,
+                    q_bits,
+                ).astype(mx.float16)
+                mx.eval(w_deq)
+                student_st[f"{p}.{proj}.weight"] = torch.from_numpy(np.array(w_deq)).contiguous()
+                if f"{p}.{proj}.bias" in q4_w:
+                    student_st[f"{p}.{proj}.bias"] = torch.from_numpy(
+                        np.array(q4_w[f"{p}.{proj}.bias"].astype(mx.float16))
+                    ).contiguous()
+        print(
+            f"Loaded exact dequantized 4-bit runtime manifold from {args.q4_model_dir} (group_size={q_gs}, bits={q_bits})",
+            flush=True,
+        )
+    else:
+        hf_tok = AutoTokenizer.from_pretrained(str(snap))
+        bos_id = 151643
+        selected_old_ids = [bos_id, bos_id]
+        for piece in vocab_strings[2:]:
+            ids = hf_tok.encode(piece, add_special_tokens=False)
+            selected_old_ids.append(ids[0] if len(ids) == 1 else bos_id)
 
-    student_st = load_file(str(args.layers_st))
+        teacher_st = load_file(str(snap / "model.safetensors"))
+        embed_pruned = (
+            teacher_st["model.embed_tokens.weight"]
+            .index_select(0, torch.tensor(selected_old_ids, dtype=torch.long))
+            .contiguous()
+        )
+        del teacher_st
+        student_st = load_file(str(args.layers_st))
     model = Qwen3FrozenBaseWithLora(
         student_st, embed_pruned, orig_cfg, rank=args.rank, compute_dtype=compute_dtype
     ).to(device)
