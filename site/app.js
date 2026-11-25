@@ -60,12 +60,12 @@ const PRESETS = {
     ]
   },
   codeswitch: {
-    lora: "LoRA: tech-developer (1.0x in Ghostty / VS Code)",
+    lora: "LoRA: tech-developer (中/En 双模式英文拼写自动纠错 · ⌫ 一键撤回)",
     initialCommitted: "",
-    preedit: "wo'shi'yong'macos'he'github'kaifa",
+    preedit: "bang'wo'reivew'zhe'ge'pr",
     candidates: [
-      { text: "我使用 macOS 和 GitHub 开发", tag: "免切换混输" },
-      { text: "我试用 macOS 和 GitHub 开发", tag: "" }
+      { text: "帮我 review 这个 PR", tag: "自动纠错 reivew→review" },
+      { text: "帮我 reivew 这个 PR", tag: "原词保留" }
     ],
     chain: []
   },
@@ -91,7 +91,7 @@ const I18N_EN = {
   "nav.diy": "Private LoRA",
   "hero.eyebrow": "macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0",
   "hero.title": "A 64 MB local neural IME on Unified Memory, with hot-swappable LoRA cartridges.",
-  "hero.lead": "Chime is an offline-first Chinese Pinyin input method for Apple Silicon. Written in Rust and Swift 6, it pairs a <0.8 ms zero-copy mmap lattice decoder with a 6-layer 4-bit MLX Qwen3 reranker and 2 MB plug-and-play Multi-LoRA .imepack cartridges.",
+  "hero.lead": "Chime is an offline-first Chinese Pinyin IME for Apple Silicon. Written in Rust and Swift 6, it pairs a <0.8 ms zero-copy mmap lattice decoder (with Shift En mode, dual-mode English spelling auto-correction & 1-key Backspace undo) with a 6-layer 4-bit MLX Qwen3 reranker, 1-click Multi-LoRA .imepack cartridges, and verified zero-telemetry updates.",
   "hero.dlPkg": "Download macOS Installer (.pkg)",
   "hero.dlZip": "Portable Chime.app (.zip)",
   "hero.dlZipSub": "Drag into ~/Library/Input Methods",
@@ -106,7 +106,7 @@ const I18N_EN = {
   "arch.desc": "Pure statistical dictionaries miss contextual homophones, while a LoRA alone cannot recall verses missing from Stage 1. Each .imepack bundles zero-copy CHIMED02 recall + continuation chains alongside a 2 MB Rank-8 Metal LoRA.",
   "packs.eyebrow": "Prebuilt .imepack Hub",
   "packs.title": "Official Prebuilt Cartridges (LoRA + Zero-Copy Lexicon)",
-  "packs.desc": "Import any downloaded .imepack.zip directly from Menu Bar → Chime → Import Dictionary or .imepack, or via CLI. Hot-mounts with zero restart.",
+  "packs.desc": "Install or update with 1 click directly inside Settings → Lexicon & AI (SHA-256 verified), or import any downloaded .imepack.zip locally / via CLI with zero restart.",
   "packs.dlClassics": "Download classics-poetry.imepack.zip",
   "packs.dlTech": "Download tech-developer.imepack.zip",
   "diy.eyebrow": "Bring Your Own Private LoRA",

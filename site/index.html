@@ -34,7 +34,7 @@
           <p class="eyebrow" data-i18n="hero.eyebrow">macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0</p>
           <h1 data-i18n="hero.title">把大模型塞进 64 MB 统一内存，按键零联网，卡带随插随用。</h1>
           <p class="lead" data-i18n="hero.lead">
-            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器，二阶段在本地 Metal GPU 上运行 6 层 4-bit 蒸馏版 Qwen3（单步 0.72 ms），并支持像游戏卡带一样按需挂载 <strong>2 MB 级别的领域 LoRA 与百万词条 .imepack 扩展包</strong>。
+            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器（原生支持 <strong>Shift 中英切换 + 中/英双模式英文拼写自动纠错与退格撤回</strong>），二阶段在本地 Metal GPU 上运行 6 层 4-bit 蒸馏版 Qwen3（6 候选批处理 0.86 ms），并支持一键在线挂载 <strong>2 MB 级别的领域 LoRA 与 .imepack 扩展卡带</strong>及零遥测自动更新。
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg">
@@ -77,7 +77,7 @@
             <button class="preset-chip active" data-preset="shuidiao" type="button">水调歌头 · Tab 全篇</button>
             <button class="preset-chip" data-preset="jiangjinjiu" type="button">将进酒 · 重首句消歧</button>
             <button class="preset-chip" data-preset="yulinling" type="button">雨霖铃 · 错键纠错</button>
-            <button class="preset-chip" data-preset="codeswitch" type="button">免切换中英混输</button>
+            <button class="preset-chip" data-preset="codeswitch" type="button">中英混输 + 英文纠错</button>
             <button class="preset-chip" data-preset="singlegen" type="button">单音节零生僻字</button>
           </div>
           <div class="editor-surface">
@@ -144,7 +144,7 @@
           <p class="eyebrow" data-i18n="packs.eyebrow">Prebuilt .imepack Hub</p>
           <h2 data-i18n="packs.title">官方预构建卡带下载（LoRA + 零拷贝词库）</h2>
           <p data-i18n="packs.desc">
-            下载后在菜单栏打开「Chime → 导入词库或扩展卡带…」，直接选择下载好的 <code>.imepack.zip</code> 即可一键挂载并立即生效，无需重启输入法。
+            推荐直接在「菜单栏 Chime → 偏好设置… → 词库与 AI」中点击<strong>一键安装 / 更新</strong>自动校验并热挂载；也可下载 <code>.imepack.zip</code> 本地导入或通过 CLI 安装，全程无需重启输入法。
           </p>
         </div>
 
