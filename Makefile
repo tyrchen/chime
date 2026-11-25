@@ -145,6 +145,15 @@ paper:
 	@cp paper/chime-paper.pdf site/chime-paper.pdf
 	@echo "Compiled paper/chime-paper.pdf and copied to site/chime-paper.pdf"
 
+paper-arxiv: paper
+	@printf '#import "figures.typ": fig-architecture\n#set page(width: 7.1in, height: auto, margin: 2pt)\n#set text(font: ("New Computer Modern", "Noto Serif CJK SC", "Songti SC"), size: 9.6pt)\n#fig-architecture()\n' > paper/_export_fig1.typ
+	@printf '#import "figures.typ": fig-scaling-and-transfer\n#set page(width: 7.1in, height: auto, margin: 2pt)\n#set text(font: ("New Computer Modern", "Noto Serif CJK SC", "Songti SC"), size: 9.6pt)\n#fig-scaling-and-transfer()\n' > paper/_export_fig2.typ
+	@typst compile paper/_export_fig1.typ paper/arxiv/fig1_architecture.pdf
+	@typst compile paper/_export_fig2.typ paper/arxiv/fig2_scaling.pdf
+	@rm -f paper/_export_fig1.typ paper/_export_fig2.typ
+	@cd paper/arxiv && COPYFILE_DISABLE=1 tar -czf chime-arxiv-source.tar.gz 00README.json main.tex main.bbl fig1_architecture.pdf fig2_scaling.pdf
+	@echo "Packaged paper/arxiv/chime-arxiv-source.tar.gz"
+
 clean:
 	@cargo clean
 	@rm -rf "$(DIST_DIR)" macos/.build

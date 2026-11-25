@@ -1,0 +1,93 @@
+\begin{thebibliography}{18}
+
+\bibitem{yoshinaga1992double}
+Jun-ichi Aoe.
+\newblock An efficient implementation of trie structures.
+\newblock \emph{Software: Practice and Experience}, 19(9):795--825, 1989.
+
+\bibitem{chen2000new}
+Zheng Chen and Kai-Fu Lee.
+\newblock A new statistical approach to {C}hinese Pinyin input.
+\newblock In \emph{Proceedings of the 38th Annual Meeting of the Association for Computational Linguistics (ACL)}, pages 241--247, 2000.
+
+\bibitem{ding2023geneinput}
+Keyu Ding, Yongcan Wang, Zihang Xu, Zhenzhen Jia, Shijin Wang, Cong Liu, and Enhong Chen.
+\newblock Generative input: Towards next-generation input methods paradigm.
+\newblock \emph{arXiv preprint arXiv:2311.01166}, 2023.
+
+\bibitem{frantar2023gptq}
+Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh.
+\newblock {GPTQ}: Accurate post-training quantization for generative pre-trained transformers.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2023. arXiv:2210.17323.
+
+\bibitem{gui2025attninput}
+Zhiyu Gui.
+\newblock {AttnInput}: Revolutionizing Pinyin input with context-aware {RWKV} language models.
+\newblock \emph{OpenReview Preprint}, 2025.
+
+\bibitem{hannun2023mlx}
+Awni Hannun, Manpreet Jaggi, Hrant Digani, et~al.
+\newblock {MLX}: Efficient and flexible machine learning on {A}pple Silicon.
+\newblock \url{https://github.com/ml-explore/mlx}, 2023.
+
+\bibitem{hinton2015distilling}
+Geoffrey Hinton, Oriol Vinyals, and Jeff Dean.
+\newblock Distilling the knowledge in a neural network.
+\newblock \emph{arXiv preprint arXiv:1503.02531}, 2015.
+
+\bibitem{hu2022lora}
+Edward~J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu~Wang, and Weizhu Chen.
+\newblock {LoRA}: Low-rank adaptation of large language models.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2022. arXiv:2106.09685.
+
+\bibitem{jia2014joint}
+Zhongye Jia and Hai Zhao.
+\newblock A joint graph model for Pinyin-to-{C}hinese conversion with typo correction.
+\newblock In \emph{Proceedings of the 52nd Annual Meeting of the Association for Computational Linguistics (ACL)}, pages 1512--1523, 2014.
+
+\bibitem{jiao2020tinybert}
+Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang Wang, and Qun Liu.
+\newblock {TinyBERT}: Distilling {BERT} for natural language understanding.
+\newblock In \emph{Findings of the Association for Computational Linguistics: EMNLP 2020}, pages 4163--4174, 2020. arXiv:1909.10351.
+
+\bibitem{lin2024awq}
+Ji~Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han.
+\newblock {AWQ}: Activation-aware weight quantization for on-device {LLM} compression and acceleration.
+\newblock In \emph{Proceedings of Machine Learning and Systems (MLSys)}, 2024. arXiv:2306.00978.
+
+\bibitem{shan2026huoziime}
+Baocai Shan, Yuzhuang Xu, and Wanxiang Che.
+\newblock {HuoziIME}: An on-device {LLM}-enhanced input method for deep personalization.
+\newblock \emph{arXiv preprint arXiv:2604.14159}, 2026.
+
+\bibitem{sheng2024slora}
+Ying Sheng, Shiyi Cao, Dacheng Li, Coleman Hooper, Nicholas Lee, Shuo Yang, Christopher Chou, Banghua Zhu, Lianmin Zheng, Kurt Keutzer, Joseph~E. Gonzalez, and Ion Stoica.
+\newblock {S-LoRA}: Serving thousands of concurrent {LoRA} adapters.
+\newblock In \emph{Proceedings of Machine Learning and Systems (MLSys)}, 2024. arXiv:2311.03285.
+
+\bibitem{tan2022exploring}
+Minghuan Tan, Yong Dai, Duyu Tang, Zhangyin Feng, Guoping Huang, Jing Jiang, Jiwei Li, and Shuming Shi.
+\newblock Exploring and adapting {C}hinese {GPT} to Pinyin input method.
+\newblock In \emph{Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (ACL)}, pages 1899--1909, 2022. arXiv:2203.00249.
+
+\bibitem{xu2022pert}
+Kun Xu, Yufei Li, and Zhaohui Zhang.
+\newblock {PERT}: A new solution to Pinyin to character conversion task.
+\newblock \emph{arXiv preprint arXiv:2205.11737}, 2022.
+
+\bibitem{yang2025qwen3}
+An~Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo~Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et~al.
+\newblock {Qwen3} technical report.
+\newblock \emph{arXiv preprint arXiv:2505.09388}, 2025.
+
+\bibitem{zhang2019open}
+Zhuosheng Zhang, Yafang Huang, and Hai Zhao.
+\newblock Open vocabulary learning for neural {C}hinese Pinyin {IME}.
+\newblock In \emph{Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL)}, pages 1584--1594, 2019. arXiv:1811.04352.
+
+\bibitem{zhang2024plora}
+You Zhang, Jin Wang, and Xuejie Zhang.
+\newblock Personalized {LoRA} for human-centered text understanding.
+\newblock \emph{arXiv preprint arXiv:2403.06208}, 2024.
+
+\end{thebibliography}
