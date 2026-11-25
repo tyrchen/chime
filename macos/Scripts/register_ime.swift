@@ -14,6 +14,7 @@ let regStatus = TISRegisterInputSource(bundleURL as CFURL)
 if regStatus != noErr {
     fputs("Warning: TISRegisterInputSource returned OSStatus \(regStatus)\n", stderr)
 }
+Thread.sleep(forTimeInterval: 0.6)
 
 let parentFilter = [kTISPropertyInputSourceID as String: bundleId] as CFDictionary
 if let parents = TISCreateInputSourceList(parentFilter, true)?.takeRetainedValue() as? [TISInputSource],
