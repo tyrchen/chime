@@ -446,6 +446,288 @@ english_terms:
   - surface: "log"
     log_prob: -4.00
     tech: true
+  - surface: "cargo"
+    log_prob: -3.85
+    tech: false
+  - surface: "rustc"
+    log_prob: -4.05
+    tech: false
+  - surface: "brew"
+    log_prob: -3.95
+    tech: false
+  - surface: "sudo"
+    log_prob: -3.90
+    tech: false
+  - surface: "chmod"
+    log_prob: -4.15
+    tech: false
+  - surface: "mkdir"
+    log_prob: -4.15
+    tech: false
+  - surface: "grep"
+    log_prob: -4.00
+    tech: false
+  - surface: "tmux"
+    log_prob: -4.10
+    tech: false
+  - surface: "nvim"
+    log_prob: -4.05
+    tech: false
+  - surface: "pnpm"
+    log_prob: -4.10
+    tech: false
+  - surface: "yarn"
+    log_prob: -4.05
+    tech: false
+  - surface: "deno"
+    log_prob: -4.15
+    tech: false
+  - surface: "vite"
+    log_prob: -4.10
+    tech: false
+  - surface: "pytest"
+    log_prob: -4.10
+    tech: false
+  - surface: "kubectl"
+    log_prob: -4.05
+    tech: true
+  - surface: "helm"
+    log_prob: -4.15
+    tech: false
+  - surface: "await"
+    log_prob: -4.10
+    tech: false
+  - surface: "impl"
+    log_prob: -4.10
+    tech: false
+  - surface: "enum"
+    log_prob: -4.10
+    tech: false
+  - surface: "struct"
+    log_prob: -4.05
+    tech: false
+  - surface: "trait"
+    log_prob: -4.15
+    tech: false
+  - surface: "crate"
+    log_prob: -4.15
+    tech: false
+  - surface: "const"
+    log_prob: -4.05
+    tech: false
+  - surface: "mut"
+    log_prob: -4.20
+    tech: false
+  - surface: "var"
+    log_prob: -4.15
+    tech: false
+  - surface: "val"
+    log_prob: -4.20
+    tech: false
+  - surface: "str"
+    log_prob: -4.15
+    tech: false
+  - surface: "int"
+    log_prob: -4.15
+    tech: false
+  - surface: "vec"
+    log_prob: -4.20
+    tech: false
+  - surface: "ctx"
+    log_prob: -4.20
+    tech: false
+  - surface: "cfg"
+    log_prob: -4.20
+    tech: false
+  - surface: "req"
+    log_prob: -4.20
+    tech: false
+  - surface: "res"
+    log_prob: -4.20
+    tech: false
+  - surface: "err"
+    log_prob: -4.20
+    tech: false
+  - surface: "buf"
+    log_prob: -4.20
+    tech: false
+  - surface: "ptr"
+    log_prob: -4.20
+    tech: false
+  - surface: "idx"
+    log_prob: -4.20
+    tech: false
+  - surface: "arg"
+    log_prob: -4.20
+    tech: false
+  - surface: "args"
+    log_prob: -4.15
+    tech: false
+  - surface: "ret"
+    log_prob: -4.25
+    tech: false
+  - surface: "src"
+    log_prob: -4.10
+    tech: false
+  - surface: "dst"
+    log_prob: -4.25
+    tech: false
+  - surface: "dir"
+    log_prob: -4.15
+    tech: false
+  - surface: "pkg"
+    log_prob: -4.20
+    tech: false
+  - surface: "cmd"
+    log_prob: -4.15
+    tech: false
+  - surface: "tmp"
+    log_prob: -4.15
+    tech: false
+  - surface: "usr"
+    log_prob: -4.25
+    tech: false
+  - surface: "lib"
+    log_prob: -4.15
+    tech: false
+  - surface: "dev"
+    log_prob: -4.05
+    tech: false
+  - surface: "localhost"
+    log_prob: -4.05
+    tech: true
+  - surface: "the"
+    log_prob: -2.05
+    tech: false
+  - surface: "and"
+    log_prob: -2.15
+    tech: false
+  - surface: "for"
+    log_prob: -2.25
+    tech: false
+  - surface: "that"
+    log_prob: -2.30
+    tech: false
+  - surface: "with"
+    log_prob: -2.35
+    tech: false
+  - surface: "this"
+    log_prob: -2.38
+    tech: false
+  - surface: "have"
+    log_prob: -2.42
+    tech: false
+  - surface: "from"
+    log_prob: -2.45
+    tech: false
+  - surface: "they"
+    log_prob: -2.50
+    tech: false
+  - surface: "would"
+    log_prob: -2.55
+    tech: false
+  - surface: "could"
+    log_prob: -2.70
+    tech: false
+  - surface: "should"
+    log_prob: -2.72
+    tech: false
+  - surface: "what"
+    log_prob: -2.52
+    tech: false
+  - surface: "when"
+    log_prob: -2.60
+    tech: false
+  - surface: "where"
+    log_prob: -2.75
+    tech: false
+  - surface: "which"
+    log_prob: -2.62
+    tech: false
+  - surface: "there"
+    log_prob: -2.55
+    tech: false
+  - surface: "their"
+    log_prob: -2.58
+    tech: false
+  - surface: "about"
+    log_prob: -2.58
+    tech: false
+  - surface: "because"
+    log_prob: -2.95
+    tech: false
+  - surface: "until"
+    log_prob: -3.15
+    tech: false
+  - surface: "important"
+    log_prob: -3.20
+    tech: false
+  - surface: "government"
+    log_prob: -3.15
+    tech: false
+  - surface: "tomorrow"
+    log_prob: -3.45
+    tech: false
+  - surface: "necessary"
+    log_prob: -3.45
+    tech: false
+  - surface: "environment"
+    log_prob: -3.50
+    tech: false
+  - surface: "separate"
+    log_prob: -3.60
+    tech: false
+  - surface: "definitely"
+    log_prob: -3.60
+    tech: false
+  - surface: "receive"
+    log_prob: -3.62
+    tech: false
+  - surface: "occurred"
+    log_prob: -3.80
+    tech: false
+  - surface: "friend"
+    log_prob: -3.35
+    tech: false
+  - surface: "weird"
+    log_prob: -3.70
+    tech: false
+  - surface: "truly"
+    log_prob: -3.65
+    tech: false
+  - surface: "argument"
+    log_prob: -3.65
+    tech: false
+  - surface: "independent"
+    log_prob: -3.60
+    tech: false
+  - surface: "recommend"
+    log_prob: -3.65
+    tech: false
+  - surface: "successful"
+    log_prob: -3.55
+    tech: false
+  - surface: "accommodate"
+    log_prob: -4.20
+    tech: false
+  - surface: "dont"
+    log_prob: -3.60
+    tech: false
+  - surface: "cant"
+    log_prob: -3.70
+    tech: false
+  - surface: "wont"
+    log_prob: -3.85
+    tech: false
+  - surface: "isnt"
+    log_prob: -3.85
+    tech: false
+  - surface: "didnt"
+    log_prob: -3.75
+    tech: false
+  - surface: "doesnt"
+    log_prob: -3.75
+    tech: false
 
 code_switch_bigrams:
   - prev: "使用"

@@ -59,6 +59,27 @@ pub struct WordEntry {
     pub is_tech_term: bool,
 }
 
+/// Kind of orthographic or motor-slip edit used to recover a misspelled English word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnglishEditKind {
+    /// Adjacent character transposition (`teh` -> `the`, `reivew` -> `review`, `recieve` ->
+    /// `receive`).
+    AdjacentSwap,
+    /// Accidental repeated character deletion (`untill` -> `until`, `commmit` -> `commit`).
+    DuplicateDelete,
+    /// Single extra interior/trailing character deletion (`truely` -> `truly`, `arguement` ->
+    /// `argument`).
+    SingleDelete,
+    /// Physical QWERTY neighbor key or interior vowel confusion (`definately` -> `definitely`,
+    /// `seperate` -> `separate`, `githib` -> `GitHub`).
+    NeighborOrVowelSub,
+    /// Single missing interior character insertion (`enviroment` -> `environment`, `kubernets` ->
+    /// `Kubernetes`, `occured` -> `occurred`).
+    InteriorInsert,
+    /// Doubled-consonant position shift (`tommorow` -> `tomorrow`).
+    GeminateShift,
+}
+
 /// Layered lexicon combining zero-copy `mmap` `.imedict` packs with a mutable dynamic overlay.
 #[derive(Debug, Default)]
 pub struct Lexicon {
@@ -191,6 +212,28 @@ impl Lexicon {
             lower,
             WordEntry {
                 surface,
+                log_prob,
+                is_tech_term,
+            },
+        );
+    }
+
+    /// Inserts or upgrades an empirical English word entry while preserving any curated proper
+    /// casing (`GitHub`, `macOS`, `Kubernetes`) or `is_tech_term` flag already present.
+    pub fn upsert_calibrated_english(&mut self, surface: &str, log_prob: f32, is_tech_term: bool) {
+        let lower = surface.to_ascii_lowercase();
+        if let Some(existing) = self.english_casing.get_mut(&lower) {
+            let existing_is_curated = existing.is_tech_term || existing.surface != lower;
+            if existing_is_curated {
+                existing.log_prob = existing.log_prob.max(log_prob);
+                existing.is_tech_term |= is_tech_term;
+                return;
+            }
+        }
+        self.english_casing.insert(
+            lower,
+            WordEntry {
+                surface: surface.to_string(),
                 log_prob,
                 is_tech_term,
             },
@@ -445,15 +488,218 @@ impl Lexicon {
     /// Looks up a canonical English term across overlay and mounted `mmap` layers.
     #[must_use]
     pub fn lookup_english(&self, lower_ascii: &str) -> Option<WordEntry> {
-        if let Some(entry) = self.english_casing.get(lower_ascii) {
-            return Some(entry.clone());
-        }
+        let mut best: Option<WordEntry> = self.english_casing.get(lower_ascii).cloned();
         for layer in &self.compiled_layers {
             if let Some(entry) = layer.lookup_english(lower_ascii) {
-                return Some(entry);
+                match &mut best {
+                    Some(cur) => {
+                        if entry.log_prob > cur.log_prob {
+                            let keep_curated = cur.is_tech_term || cur.surface != lower_ascii;
+                            if keep_curated && !entry.is_tech_term && entry.surface == lower_ascii {
+                                cur.log_prob = entry.log_prob;
+                            } else {
+                                *cur = entry;
+                            }
+                        }
+                    }
+                    None => best = Some(entry),
+                }
             }
         }
-        None
+        best
+    }
+
+    /// Returns true if `lower_ascii` is already a known valid English word or developer token.
+    #[must_use]
+    pub fn is_known_valid_english(&self, lower_ascii: &str) -> bool {
+        self.lookup_english(lower_ascii).is_some_and(|e| {
+            e.is_tech_term || e.log_prob >= -6.10 || (lower_ascii.len() >= 5 && e.log_prob >= -6.90)
+        })
+    }
+
+    /// Recovers high-confidence 1-edit English spelling corrections (`teh` -> `the`, `reivew` ->
+    /// `review`, `definately` -> `definitely`, `kubernets` -> `Kubernetes`, `tommorow` ->
+    /// `tomorrow`) over zero-copy `mmap` and overlay lexicons using a stack-only probe buffer.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn correct_english_word(
+        &self,
+        lower_query: &str,
+        max_results: usize,
+    ) -> Vec<(WordEntry, f32, EnglishEditKind)> {
+        let bytes = lower_query.as_bytes();
+        let len = bytes.len();
+        if !(3..=18).contains(&len) || max_results == 0 || !bytes.iter().all(u8::is_ascii_lowercase)
+        {
+            return Vec::new();
+        }
+
+        let mut hits: Vec<(WordEntry, f32, EnglishEditKind)> = Vec::new();
+        let mut record_probe =
+            |probe_bytes: &[u8], penalty: f32, kind: EnglishEditKind, min_lp: f32| {
+                let Ok(cand_str) = std::str::from_utf8(probe_bytes) else {
+                    return;
+                };
+                if cand_str == lower_query {
+                    return;
+                }
+                let Some(entry) = self.lookup_english(cand_str) else {
+                    return;
+                };
+                let eff_min = if entry.is_tech_term {
+                    min_lp - 0.25
+                } else {
+                    min_lp
+                };
+                if entry.log_prob < eff_min {
+                    return;
+                }
+                let ranked_score = entry.log_prob - penalty;
+                if let Some(existing) = hits.iter_mut().find(|(e, _, _)| e.surface == entry.surface)
+                {
+                    if ranked_score > existing.1 {
+                        existing.1 = ranked_score;
+                        existing.2 = kind;
+                    }
+                } else {
+                    hits.push((entry, ranked_score, kind));
+                }
+            };
+
+        let mut buf = [0u8; 24];
+
+        // 1. Adjacent character transposition (`teh` -> `the`, `reivew` -> `review`, `recieve` ->
+        //    `receive`, `githbu` -> `GitHub`, `chatgtp` -> `ChatGPT`).
+        buf[..len].copy_from_slice(bytes);
+        let swap_min_lp = if len == 3 {
+            -2.95
+        } else if len == 4 {
+            -4.10
+        } else {
+            -4.75
+        };
+        for i in 0..(len - 1) {
+            if buf[i] == buf[i + 1] {
+                continue;
+            }
+            buf.swap(i, i + 1);
+            record_probe(
+                &buf[..len],
+                0.95,
+                EnglishEditKind::AdjacentSwap,
+                swap_min_lp,
+            );
+            buf.swap(i, i + 1);
+        }
+
+        if len == 3 {
+            hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+            hits.truncate(max_results);
+            return hits;
+        }
+
+        // 2. Duplicate or single extra letter deletion (`untill` -> `until`, `commmit` -> `commit`,
+        //    `neccessary` -> `necessary`, `truely` -> `truly`, `arguement` -> `argument`).
+        for i in 0..len {
+            let is_dup =
+                (i + 1 < len && bytes[i] == bytes[i + 1]) || (i > 0 && bytes[i] == bytes[i - 1]);
+            if len == 4 && !is_dup {
+                continue;
+            }
+            buf[..i].copy_from_slice(&bytes[..i]);
+            buf[i..(len - 1)].copy_from_slice(&bytes[(i + 1)..len]);
+            let (pen, kind, min_lp) = if is_dup {
+                (1.02, EnglishEditKind::DuplicateDelete, -4.50)
+            } else {
+                (1.32, EnglishEditKind::SingleDelete, -4.25)
+            };
+            record_probe(&buf[..(len - 1)], pen, kind, min_lp);
+        }
+
+        // 3. Physical QWERTY neighbor substitution (`githib` -> `GitHub`) + interior vowel
+        //    confusion (`definately` -> `definitely`, `seperate` -> `separate`, `independant` ->
+        //    `independent`).
+        buf[..len].copy_from_slice(bytes);
+        for i in 0..len {
+            let orig = bytes[i];
+            let orig_is_vowel = matches!(orig, b'a' | b'e' | b'i' | b'o' | b'u');
+            for cand_ch in b'a'..=b'z' {
+                if cand_ch == orig {
+                    continue;
+                }
+                let is_interior_vowel_swap = len >= 6
+                    && i > 0
+                    && i + 1 < len
+                    && orig_is_vowel
+                    && matches!(cand_ch, b'a' | b'e' | b'i' | b'o' | b'u');
+                let pen_and_floor = if is_interior_vowel_swap {
+                    Some((1.15, -4.55))
+                } else {
+                    chime_phonetics::typo::keyboard_substitution_cost(orig, cand_ch).map(|c| {
+                        let min_lp = if len == 4 { -3.35 } else { -4.40 };
+                        (1.12 + 0.32 * c, min_lp)
+                    })
+                };
+                if let Some((pen, min_lp)) = pen_and_floor {
+                    buf[i] = cand_ch;
+                    record_probe(
+                        &buf[..len],
+                        pen,
+                        EnglishEditKind::NeighborOrVowelSub,
+                        min_lp,
+                    );
+                    buf[i] = orig;
+                }
+            }
+        }
+
+        // 4. Single missing interior letter insertion (`woud` -> `would`, `enviroment` ->
+        //    `environment`, `kubernets` -> `Kubernetes`, `occured` -> `occurred`, `imortant` ->
+        //    `important`). Never inserts at index `0` or trailing `len` (prefixes are Completions).
+        for i in 1..len {
+            buf[..i].copy_from_slice(&bytes[..i]);
+            buf[(i + 1)..=len].copy_from_slice(&bytes[i..len]);
+            for ins in b'a'..=b'z' {
+                buf[i] = ins;
+                let doubles_neighbor = bytes[i - 1] == ins || bytes[i] == ins;
+                let (pen, min_lp) = if len == 4 {
+                    (1.25, -2.85)
+                } else if doubles_neighbor {
+                    (1.08, -4.60)
+                } else {
+                    (1.30, -4.45)
+                };
+                record_probe(&buf[..=len], pen, EnglishEditKind::InteriorInsert, min_lp);
+            }
+        }
+
+        // 5. Geminate consonant shift (`tommorow` -> `tomorrow`).
+        if len >= 6 {
+            for i in 0..(len - 1) {
+                if bytes[i] == bytes[i + 1] && !matches!(bytes[i], b'a' | b'e' | b'i' | b'o' | b'u')
+                {
+                    let mut undoubled = [0u8; 24];
+                    undoubled[..i].copy_from_slice(&bytes[..i]);
+                    undoubled[i..(len - 1)].copy_from_slice(&bytes[(i + 1)..len]);
+                    let u_len = len - 1;
+                    let j_start = i.saturating_sub(2).max(1);
+                    let j_end = (i + 3).min(u_len - 1);
+                    for j in j_start..j_end {
+                        if j == i || matches!(undoubled[j], b'a' | b'e' | b'i' | b'o' | b'u') {
+                            continue;
+                        }
+                        buf[..=j].copy_from_slice(&undoubled[..=j]);
+                        buf[j + 1] = undoubled[j];
+                        buf[(j + 2)..=u_len].copy_from_slice(&undoubled[(j + 1)..u_len]);
+                        record_probe(&buf[..=u_len], 1.28, EnglishEditKind::GeminateShift, -4.35);
+                    }
+                }
+            }
+        }
+
+        hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+        hits.truncate(max_results);
+        hits
     }
 
     /// Finds top prefix completions for English words of length >= 3 (`Mac` -> `MacBook`,

@@ -61,6 +61,8 @@ pub struct DecodeContext<'a> {
     pub pangu_spacing: bool,
     /// Treat leading uppercase input (`Hello`, `Mac`) as direct English input.
     pub uppercase_triggers_english: bool,
+    /// Automatically recover misspelled English words in standalone and mixed-language spans.
+    pub english_auto_correct: bool,
     /// Current UNIX timestamp in seconds (for user habit decay).
     pub now_epoch_secs: u64,
 }
@@ -74,6 +76,7 @@ impl Default for DecodeContext<'_> {
             fuzzy: FuzzyConfig::default(),
             pangu_spacing: true,
             uppercase_triggers_english: true,
+            english_auto_correct: true,
             now_epoch_secs: 0,
         }
     }
@@ -179,6 +182,7 @@ impl LatticeDecoder {
             }];
             if raw_input.len() >= 2 && raw_input.bytes().all(|b| b.is_ascii_alphabetic()) {
                 let lower_q = raw_input.to_ascii_lowercase();
+                let mut added_comp = false;
                 for comp in lexicon.complete_english_prefix(&lower_q, 3) {
                     if comp.surface != raw_input
                         && (comp.is_tech_term || comp.log_prob > -4.5)
@@ -190,6 +194,34 @@ impl LatticeDecoder {
                             kind: MatchKind::Completion,
                             consumed_bytes: raw_input.len(),
                         });
+                        added_comp = true;
+                    }
+                }
+                if ctx.english_auto_correct
+                    && !added_comp
+                    && (3..=18).contains(&raw_input.len())
+                    && !raw_input[1..].bytes().any(|b| b.is_ascii_uppercase())
+                    && !lexicon.is_known_valid_english(&lower_q)
+                {
+                    for (idx_c, (corr, r_score, _)) in lexicon
+                        .correct_english_word(&lower_q, 2)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let surf = format_corrected_english_surface(raw_input, &corr.surface);
+                        if surf != raw_input && !out.iter().any(|c| c.text == surf) {
+                            let cand = Candidate {
+                                text: surf,
+                                score: if idx_c == 0 { 0.50 } else { r_score },
+                                kind: MatchKind::TypoCorrected,
+                                consumed_bytes: raw_input.len(),
+                            };
+                            if idx_c == 0 {
+                                out.insert(0, cand);
+                            } else {
+                                out.push(cand);
+                            }
+                        }
                     }
                 }
             }
@@ -769,21 +801,49 @@ impl LatticeDecoder {
 
         // Modeless English / Code-Switch track (`macos` -> `macOS`, `github` -> `GitHub`, `pr` ->
         // `PR`).
+        let full_is_canonical =
+            ctx.scheme == ShuangpinScheme::Full && chime_phonetics::can_segment_exact(&lower);
         for start in 0..n {
             for end in (start + 2)..=n {
                 let raw_sub = &raw_input[start..end];
                 let lower_sub = &lower[start..end];
+                if ctx.scheme != ShuangpinScheme::Full && raw_sub == lower_sub && (end - start) <= 4
+                {
+                    continue;
+                }
                 if let Some(eng) = lexicon.lookup_english(lower_sub) {
-                    // Suppress generic lowercase `/usr/share/dict/words` entries (`chile`, `tian`,
-                    // `wang`, `song`) inside longer pure-Pinyin sentences when the user typed no
-                    // uppercase cue and the word is neither a tech term nor proper-cased!
-                    if !(eng.is_tech_term || (start == 0 && end == n))
+                    let is_generic_lower =
+                        !eng.is_tech_term && eng.surface == lower_sub && raw_sub == lower_sub;
+                    // Suppress generic lowercase English words (`and`, `any`, `chile`, `wang`,
+                    // `song`) from tearing apart Shuangpin pairs or internal Mandarin syllables
+                    // (`jiandan` -> `ji + and + an`) when the user typed no uppercase cue and the
+                    // word is neither a tech term nor proper-cased!
+                    if is_generic_lower {
+                        if ctx.scheme != ShuangpinScheme::Full {
+                            continue;
+                        }
+                        if !(start == 0 && end == n)
+                            && (full_is_canonical
+                                || (end - start) < 5
+                                || chime_phonetics::can_segment_exact(lower_sub))
+                        {
+                            continue;
+                        }
+                    }
+                    // On standalone canonical Pinyin inputs (`women` -> `我们`, `name` -> `那么`,
+                    // `like` -> `立刻`), cap non-tech lowercase English homographs below Chinese
+                    // words while keeping their true Zipf priors for `En` mode & typo recovery.
+                    let base_eng_lp = if start == 0
+                        && end == n
+                        && !eng.is_tech_term
                         && eng.surface == lower_sub
                         && raw_sub == lower_sub
                         && chime_phonetics::can_segment_exact(lower_sub)
                     {
-                        continue;
-                    }
+                        eng.log_prob.min(-5.80)
+                    } else {
+                        eng.log_prob
+                    };
                     let dev_bonus = if is_dev_app && eng.is_tech_term {
                         0.95
                     } else {
@@ -799,10 +859,40 @@ impl LatticeDecoder {
                     edges[start].push(LatticeEdge {
                         end,
                         surface: eng.surface,
-                        score: eng.log_prob + dev_bonus + phonotactic_bonus,
+                        score: base_eng_lp + dev_bonus + phonotactic_bonus,
                         kind: MatchKind::CodeSwitch,
                         is_english: true,
                     });
+                } else if ctx.scheme == ShuangpinScheme::Full {
+                    Self::populate_english_typo_edges(
+                        raw_sub,
+                        lower_sub,
+                        start,
+                        end,
+                        n,
+                        lexicon,
+                        ctx.english_auto_correct,
+                        is_dev_app,
+                        &mut edges[start],
+                    );
+                    if start == 0
+                        && end == n
+                        && classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii
+                    {
+                        #[allow(clippy::cast_precision_loss)]
+                        let per_char_cost = if raw_sub == lower_sub {
+                            -3.20 - 1.95 * (raw_sub.len() as f32)
+                        } else {
+                            -1.95 * (raw_sub.len() as f32)
+                        };
+                        edges[start].push(LatticeEdge {
+                            end,
+                            surface: raw_sub.to_string(),
+                            score: per_char_cost,
+                            kind: MatchKind::CodeSwitch,
+                            is_english: true,
+                        });
+                    }
                 } else if start == 0
                     && end == n
                     && classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii
@@ -825,6 +915,89 @@ impl LatticeDecoder {
         }
 
         edges
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn populate_english_typo_edges(
+        raw_sub: &str,
+        lower_sub: &str,
+        start: usize,
+        end: usize,
+        total_len: usize,
+        lexicon: &Lexicon,
+        english_auto_correct: bool,
+        is_dev_app: bool,
+        out_edges: &mut Vec<LatticeEdge>,
+    ) {
+        let span_len = end - start;
+        if !english_auto_correct
+            || !(4..=18).contains(&span_len)
+            || !lower_sub.bytes().all(|b| b.is_ascii_lowercase())
+            || chime_phonetics::can_segment_exact(lower_sub)
+            || lexicon.is_known_valid_english(lower_sub)
+        {
+            return;
+        }
+
+        let is_full_query = start == 0 && end == total_len;
+        if is_full_query {
+            // Do not hijack clean prefixes of longer English words (`pytho` -> `Python ⇥`).
+            if lexicon
+                .complete_english_prefix(lower_sub, 1)
+                .into_iter()
+                .any(|c| c.is_tech_term || c.log_prob > -4.5)
+            {
+                return;
+            }
+            for (corr, ranked_score, _) in lexicon.correct_english_word(lower_sub, 2) {
+                let corr_lower = corr.surface.to_ascii_lowercase();
+                if !corr.is_tech_term
+                    && corr.surface == corr_lower
+                    && chime_phonetics::can_segment_exact(&corr_lower)
+                {
+                    continue;
+                }
+                let dev_bonus = if is_dev_app && corr.is_tech_term {
+                    0.85
+                } else {
+                    0.0
+                };
+                out_edges.push(LatticeEdge {
+                    end,
+                    surface: format_corrected_english_surface(raw_sub, &corr.surface),
+                    score: ranked_score - 0.25 + dev_bonus,
+                    kind: MatchKind::TypoCorrected,
+                    is_english: true,
+                });
+            }
+        } else if (5..=14).contains(&span_len)
+            && classify_code_switch(raw_sub) == CodeSwitchSignal::PhonotacticEnglish
+        {
+            for (corr, ranked_score, _) in lexicon.correct_english_word(lower_sub, 1) {
+                if corr.log_prob < -4.25 {
+                    continue;
+                }
+                let corr_lower = corr.surface.to_ascii_lowercase();
+                if !corr.is_tech_term
+                    && corr.surface == corr_lower
+                    && chime_phonetics::can_segment_exact(&corr_lower)
+                {
+                    continue;
+                }
+                let dev_bonus = if is_dev_app && corr.is_tech_term {
+                    0.85
+                } else {
+                    0.0
+                };
+                out_edges.push(LatticeEdge {
+                    end,
+                    surface: format_corrected_english_surface(raw_sub, &corr.surface),
+                    score: ranked_score + 0.95 + dev_bonus,
+                    kind: MatchKind::TypoCorrected,
+                    is_english: true,
+                });
+            }
+        }
     }
 
     fn build_syllable_spans(
@@ -1925,6 +2098,28 @@ fn syntactic_transition_penalty(
     pen
 }
 
+fn format_corrected_english_surface(typed_raw: &str, canonical_surface: &str) -> String {
+    let lower = canonical_surface.to_ascii_lowercase();
+    if canonical_surface != lower {
+        return canonical_surface.to_string();
+    }
+    if typed_raw
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_uppercase)
+        && !typed_raw[1..].bytes().any(|b| b.is_ascii_uppercase())
+    {
+        let mut chars = canonical_surface.chars();
+        if let Some(first) = chars.next() {
+            let mut out = String::with_capacity(canonical_surface.len());
+            out.push(first.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+            return out;
+        }
+    }
+    canonical_surface.to_string()
+}
+
 fn is_transparent_particle(word: &str) -> bool {
     matches!(
         word,
@@ -2107,5 +2302,43 @@ mod tests {
             "embedded /usr/share/dict/words entry chile must not hijack 吃了: {:?}",
             cands_chile[0].text
         );
+    }
+
+    #[test]
+    fn test_should_auto_correct_english_typos_in_chinese_and_mixed_sentences() {
+        let mut lex = Lexicon::with_builtin_seed();
+        lex.insert_pinyin_word("这个", "zhe ge", -2.55, false);
+        lex.insert_pinyin_word("部署", "bu shu", -3.45, true);
+        lex.insert_pinyin_word("到", "dao", -2.65, false);
+        lex.insert_pinyin_word("我们", "wo men", -2.20, false);
+
+        let store = UserStore::new();
+        let dec = LatticeDecoder::new();
+        let ctx = DecodeContext::default();
+
+        // 1. Standalone English misspellings in Chinese mode (`reivew`, `definately`, `kubernets`)
+        assert_eq!(dec.decode("reivew", &lex, &store, &ctx)[0].text, "review");
+        assert_eq!(
+            dec.decode("definately", &lex, &store, &ctx)[0].text,
+            "definitely"
+        );
+        assert_eq!(
+            dec.decode("kubernets", &lex, &store, &ctx)[0].text,
+            "Kubernetes"
+        );
+        assert_eq!(dec.decode("Teh", &lex, &store, &ctx)[0].text, "The");
+
+        // 2. Mixed Chinese-English sentences with misspelled English spans!
+        assert_eq!(
+            dec.decode("bangworeivewzhegepr", &lex, &store, &ctx)[0].text,
+            "帮我 review 这个 PR"
+        );
+        assert_eq!(
+            dec.decode("bushudaokubernets", &lex, &store, &ctx)[0].text,
+            "部署到 Kubernetes"
+        );
+
+        // 3. Canonical Chinese Pinyin homographs (`women` -> `我们`) must never be displaced!
+        assert_eq!(dec.decode("women", &lex, &store, &ctx)[0].text, "我们");
     }
 }

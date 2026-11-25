@@ -65,19 +65,30 @@ pub fn parse_tsv_dict(content: &str, lexicon: &mut Lexicon) -> ImportStats {
 
 fn import_tab_row(line: &str, lexicon: &mut Lexicon, stats: &mut ImportStats) {
     stats.total_rows += 1;
-    let mut parts = line.split('\t');
-    let Some(word) = parts.next().map(str::trim) else {
+    let cols: Vec<&str> = line.split('\t').map(str::trim).collect();
+    if let ["EN", surface, lp_str, tech_str] = cols.as_slice()
+        && surface.is_ascii()
+        && surface.len() >= 2
+        && let Ok(lp) = lp_str.parse::<f32>()
+    {
+        lexicon.upsert_calibrated_english(surface, lp, *tech_str == "1");
+        stats.imported_entries += 1;
+        return;
+    }
+
+    let mut parts = cols.into_iter();
+    let Some(word) = parts.next() else {
         stats.skipped_rows += 1;
         return;
     };
-    let Some(reading_or_weight) = parts.next().map(str::trim) else {
+    let Some(reading_or_weight) = parts.next() else {
         stats.skipped_rows += 1;
         return;
     };
 
     let weight_raw = parts
         .next()
-        .and_then(|w| w.trim().trim_end_matches('%').parse::<f32>().ok())
+        .and_then(|w| w.trim_end_matches('%').parse::<f32>().ok())
         .unwrap_or(100.0);
     let log_prob = weight_to_log_prob(weight_raw);
 

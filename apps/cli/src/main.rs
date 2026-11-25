@@ -303,6 +303,7 @@ fn main() -> Result<()> {
                 fuzzy: chime_phonetics::FuzzyConfig::default(),
                 pangu_spacing: true,
                 uppercase_triggers_english: true,
+                english_auto_correct: true,
                 now_epoch_secs: 1_000,
             };
             let t0 = Instant::now();
@@ -352,11 +353,19 @@ fn main() -> Result<()> {
             {
                 let ext_text = fs::read_to_string(&ext_path)?;
                 for raw_line in ext_text.lines() {
-                    let mut cols = raw_line.split('\t');
-                    if let (Some(w), Some(py), Some(lp_s)) = (cols.next(), cols.next(), cols.next())
-                        && let Ok(lp) = lp_s.parse::<f32>()
-                    {
-                        let _ = lex.insert_pinyin_word(w, py, lp, false);
+                    let cols: Vec<&str> = raw_line.split('\t').collect();
+                    match cols.as_slice() {
+                        ["EN", surface, lp_s, tech_s] => {
+                            if let Ok(lp) = lp_s.parse::<f32>() {
+                                lex.upsert_calibrated_english(surface, lp, *tech_s == "1");
+                            }
+                        }
+                        [w, py, lp_s, ..] => {
+                            if let Ok(lp) = lp_s.parse::<f32>() {
+                                let _ = lex.insert_pinyin_word(*w, py, lp, false);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1105,6 +1114,7 @@ fn run_golden_eval(
             fuzzy: chime_phonetics::FuzzyConfig::default(),
             pangu_spacing: true,
             uppercase_triggers_english: true,
+            english_auto_correct: true,
             now_epoch_secs: 1_000,
         };
         let t0 = Instant::now();
@@ -1410,6 +1420,7 @@ fn run_large_bench(
             fuzzy: chime_phonetics::FuzzyConfig::default(),
             pangu_spacing: true,
             uppercase_triggers_english: true,
+            english_auto_correct: true,
             now_epoch_secs: 1_000,
         };
 

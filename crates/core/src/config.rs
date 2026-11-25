@@ -88,6 +88,10 @@ pub struct ChimeConfig {
     /// Treat words starting with an uppercase letter (`Hello`, `Mac`) as direct English input.
     #[serde(default = "default_true")]
     pub uppercase_triggers_english: bool,
+    /// Automatically correct clear English spelling & motor-slip typos in both Chinese/mixed mode
+    /// and inline `En` mode (with 1-key `Backspace` undo).
+    #[serde(default = "default_true")]
+    pub english_auto_correct: bool,
     /// Show a brief floating `[中]` / `[英]` HUD badge near the cursor when switching mode.
     #[serde(default = "default_true")]
     pub show_status_toast: bool,
@@ -150,6 +154,7 @@ impl Default for ChimeConfig {
             english_toggle_key: EnglishToggleKey::BothShift,
             shift_commit_mode: ShiftCommitMode::CommitAndToggle,
             uppercase_triggers_english: true,
+            english_auto_correct: true,
             show_status_toast: true,
             minus_equal_paging: true,
             bracket_paging: false,

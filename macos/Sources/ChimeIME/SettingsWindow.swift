@@ -121,7 +121,8 @@ struct ChimeSettingsView: View {
                     Text("仅上屏英文字母，保持中文输入状态").tag("commit_keep_chinese")
                 }
                 Toggle("中文模式下大写字母开头直接输入英文（如 Hello、MacBook）", isOn: $config.uppercase_triggers_english)
-                Toggle("切换中英文或全半角标点时在光标旁显示状态浮窗（中 / 英）", isOn: $config.show_status_toast)
+                Toggle("英文拼写自动纠错（支持中文混输与 En 英文模式，按退格键 ⌫ 一键撤回）", isOn: $config.english_auto_correct)
+                Toggle("切换中英文或全半角标点时在光标旁显示状态浮窗（中 / En）", isOn: $config.show_status_toast)
             }
 
             Section("翻页与快速选词热键") {

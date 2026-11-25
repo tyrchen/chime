@@ -75,6 +75,15 @@ public final class ChimeInputController: IMKInputController {
         panguItem.target = self
         menu.addItem(panguItem)
 
+        let autoCorrectItem = NSMenuItem(
+            title: "英文拼写自动纠错（退格键 ⌫ 一键撤回）",
+            action: #selector(toggleEnglishAutoCorrectMode(_:)),
+            keyEquivalent: ""
+        )
+        autoCorrectItem.state = cfg.english_auto_correct ? .on : .off
+        autoCorrectItem.target = self
+        menu.addItem(autoCorrectItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let prefsItem = NSMenuItem(
@@ -122,10 +131,7 @@ public final class ChimeInputController: IMKInputController {
         MainActor.assumeIsolated {
             let resp = ChimeEngineBridge.shared.toggleEnglish(controllerKey: key)
             ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
-            if resp.show_status_toast {
-                let caret = ChimeEngineBridge.shared.caretRect(for: key)
-                StatusToastPanel.shared.show(badge: resp.inline_english_mode ? "英" : "中", caretRect: caret)
-            }
+            ChimeEngineBridge.shared.presentModeChangeFeedback(resp: resp, controllerKey: key)
         }
     }
 
@@ -146,6 +152,18 @@ public final class ChimeInputController: IMKInputController {
         MainActor.assumeIsolated {
             let resp = ChimeEngineBridge.shared.togglePanguSpacing(controllerKey: key)
             ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
+        }
+    }
+
+    @objc public func toggleEnglishAutoCorrectMode(_ sender: Any?) {
+        let key = ObjectIdentifier(self)
+        MainActor.assumeIsolated {
+            let enabled = ChimeEngineBridge.shared.toggleEnglishAutoCorrect()
+            let caret = ChimeEngineBridge.shared.caretRect(for: key)
+            StatusToastPanel.shared.show(
+                badge: enabled ? "英文纠错: 开" : "英文纠错: 关",
+                caretRect: caret
+            )
         }
     }
 
@@ -191,7 +209,6 @@ public final class ChimeInputController: IMKInputController {
         let shiftDown = flags.contains(.shift)
         let ctrlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
         let hasCmdOrCtrl = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
-        let timestamp = event.timestamp
         let ascii: UInt8 = {
             guard let chars = event.characters, let scalar = chars.unicodeScalars.first, scalar.isASCII else {
                 return 0
@@ -221,7 +238,7 @@ public final class ChimeInputController: IMKInputController {
         var isPunctToggleToast = false
 
         let response: ChimeResponse? = MainActor.assumeIsolated {
-            ChimeEngineBridge.shared.registerClient(controllerKey: key, client: unsafeClientObj)
+            ChimeEngineBridge.shared.ensureSlot(controllerKey: key, client: unsafeClientObj)
             if let observedLeftContext {
                 ChimeEngineBridge.shared.syncSurroundingContext(
                     controllerKey: key,
@@ -233,8 +250,7 @@ public final class ChimeInputController: IMKInputController {
                 let toggled = ChimeEngineBridge.shared.pollModifierToggle(
                     controllerKey: key,
                     keyCode: keyCode,
-                    flags: flags,
-                    timestamp: timestamp
+                    flags: flags
                 )
                 if toggled != nil {
                     isModeToggleToast = true
@@ -261,22 +277,48 @@ public final class ChimeInputController: IMKInputController {
         guard let resp = response else {
             return false
         }
+        // In English mode (or unhandled shortcuts), never clobber the client's text state with an
+        // unnecessary `setMarkedText("")` when there was no active preedit!
+        if !resp.handled && resp.committed_text.isEmpty && resp.preedit_text.isEmpty {
+            MainActor.assumeIsolated {
+                CandidatePanel.shared.hide()
+            }
+            return false
+        }
+
+        // In non-standard views that do not expose `selectedRange()`, never attempt backward
+        // inline replacement (let the native keystroke pass through cleanly instead of doubling).
+        if resp.replace_prev_chars > 0 {
+            let curSel = client.selectedRange()
+            if curSel.location == NSNotFound || curSel.location < resp.replace_prev_chars {
+                MainActor.assumeIsolated {
+                    ChimeEngineBridge.shared.reset(controllerKey: key)
+                }
+                return false
+            }
+        }
+
         let validRect = applyClientOutput(controllerKey: key, resp: resp, client: client)
 
-        if resp.show_status_toast && (isModeToggleToast || isPunctToggleToast) {
+        if isModeToggleToast {
+            MainActor.assumeIsolated {
+                ChimeEngineBridge.shared.presentModeChangeFeedback(resp: resp, controllerKey: key)
+            }
+        } else if resp.show_status_toast && !resp.toast_override.isEmpty {
             MainActor.assumeIsolated {
                 let rect = validRect ?? ChimeEngineBridge.shared.caretRect(for: key)
-                if isModeToggleToast {
-                    StatusToastPanel.shared.show(
-                        badge: resp.inline_english_mode ? "英" : "中",
-                        caretRect: rect
-                    )
-                } else if isPunctToggleToast {
-                    StatusToastPanel.shared.show(
-                        badge: resp.chinese_punctuation ? "中。" : "英.",
-                        caretRect: rect
-                    )
-                }
+                StatusToastPanel.shared.show(
+                    badge: resp.toast_override,
+                    caretRect: rect
+                )
+            }
+        } else if resp.show_status_toast && isPunctToggleToast {
+            MainActor.assumeIsolated {
+                let rect = validRect ?? ChimeEngineBridge.shared.caretRect(for: key)
+                StatusToastPanel.shared.show(
+                    badge: resp.chinese_punctuation ? "中。" : "英.",
+                    caretRect: rect
+                )
             }
         }
         return resp.handled
@@ -296,10 +338,19 @@ public final class ChimeInputController: IMKInputController {
         client: IMKTextInput
     ) -> NSRect? {
         if !resp.committed_text.isEmpty {
-            client.insertText(
-                resp.committed_text,
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
+            if resp.replace_prev_chars > 0 {
+                let sel = client.selectedRange()
+                let repRange = NSRange(
+                    location: sel.location - resp.replace_prev_chars,
+                    length: resp.replace_prev_chars
+                )
+                client.insertText(resp.committed_text, replacementRange: repRange)
+            } else {
+                client.insertText(
+                    resp.committed_text,
+                    replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                )
+            }
         }
 
         var lineRect = NSRect.zero
@@ -307,11 +358,18 @@ public final class ChimeInputController: IMKInputController {
         let validRect = (lineRect.origin.x != 0 || lineRect.origin.y != 0) ? lineRect : nil
 
         if resp.preedit_text.isEmpty {
-            client.setMarkedText(
-                "",
-                selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
+            let shouldClearMarked = MainActor.assumeIsolated {
+                let prev = ChimeEngineBridge.shared.hadMarkedPreedit(for: controllerKey)
+                ChimeEngineBridge.shared.setHadMarkedPreedit(for: controllerKey, value: false)
+                return prev
+            }
+            if shouldClearMarked {
+                client.setMarkedText(
+                    "",
+                    selectionRange: NSRange(location: 0, length: 0),
+                    replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                )
+            }
             MainActor.assumeIsolated {
                 ChimeEngineBridge.shared.recordObservedCaretRect(controllerKey: controllerKey, rect: validRect)
                 if resp.ghost_text.isEmpty {
@@ -335,6 +393,7 @@ public final class ChimeInputController: IMKInputController {
         )
 
         MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.setHadMarkedPreedit(for: controllerKey, value: true)
             ChimeEngineBridge.shared.updateCandidatePanel(
                 controllerKey: controllerKey,
                 response: resp,

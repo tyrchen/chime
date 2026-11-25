@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import CChimeFFI
 import Foundation
 import InputMethodKit
@@ -27,6 +28,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
     public let candidate_layout: String
     public let candidate_font_size: Int
     public let show_status_toast: Bool
+    public let replace_prev_chars: Int
+    public let toast_override: String
     public let generation_id: UInt64
 
     enum CodingKeys: String, CodingKey {
@@ -44,6 +47,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         case candidate_layout
         case candidate_font_size
         case show_status_toast
+        case replace_prev_chars
+        case toast_override
         case generation_id
     }
 
@@ -62,6 +67,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         candidate_layout: String,
         candidate_font_size: Int = 15,
         show_status_toast: Bool = true,
+        replace_prev_chars: Int = 0,
+        toast_override: String = "",
         generation_id: UInt64
     ) {
         self.handled = handled
@@ -78,6 +85,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         self.candidate_layout = candidate_layout
         self.candidate_font_size = candidate_font_size
         self.show_status_toast = show_status_toast
+        self.replace_prev_chars = replace_prev_chars
+        self.toast_override = toast_override
         self.generation_id = generation_id
     }
 
@@ -97,6 +106,8 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         self.candidate_layout = try c.decode(String.self, forKey: .candidate_layout)
         self.candidate_font_size = (try? c.decode(Int.self, forKey: .candidate_font_size)) ?? 15
         self.show_status_toast = (try? c.decode(Bool.self, forKey: .show_status_toast)) ?? true
+        self.replace_prev_chars = (try? c.decode(Int.self, forKey: .replace_prev_chars)) ?? 0
+        self.toast_override = (try? c.decode(String.self, forKey: .toast_override)) ?? ""
         self.generation_id = try c.decode(UInt64.self, forKey: .generation_id)
     }
 
@@ -150,6 +161,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var english_toggle_key: String
     public var shift_commit_mode: String
     public var uppercase_triggers_english: Bool
+    public var english_auto_correct: Bool
     public var show_status_toast: Bool
     public var minus_equal_paging: Bool
     public var bracket_paging: Bool
@@ -170,6 +182,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         english_toggle_key: "both_shift",
         shift_commit_mode: "commit_and_toggle",
         uppercase_triggers_english: true,
+        english_auto_correct: true,
         show_status_toast: true,
         minus_equal_paging: true,
         bracket_paging: false,
@@ -213,10 +226,8 @@ public final class ChimeEngineBridge {
     private struct ControllerSlot {
         var sessionId: UInt64
         var lastCaretRect: NSRect
-        var shiftDownTs: TimeInterval?
-        var shiftDownKeyCode: UInt16?
-        var keyOrOtherModDuringShift: Bool
-        var inlineEnglishMode: Bool
+        var hasObservedCaret: Bool
+        var hadMarkedPreedit: Bool
         weak var lastClientObject: AnyObject?
     }
 
@@ -225,6 +236,15 @@ public final class ChimeEngineBridge {
     private let encoder = JSONEncoder()
     private var slots: [ObjectIdentifier: ControllerSlot] = [:]
     public var activeControllerKey: ObjectIdentifier?
+
+    // Engine-wide modifier tap & English mode state (shared across windows like Sogou / Doubao)
+    private var inlineEnglishModeGlobal: Bool = false
+    private var shiftDownUptime: TimeInterval?
+    private var shiftDownSide: UInt16? // 0x38 = left, 0x3C = right, 0 = generic
+    private var keyOrMouseDuringShift: Bool = false
+    private var lastProcessedFlagsUptime: TimeInterval = 0
+    private var lastProcessedFlagsRaw: UInt = 0
+    private var enStatusItem: NSStatusItem?
 
     private init() {
         let appSupport = FileManager.default
@@ -266,30 +286,162 @@ public final class ChimeEngineBridge {
         }
 
         CandidatePanel.shared.onToggleEnglish = { [weak self] in
-            guard let self, let key = self.activeControllerKey else { return }
-            let resp = self.toggleEnglish(controllerKey: key)
-            self.applyResponseToStoredClient(controllerKey: key, resp: resp)
-            if resp.show_status_toast {
-                let caret = self.slots[key]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
-                StatusToastPanel.shared.show(
-                    badge: resp.inline_english_mode ? "英" : "中",
-                    caretRect: caret
-                )
+            guard let self else { return }
+            let resp = self.toggleEnglish(controllerKey: self.activeControllerKey)
+            if let key = self.activeControllerKey {
+                self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+            }
+            self.presentModeChangeFeedback(resp: resp, controllerKey: self.activeControllerKey)
+        }
+
+        installGlobalModifierMonitor()
+    }
+
+    private func installGlobalModifierMonitor() {
+        // `.flagsChanged` and mouse clicks require ZERO Accessibility permission on macOS and catch
+        // bare `Shift` taps reliably even in apps/terminals that do not forward idle `flagsChanged`
+        // over `IMKInputSession` IPC!
+        NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            let type = event.type
+            let keyCode = event.keyCode
+            let flags = event.modifierFlags
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if type == .leftMouseDown || type == .rightMouseDown {
+                    self.keyOrMouseDuringShift = true
+                    if self.inlineEnglishModeGlobal, let key = self.activeControllerKey {
+                        self.reset(controllerKey: key)
+                    }
+                    return
+                }
+                guard Self.isChimeSelectedInTIS() else {
+                    self.syncMenuBarEnBadge()
+                    return
+                }
+                if let resp = self.pollModifierToggle(
+                    controllerKey: self.activeControllerKey,
+                    keyCode: keyCode,
+                    flags: flags
+                ) {
+                    if let key = self.activeControllerKey {
+                        self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+                    }
+                    self.presentModeChangeFeedback(resp: resp, controllerKey: self.activeControllerKey)
+                }
+            }
+        }
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.syncMenuBarEnBadge()
             }
         }
     }
 
+    public nonisolated static func isChimeSelectedInTIS() -> Bool {
+        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let ptr = TISGetInputSourceProperty(src, kTISPropertyInputSourceID)
+        else {
+            return false
+        }
+        let srcId = Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
+        return srcId.hasPrefix("app.tyrchen.inputmethod.Chime")
+    }
+
+    private func syncMenuBarEnBadge() {
+        let shouldShow = inlineEnglishModeGlobal && Self.isChimeSelectedInTIS()
+        if shouldShow {
+            if enStatusItem == nil {
+                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+                if let btn = item.button {
+                    btn.title = "En"
+                    btn.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+                    btn.toolTip = "Chime 当前处于英文输入模式（按 Shift 或点击切回中文）"
+                    btn.target = self
+                    btn.action = #selector(handleEnStatusBadgeClick(_:))
+                }
+                enStatusItem = item
+            }
+        } else if let item = enStatusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            enStatusItem = nil
+        }
+    }
+
+    @objc private func handleEnStatusBadgeClick(_ sender: Any?) {
+        let resp = toggleEnglish(controllerKey: activeControllerKey)
+        if let key = activeControllerKey {
+            applyResponseToStoredClient(controllerKey: key, resp: resp)
+        }
+        presentModeChangeFeedback(resp: resp, controllerKey: activeControllerKey)
+    }
+
+    public func presentModeChangeFeedback(resp: ChimeResponse, controllerKey: ObjectIdentifier?) {
+        syncMenuBarEnBadge()
+        guard resp.show_status_toast else { return }
+        let rect = liveCaretOrMouseRect(for: controllerKey)
+        StatusToastPanel.shared.show(
+            badge: resp.inline_english_mode ? "En" : "中",
+            caretRect: rect
+        )
+    }
+
+    public func liveCaretOrMouseRect(for controllerKey: ObjectIdentifier?) -> NSRect {
+        if let key = controllerKey ?? activeControllerKey, let slot = slots[key] {
+            if let client = slot.lastClientObject as? IMKTextInput {
+                var lineRect = NSRect.zero
+                client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
+                if lineRect.origin.x != 0 || lineRect.origin.y != 0 {
+                    return lineRect
+                }
+            }
+            if slot.hasObservedCaret {
+                return slot.lastCaretRect
+            }
+        }
+        let mouse = NSEvent.mouseLocation
+        return NSRect(x: mouse.x, y: mouse.y - 18, width: 1, height: 18)
+    }
+
     public func isInlineEnglish(controllerKey: ObjectIdentifier?) -> Bool {
-        guard let key = controllerKey ?? activeControllerKey else { return false }
-        return slots[key]?.inlineEnglishMode ?? false
+        inlineEnglishModeGlobal
     }
 
     public func caretRect(for controllerKey: ObjectIdentifier) -> NSRect {
-        slots[controllerKey]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
+        liveCaretOrMouseRect(for: controllerKey)
+    }
+
+    public func hadMarkedPreedit(for controllerKey: ObjectIdentifier) -> Bool {
+        slots[controllerKey]?.hadMarkedPreedit ?? false
+    }
+
+    public func setHadMarkedPreedit(for controllerKey: ObjectIdentifier, value: Bool) {
+        if var slot = slots[controllerKey] {
+            slot.hadMarkedPreedit = value
+            slots[controllerKey] = slot
+        }
+    }
+
+    public func ensureSlot(controllerKey: ObjectIdentifier, client: AnyObject?) {
+        activeControllerKey = controllerKey
+        if var existing = slots[controllerKey] {
+            if let client {
+                existing.lastClientObject = client
+            }
+            slots[controllerKey] = existing
+            return
+        }
+        let bundleId = (client as? IMKTextInput)?.bundleIdentifier() ?? ""
+        activate(controllerKey: controllerKey, appBundleId: bundleId, client: client)
     }
 
     public func activate(controllerKey: ObjectIdentifier, appBundleId: String, client: AnyObject?) {
         activeControllerKey = controllerKey
+        syncMenuBarEnBadge()
         if var existing = slots[controllerKey] {
             existing.lastClientObject = client
             slots[controllerKey] = existing
@@ -299,13 +451,12 @@ public final class ChimeEngineBridge {
         let sid = appBundleId.withCString { cStr in
             chime_session_create(handle, cStr)
         }
+        let mouse = NSEvent.mouseLocation
         slots[controllerKey] = ControllerSlot(
             sessionId: sid,
-            lastCaretRect: NSRect(x: 480, y: 360, width: 1, height: 18),
-            shiftDownTs: nil,
-            shiftDownKeyCode: nil,
-            keyOrOtherModDuringShift: false,
-            inlineEnglishMode: false,
+            lastCaretRect: NSRect(x: mouse.x, y: mouse.y - 18, width: 1, height: 18),
+            hasObservedCaret: false,
+            hadMarkedPreedit: false,
             lastClientObject: client
         )
     }
@@ -316,6 +467,7 @@ public final class ChimeEngineBridge {
         }
         CandidatePanel.shared.hide()
         StatusToastPanel.shared.hide()
+        syncMenuBarEnBadge()
         guard let slot = slots.removeValue(forKey: controllerKey), let handle, slot.sessionId != 0 else {
             return
         }
@@ -353,93 +505,110 @@ public final class ChimeEngineBridge {
         }
     }
 
-    /// Detects clean modifier taps (`both_shift`, `left_shift`, `right_shift`, `caps_lock`) without
-    /// misfiring on multi-modifier system shortcuts (`Cmd+Shift+4`, `Ctrl+Shift`, `Opt+Shift`).
+    /// Detects clean modifier taps (`both_shift`, `left_shift`, `right_shift`, `caps_lock`) across
+    /// both `IMKInputController` and the global `.flagsChanged` monitor, deduplicating dual-delivered
+    /// events and handling Carbon IPC events where `keyCode == 0` via NX device modifier flags!
     public func pollModifierToggle(
-        controllerKey: ObjectIdentifier,
+        controllerKey: ObjectIdentifier?,
         keyCode: UInt16,
-        flags: NSEvent.ModifierFlags,
-        timestamp: TimeInterval
+        flags: NSEvent.ModifierFlags
     ) -> ChimeResponse? {
-        guard var slot = slots[controllerKey], let handle else { return nil }
+        guard let handle else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        let rawFlags = flags.rawValue
+        // Deduplicate if both IMKInputController and global monitor deliver the exact same event
+        if (now - lastProcessedFlagsUptime) < 0.025 && rawFlags == lastProcessedFlagsRaw {
+            return nil
+        }
+        lastProcessedFlagsUptime = now
+        lastProcessedFlagsRaw = rawFlags
+
         let toggleRule = getConfig()?.english_toggle_key ?? "both_shift"
         if toggleRule == "none" {
-            slot.shiftDownTs = nil
-            slots[controllerKey] = slot
+            shiftDownUptime = nil
             return nil
         }
 
         let hasOtherMod = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
         if hasOtherMod {
-            slot.keyOrOtherModDuringShift = true
-            slot.shiftDownTs = nil
-            slots[controllerKey] = slot
+            keyOrMouseDuringShift = true
+            shiftDownUptime = nil
             return nil
         }
+
+        let sid = (controllerKey ?? activeControllerKey).flatMap { slots[$0]?.sessionId } ?? 0
 
         if toggleRule == "caps_lock" {
             guard keyCode == 0x39 else { return nil }
-            let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
-            slot.inlineEnglishMode = resp.inline_english_mode
-            slots[controllerKey] = slot
+            let resp = decodeAndFree(chime_toggle_english(handle, sid))
+            inlineEnglishModeGlobal = resp.inline_english_mode
             return resp
         }
 
-        let allowedShift: Bool = {
-            switch toggleRule {
-            case "left_shift":
-                return keyCode == 0x38
-            case "right_shift":
-                return keyCode == 0x3C
-            default:
-                return keyCode == 0x38 || keyCode == 0x3C
-            }
-        }()
-        guard allowedShift else {
-            slot.keyOrOtherModDuringShift = true
-            slots[controllerKey] = slot
-            return nil
-        }
-
+        // NX_DEVICELSHIFTKEYMASK = 0x02, NX_DEVICERSHIFTKEYMASK = 0x04
+        let isLeftDeviceBit = (rawFlags & 0x0002) != 0
+        let isRightDeviceBit = (rawFlags & 0x0004) != 0
         let shiftDown = flags.contains(.shift)
+
         if shiftDown {
-            slot.shiftDownTs = timestamp
-            slot.shiftDownKeyCode = keyCode
-            slot.keyOrOtherModDuringShift = false
-            slots[controllerKey] = slot
+            let detectedSide: UInt16 = if keyCode == 0x38 || isLeftDeviceBit {
+                0x38
+            } else if keyCode == 0x3C || isRightDeviceBit {
+                0x3C
+            } else {
+                0
+            }
+            let allowed: Bool = switch toggleRule {
+            case "left_shift":
+                detectedSide == 0x38
+            case "right_shift":
+                detectedSide == 0x3C
+            default:
+                true
+            }
+            if allowed {
+                shiftDownUptime = now
+                shiftDownSide = detectedSide
+                keyOrMouseDuringShift = false
+            } else {
+                shiftDownUptime = nil
+                keyOrMouseDuringShift = true
+            }
             return nil
         }
 
-        guard let downTs = slot.shiftDownTs, slot.shiftDownKeyCode == keyCode else {
-            slot.shiftDownTs = nil
-            slots[controllerKey] = slot
+        // Shift was just released (`!shiftDown`)
+        guard let downTs = shiftDownUptime else {
             return nil
         }
-        slot.shiftDownTs = nil
-        slot.shiftDownKeyCode = nil
-        let cleanTap = !slot.keyOrOtherModDuringShift && (timestamp - downTs) < 0.30
-        slots[controllerKey] = slot
+        let prevSide = shiftDownSide ?? 0
+        shiftDownUptime = nil
+        shiftDownSide = nil
+
+        if keyCode != 0 && keyCode != 0xFFFF && keyCode != 0x38 && keyCode != 0x3C {
+            return nil
+        }
+        if toggleRule == "left_shift" && keyCode == 0x3C && prevSide != 0x38 {
+            return nil
+        }
+        if toggleRule == "right_shift" && keyCode == 0x38 && prevSide != 0x3C {
+            return nil
+        }
+
+        let cleanTap = !keyOrMouseDuringShift && (now - downTs) < 0.35
         guard cleanTap else { return nil }
 
-        let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
-        if var updated = slots[controllerKey] {
-            updated.inlineEnglishMode = resp.inline_english_mode
-            slots[controllerKey] = updated
-        }
+        let resp = decodeAndFree(chime_toggle_english(handle, sid))
+        inlineEnglishModeGlobal = resp.inline_english_mode
         return resp
     }
 
     public func toggleEnglish(controllerKey: ObjectIdentifier?) -> ChimeResponse {
-        guard let key = controllerKey ?? activeControllerKey,
-              var slot = slots[key],
-              let handle,
-              slot.sessionId != 0
-        else {
-            return .unhandled
-        }
-        let resp = decodeAndFree(chime_toggle_english(handle, slot.sessionId))
-        slot.inlineEnglishMode = resp.inline_english_mode
-        slots[key] = slot
+        guard let handle else { return .unhandled }
+        let sid = (controllerKey ?? activeControllerKey).flatMap { slots[$0]?.sessionId } ?? 0
+        let resp = decodeAndFree(chime_toggle_english(handle, sid))
+        inlineEnglishModeGlobal = resp.inline_english_mode
+        syncMenuBarEnBadge()
         return resp
     }
 
@@ -455,6 +624,14 @@ public final class ChimeEngineBridge {
         let sid = (controllerKey ?? activeControllerKey).flatMap { slots[$0]?.sessionId } ?? 0
         let rawPtr = chime_toggle_pangu_spacing(handle, sid)
         return decodeAndFree(rawPtr)
+    }
+
+    @discardableResult
+    public func toggleEnglishAutoCorrect() -> Bool {
+        var cfg = getConfig() ?? .default
+        cfg.english_auto_correct.toggle()
+        _ = setConfig(cfg)
+        return cfg.english_auto_correct
     }
 
     public func toggleGrid(controllerKey: ObjectIdentifier) -> ChimeResponse {
@@ -474,11 +651,10 @@ public final class ChimeEngineBridge {
         secureInput: Bool
     ) -> ChimeResponse {
         activeControllerKey = controllerKey
-        guard var slot = slots[controllerKey], let handle, slot.sessionId != 0 else {
+        keyOrMouseDuringShift = true
+        guard let slot = slots[controllerKey], let handle, slot.sessionId != 0 else {
             return .unhandled
         }
-        slot.keyOrOtherModDuringShift = true
-        slots[controllerKey] = slot
 
         let rawPtr = chime_process_key(
             handle,
@@ -490,10 +666,8 @@ public final class ChimeEngineBridge {
             secureInput
         )
         let resp = decodeAndFree(rawPtr)
-        if var updated = slots[controllerKey] {
-            updated.inlineEnglishMode = resp.inline_english_mode
-            slots[controllerKey] = updated
-        }
+        inlineEnglishModeGlobal = resp.inline_english_mode
+        syncMenuBarEnBadge()
         if !resp.candidates.isEmpty {
             scheduleAsyncRerankPoll(controllerKey: controllerKey, sessionId: slot.sessionId)
         }
@@ -527,6 +701,7 @@ public final class ChimeEngineBridge {
     public func recordObservedCaretRect(controllerKey: ObjectIdentifier, rect: NSRect?) {
         guard let rect, var slot = slots[controllerKey] else { return }
         slot.lastCaretRect = rect
+        slot.hasObservedCaret = true
         slots[controllerKey] = slot
     }
 

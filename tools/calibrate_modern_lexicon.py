@@ -171,6 +171,105 @@ def zipf_to_word_lp(z: float) -> float:
     return max(-5.75, min(-2.15, -5.68 + (z - 2.65) * 0.85))
 
 
+def zipf_to_english_lp(z: float) -> float:
+    return max(-5.45, min(-2.05, -5.35 + (z - 3.30) * 0.82))
+
+
+def load_system_english_lemmas() -> set[str]:
+    words_path = Path("/usr/share/dict/words")
+    if not words_path.exists():
+        return set()
+    valid: set[str] = set()
+    for raw in words_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        w = raw.strip()
+        if w.isascii() and w.isalpha():
+            valid.add(w.lower())
+    return valid
+
+
+def is_valid_english_inflection(w: str, lemmas: set[str], wf_en: dict[str, float]) -> bool:
+    if w in lemmas:
+        # Reject archaic duplicate-letter spellings (`untill`) overshadowed >40x by modern spelling.
+        if len(w) >= 5:
+            p_w = wf_en.get(w, 0.0)
+            for i in range(len(w) - 1):
+                if w[i] == w[i + 1]:
+                    cand = w[:i] + w[i + 1 :]
+                    if cand in lemmas and wf_en.get(cand, 0.0) > 40.0 * max(p_w, 1e-12):
+                        return False
+        return True
+    if not lemmas:
+        return True
+
+    # Regular plural / 3rd-person singular / tense / adverb inflections derived from dictionary stems
+    stem_ok = False
+    if len(w) >= 4 and w.endswith("ies") and (w[:-3] + "y") in lemmas:
+        stem_ok = True
+    elif len(w) >= 4 and w.endswith("es") and (w[:-2] in lemmas or w[:-1] in lemmas):
+        stem_ok = True
+    elif len(w) >= 4 and w.endswith("s") and not w.endswith("ss") and w[:-1] in lemmas:
+        stem_ok = True
+    elif len(w) >= 5 and w.endswith("ied") and (w[:-3] + "y") in lemmas:
+        stem_ok = True
+    elif len(w) >= 6 and w.endswith("ed"):
+        if len(w) >= 6 and w[-3] == w[-4] and w[:-3] in lemmas:
+            stem_ok = True
+        elif w[:-1] in lemmas or w[:-2] in lemmas:
+            stem_ok = True
+    elif len(w) >= 6 and w.endswith("ing"):
+        if len(w) >= 7 and w[-4] == w[-5] and w[:-4] in lemmas:
+            stem_ok = True
+        elif (w[:-3] + "e") in lemmas or w[:-3] in lemmas:
+            stem_ok = True
+    if not stem_ok:
+        return False
+
+    # Reject misspelled inflections (`occured`, `commited`, `seperated`, `recieved`, `enviroments`)
+    # whenever a 1-edit insertion or substitution neighbor has >8x higher empirical probability!
+    p_w = max(wf_en.get(w, 0.0), 1e-12)
+    alpha = "abcdefghijklmnopqrstuvwxyz"
+    for i in range(1, len(w)):
+        for ch in alpha:
+            ins = w[:i] + ch + w[i:]
+            if wf_en.get(ins, 0.0) > 8.0 * p_w:
+                return False
+        orig = w[i]
+        for ch in "aeiou":
+            if ch != orig:
+                sub = w[:i] + ch + w[i + 1 :]
+                if wf_en.get(sub, 0.0) > 8.0 * p_w:
+                    return False
+    for i in range(len(w) - 1):
+        swapped = w[:i] + w[i + 1] + w[i] + w[i + 2 :]
+        if swapped != w and wf_en.get(swapped, 0.0) > 8.0 * p_w:
+            return False
+    return True
+
+
+def calibrate_english_entries() -> list[str]:
+    wf_en = wordfreq.get_frequency_dict("en")
+    lemmas = load_system_english_lemmas()
+    scored: list[tuple[float, str]] = []
+    for w, prob in wf_en.items():
+        if not (3 <= len(w) <= 16) or not w.isascii() or not w.isalpha() or not w.islower():
+            continue
+        if prob <= 0.0:
+            continue
+        z = math.log10(prob) + 9.0
+        min_z = 4.35 if len(w) == 3 else (3.70 if len(w) == 4 else 3.30)
+        if z < min_z:
+            continue
+        if not is_valid_english_inflection(w, lemmas, wf_en):
+            continue
+        scored.append((z, w))
+    scored.sort(reverse=True)
+    en_rows: list[str] = []
+    for z, w in scored[:30000]:
+        lp = zipf_to_english_lp(z)
+        en_rows.append(f"EN\t{w}\t{lp:.4f}\t0")
+    return en_rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
@@ -299,9 +398,13 @@ def main() -> None:
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [f"{w}\t{py}\t{lp:.4f}" for (w, py), lp in sorted(lex_entries.items())]
-    out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    print(f"Calibrated {len(rows)} unit-consistent Zipf + Qwen3 Mandarin entries -> {out_path}")
+    cjk_rows = [f"{w}\t{py}\t{lp:.4f}" for (w, py), lp in sorted(lex_entries.items())]
+    en_rows = calibrate_english_entries()
+    all_rows = cjk_rows + en_rows
+    out_path.write_text("\n".join(all_rows) + "\n", encoding="utf-8")
+    print(
+        f"Calibrated {len(cjk_rows)} Mandarin + {len(en_rows)} English Zipf entries -> {out_path}"
+    )
 
 
 if __name__ == "__main__":

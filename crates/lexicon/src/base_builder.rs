@@ -130,13 +130,14 @@ pub fn build_comprehensive_lexicon(
         lex.insert_pinyin_word(word, &py, scaled_lp, false);
     }
 
-    // 4. Optional English dictionary words (common lowercase words length 4..=14).
+    // 4. Optional English dictionary words (common lowercase words length 5..=14) as rare-word
+    // validity floor so uncommon valid words are not falsely auto-corrected in `En` mode.
     if let Some(eng_path) = english_words_path
         && let Ok(eng_text) = std::fs::read_to_string(eng_path)
     {
         for line in eng_text.lines() {
             let w = line.trim();
-            if (4..=14).contains(&w.len())
+            if (5..=14).contains(&w.len())
                 && w.bytes().all(|b| b.is_ascii_lowercase())
                 && lex.lookup_english(&w.to_ascii_lowercase()).is_none()
             {

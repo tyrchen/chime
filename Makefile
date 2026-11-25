@@ -73,7 +73,7 @@ build-core-dict: build-models build-classics-corpus
 		uv run --python 3.12 --no-project --with torch --with transformers --with safetensors --with wordfreq --with pypinyin \
 			python -I tools/calibrate_modern_lexicon.py --out "$(MULTI_LEX_TSV)" --polyphones-yaml crates/lexicon/data/polyphones.yaml; \
 	fi
-	@if [ ! -f "$(CORE_DICT)" ] || [ "$(MULTI_LEX_TSV)" -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/closed_grammar.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/polyphones.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/src/base_builder.rs -nt "$(CORE_DICT)" ]; then \
+	@if [ ! -f "$(CORE_DICT)" ] || [ "$(MULTI_LEX_TSV)" -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/closed_grammar.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/english_casing.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/data/polyphones.yaml -nt "$(CORE_DICT)" ] || [ crates/lexicon/src/base_builder.rs -nt "$(CORE_DICT)" ]; then \
 		python3 -c 'import pathlib; d = pathlib.Path("$(DIST_DIR)"); m = (d/"multi_lexicon.tsv").read_text("utf-8"); c_lines = []; \
 		[c_lines.append(f"{p[0]}\t{p[1]}\t{(float(p[2]) - 1.25 if len(p[0]) <= 4 else float(p[2])):.4f}") for ln in (d/"classics_core_lexicon.tsv").read_text("utf-8").splitlines() if "\t" in ln for p in [ln.split("\t")] if len(p) >= 3 and len(p[0]) >= 2]; \
 		(d/"merged_core_lexicon.tsv").write_text(m + ("\n" if not m.endswith("\n") else "") + "\n".join(c_lines) + "\n", "utf-8")'; \

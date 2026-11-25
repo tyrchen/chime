@@ -20,8 +20,9 @@ use chime_decoder::{
     promote_top_completion_into_bar,
 };
 use chime_lexicon::{
-    CompiledDictBuilder, Lexicon, TypingSample, UserStore, import_macos_text_replacements,
-    parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict,
+    CompiledDictBuilder, EnglishEditKind, Lexicon, TypingSample, UserStore,
+    import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes,
+    parse_tsv_dict,
 };
 use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob};
 use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
@@ -111,6 +112,13 @@ pub struct EngineResponse {
     pub candidate_font_size: u32,
     /// Whether to display a brief HUD badge near the cursor on mode/punctuation switch.
     pub show_status_toast: bool,
+    /// Number of characters immediately preceding the cursor to replace when committing an inline
+    /// `En`-mode spelling correction or `Backspace` undo (`0` for normal insertion).
+    #[serde(default)]
+    pub replace_prev_chars: usize,
+    /// Optional custom status toast text (e.g. `"teh → the"` or `"已撤回 → teh"`).
+    #[serde(default)]
+    pub toast_override: String,
     /// Monotonic keystroke generation ID for anti-jitter async rerank validation.
     pub generation_id: u64,
 }
@@ -153,6 +161,13 @@ pub struct EngineStatus {
 }
 
 #[derive(Debug, Clone)]
+struct EnAutoCorrectUndo {
+    original_word: String,
+    emitted_chars: usize,
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 struct InputSession {
     id: u64,
     app_bundle_id: String,
@@ -174,6 +189,10 @@ struct InputSession {
     last_committed_word: String,
     typo_rollback_prev_idx: Option<usize>,
     last_auto_committed: Option<(String, String)>,
+    en_word_buffer: String,
+    en_token_tainted: bool,
+    en_last_autocorrect: Option<EnAutoCorrectUndo>,
+    en_suppressed_words: Vec<String>,
     generation_id: u64,
 }
 
@@ -197,8 +216,25 @@ impl InputSession {
             last_committed_word: String::new(),
             typo_rollback_prev_idx: None,
             last_auto_committed: None,
+            en_word_buffer: String::new(),
+            en_token_tainted: false,
+            en_last_autocorrect: None,
+            en_suppressed_words: Vec::new(),
             generation_id: 0,
         }
+    }
+
+    fn clear_en_tracking(&mut self) {
+        self.en_word_buffer.clear();
+        self.en_token_tainted = false;
+        self.en_last_autocorrect = None;
+    }
+
+    fn pop_left_context_chars(&mut self, count: usize) {
+        for _ in 0..count {
+            self.left_context.pop();
+        }
+        self.last_committed_char = self.left_context.chars().last();
     }
 
     fn is_composing(&self) -> bool {
@@ -247,6 +283,7 @@ pub struct ChimeEngine {
     async_reranker: Option<AsyncRerankHandle>,
     installed_packs_count: usize,
     installed_packs_meta: Vec<InstalledPackSummary>,
+    inline_english_mode: bool,
     sessions: VecDeque<InputSession>,
     next_session_id: u64,
 }
@@ -272,6 +309,7 @@ impl ChimeEngine {
             async_reranker: None,
             installed_packs_count: 0,
             installed_packs_meta: Vec::new(),
+            inline_english_mode: false,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         }
@@ -308,6 +346,7 @@ impl ChimeEngine {
             async_reranker: None,
             installed_packs_count: 0,
             installed_packs_meta: Vec::new(),
+            inline_english_mode: false,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         };
@@ -572,8 +611,9 @@ impl ChimeEngine {
         if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
             self.sessions.pop_front();
         }
-        self.sessions
-            .push_back(InputSession::new(id, app_bundle_id.into()));
+        let mut sess = InputSession::new(id, app_bundle_id.into());
+        sess.inline_english_mode = self.inline_english_mode;
+        self.sessions.push_back(sess);
         id
     }
 
@@ -586,6 +626,7 @@ impl ChimeEngine {
     pub fn reset_session(&mut self, session_id: u64) {
         if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id) {
             sess.clear_composing();
+            sess.clear_en_tracking();
             sess.ghost_suggestion = None;
         }
     }
@@ -672,17 +713,33 @@ impl ChimeEngine {
     /// Toggles inline English mode on a clean modifier tap (or commits raw ASCII while staying in
     /// Chinese mode when `shift_commit_mode == CommitKeepChinese` during active preedit).
     pub fn toggle_inline_english(&mut self, session_id: u64) -> EngineResponse {
-        let Some(idx) = self.touch_session(session_id) else {
-            return EngineResponse::default();
-        };
         let pangu = self.config.pangu_spacing;
         let shift_mode = self.config.shift_commit_mode;
-        let sess = &mut self.sessions[idx];
-        let was_composing = sess.is_composing();
+        let Some(idx) = self.touch_session(session_id) else {
+            self.inline_english_mode = !self.inline_english_mode;
+            for s in &mut self.sessions {
+                s.inline_english_mode = self.inline_english_mode;
+            }
+            return EngineResponse {
+                handled: true,
+                inline_english_mode: self.inline_english_mode,
+                chinese_punctuation: self.config.chinese_punctuation,
+                candidate_layout: self.config.candidate_layout,
+                candidate_font_size: self.config.candidate_font_size,
+                show_status_toast: self.config.show_status_toast,
+                ..EngineResponse::default()
+            };
+        };
+        let was_composing = self.sessions[idx].is_composing();
         if !(was_composing && shift_mode == ShiftCommitMode::CommitKeepChinese) {
-            sess.inline_english_mode = !sess.inline_english_mode;
+            self.inline_english_mode = !self.inline_english_mode;
+            for s in &mut self.sessions {
+                s.inline_english_mode = self.inline_english_mode;
+            }
         }
+        let sess = &mut self.sessions[idx];
         sess.ghost_suggestion = None;
+        sess.clear_en_tracking();
         let mut raw_commit = std::mem::take(&mut sess.partial_prefix);
         raw_commit.push_str(&std::mem::take(&mut sess.raw_buffer));
         sess.clear_composing();
@@ -690,16 +747,17 @@ impl ChimeEngine {
         if !committed.is_empty() {
             sess.record_emitted_text(&committed);
         }
+        let gen_id = sess.generation_id;
         EngineResponse {
             handled: true,
             committed_text: committed,
-            inline_english_mode: sess.inline_english_mode,
+            inline_english_mode: self.inline_english_mode,
             chinese_punctuation: self.config.chinese_punctuation,
             candidate_layout: self.config.candidate_layout,
             candidate_font_size: self.config.candidate_font_size,
             show_status_toast: self.config.show_status_toast
                 && !(was_composing && shift_mode == ShiftCommitMode::CommitKeepChinese),
-            generation_id: sess.generation_id,
+            generation_id: gen_id,
             ..EngineResponse::default()
         }
     }
@@ -785,42 +843,9 @@ impl ChimeEngine {
             return EngineResponse::default();
         };
 
-        if self.sessions[idx].inline_english_mode {
-            let ch = event.ascii_char;
-            if self.config.pangu_spacing
-                && ch.is_ascii_alphanumeric()
-                && self.sessions[idx]
-                    .left_context
-                    .chars()
-                    .last()
-                    .is_some_and(is_cjk_hanzi)
-            {
-                let spaced = format!(" {}", char::from(ch));
-                self.sessions[idx].record_emitted_text(&spaced);
-                return EngineResponse {
-                    handled: true,
-                    committed_text: spaced,
-                    inline_english_mode: true,
-                    chinese_punctuation: self.config.chinese_punctuation,
-                    candidate_layout: self.config.candidate_layout,
-                    candidate_font_size: self.config.candidate_font_size,
-                    show_status_toast: self.config.show_status_toast,
-                    ..EngineResponse::default()
-                };
-            }
-            if ch.is_ascii_graphic() || ch == b' ' {
-                let s = char::from(ch).to_string();
-                self.sessions[idx].record_emitted_text(&s);
-            }
-            return EngineResponse {
-                handled: false,
-                inline_english_mode: true,
-                chinese_punctuation: self.config.chinese_punctuation,
-                candidate_layout: self.config.candidate_layout,
-                candidate_font_size: self.config.candidate_font_size,
-                show_status_toast: self.config.show_status_toast,
-                ..EngineResponse::default()
-            };
+        self.sessions[idx].inline_english_mode = self.inline_english_mode;
+        if self.inline_english_mode {
+            return self.handle_inline_english_key(idx, event);
         }
 
         let ch = event.ascii_char;
@@ -1027,6 +1052,7 @@ impl ChimeEngine {
             fuzzy: self.config.fuzzy,
             pangu_spacing: self.config.pangu_spacing,
             uppercase_triggers_english: self.config.uppercase_triggers_english,
+            english_auto_correct: self.config.english_auto_correct,
             now_epoch_secs: 0,
         };
         self.decoder
@@ -1321,6 +1347,7 @@ impl ChimeEngine {
             fuzzy: self.config.fuzzy,
             pangu_spacing: self.config.pangu_spacing,
             uppercase_triggers_english: self.config.uppercase_triggers_english,
+            english_auto_correct: self.config.english_auto_correct,
             now_epoch_secs,
         };
         let mut cands = self
@@ -1588,8 +1615,234 @@ impl ChimeEngine {
             candidate_layout: self.config.candidate_layout,
             candidate_font_size: self.config.candidate_font_size,
             show_status_toast: self.config.show_status_toast,
+            replace_prev_chars: 0,
+            toast_override: String::new(),
             generation_id: sess.generation_id,
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn handle_inline_english_key(&mut self, idx: usize, event: KeyEvent) -> EngineResponse {
+        let ch = event.ascii_char;
+        let base_unhandled = EngineResponse {
+            handled: false,
+            inline_english_mode: true,
+            chinese_punctuation: self.config.chinese_punctuation,
+            candidate_layout: self.config.candidate_layout,
+            candidate_font_size: self.config.candidate_font_size,
+            show_status_toast: self.config.show_status_toast,
+            ..EngineResponse::default()
+        };
+
+        // 1. Single-key `Backspace` (`0x33`) instant undo of the just-applied auto-correction!
+        if event.key_code == 0x33 {
+            if let Some(undo) = self.sessions[idx].en_last_autocorrect.take() {
+                let lower_orig = undo.original_word.to_ascii_lowercase();
+                if !self.sessions[idx].en_suppressed_words.contains(&lower_orig) {
+                    if self.sessions[idx].en_suppressed_words.len() >= 64 {
+                        self.sessions[idx].en_suppressed_words.remove(0);
+                    }
+                    self.sessions[idx].en_suppressed_words.push(lower_orig);
+                }
+                self.sessions[idx].pop_left_context_chars(undo.emitted_chars);
+                self.sessions[idx].record_emitted_text(&undo.original_word);
+                self.sessions[idx]
+                    .en_word_buffer
+                    .clone_from(&undo.original_word);
+                self.sessions[idx].en_token_tainted = false;
+                return EngineResponse {
+                    handled: true,
+                    committed_text: undo.original_word.clone(),
+                    replace_prev_chars: undo.emitted_chars,
+                    toast_override: format!("已撤回 → {}", undo.original_word),
+                    ..base_unhandled
+                };
+            }
+            self.sessions[idx].en_word_buffer.pop();
+            if self.sessions[idx].en_word_buffer.is_empty() {
+                self.sessions[idx].en_token_tainted = false;
+            }
+            self.sessions[idx].pop_left_context_chars(1);
+            return base_unhandled;
+        }
+
+        // 2. Navigation / special keys clear token tracking.
+        if ch == 0 {
+            self.sessions[idx].clear_en_tracking();
+            if event.key_code == 0x24 {
+                self.sessions[idx].record_emitted_text("\n");
+            }
+            return base_unhandled;
+        }
+
+        // 3. Alphabetic characters accumulate silently into `en_word_buffer` (`handled = false`).
+        if ch.is_ascii_alphabetic() {
+            self.sessions[idx].en_last_autocorrect = None;
+            let prev_ch = self.sessions[idx].left_context.chars().last();
+            if self.sessions[idx].en_word_buffer.is_empty()
+                && !self.sessions[idx].en_token_tainted
+                && prev_ch.is_some_and(|c| {
+                    c.is_ascii_digit()
+                        || matches!(
+                            c,
+                            '/' | '.' | '@' | ':' | '_' | '-' | '~' | '$' | '#' | '\\'
+                        )
+                })
+            {
+                self.sessions[idx].en_token_tainted = true;
+            }
+            if !self.sessions[idx].en_token_tainted {
+                if self.sessions[idx].en_word_buffer.len() < 24 {
+                    self.sessions[idx].en_word_buffer.push(char::from(ch));
+                } else {
+                    self.sessions[idx].en_word_buffer.clear();
+                    self.sessions[idx].en_token_tainted = true;
+                }
+            }
+            if self.config.pangu_spacing && prev_ch.is_some_and(is_cjk_hanzi) {
+                let spaced = format!(" {}", char::from(ch));
+                self.sessions[idx].record_emitted_text(&spaced);
+                return EngineResponse {
+                    handled: true,
+                    committed_text: spaced,
+                    ..base_unhandled
+                };
+            }
+            self.sessions[idx].record_emitted_text(&char::from(ch).to_string());
+            return base_unhandled;
+        }
+
+        // 4. Word-boundary delimiters (`Space` or sentence punctuation) trigger spelling check.
+        if matches!(ch, b' ' | b',' | b'.' | b'!' | b'?' | b';' | b':') {
+            self.sessions[idx].en_last_autocorrect = None;
+            let typed_word = std::mem::take(&mut self.sessions[idx].en_word_buffer);
+            let was_tainted = std::mem::replace(&mut self.sessions[idx].en_token_tainted, false);
+            if !was_tainted
+                && let Some(auto_resp) =
+                    self.try_autocorrect_inline_english(idx, &typed_word, char::from(ch))
+            {
+                return auto_resp;
+            }
+            self.sessions[idx].record_emitted_text(&char::from(ch).to_string());
+            return base_unhandled;
+        }
+
+        // 5. Digits, underscores, slashes, hyphens, apostrophes (`don't`) taint the current token.
+        self.sessions[idx].en_last_autocorrect = None;
+        self.sessions[idx].en_word_buffer.clear();
+        self.sessions[idx].en_token_tainted = true;
+        if self.config.pangu_spacing
+            && ch.is_ascii_digit()
+            && self.sessions[idx]
+                .left_context
+                .chars()
+                .last()
+                .is_some_and(is_cjk_hanzi)
+        {
+            let spaced = format!(" {}", char::from(ch));
+            self.sessions[idx].record_emitted_text(&spaced);
+            return EngineResponse {
+                handled: true,
+                committed_text: spaced,
+                ..base_unhandled
+            };
+        }
+        if ch.is_ascii_graphic() {
+            self.sessions[idx].record_emitted_text(&char::from(ch).to_string());
+        }
+        base_unhandled
+    }
+
+    fn try_autocorrect_inline_english(
+        &mut self,
+        idx: usize,
+        typed_word: &str,
+        delim: char,
+    ) -> Option<EngineResponse> {
+        if !self.config.english_auto_correct || !(3..=18).contains(&typed_word.len()) {
+            return None;
+        }
+        let app_id = &self.sessions[idx].app_bundle_id;
+        if is_terminal_app(app_id) {
+            return None;
+        }
+        let is_ide = UserStore::is_developer_app(app_id);
+        if is_ide && typed_word.len() < 5 {
+            return None;
+        }
+        // Exempt camelCase (`useEffect`, `iPhone`) and ALLCAPS (`HTTP`, `NASA`, `PR`).
+        if typed_word[1..].bytes().any(|b| b.is_ascii_uppercase())
+            || (typed_word.len() >= 2 && typed_word.bytes().all(|b| b.is_ascii_uppercase()))
+        {
+            return None;
+        }
+
+        let lower = typed_word.to_ascii_lowercase();
+        if self.sessions[idx].en_suppressed_words.contains(&lower)
+            || self.lexicon.is_known_valid_english(&lower)
+        {
+            return None;
+        }
+        if self
+            .lexicon
+            .complete_english_prefix(&lower, 1)
+            .into_iter()
+            .any(|c| c.is_tech_term && c.surface.len() <= lower.len() + 2)
+        {
+            return None;
+        }
+
+        let (best, _, edit_kind) = self
+            .lexicon
+            .correct_english_word(&lower, 1)
+            .into_iter()
+            .next()?;
+        if is_ide
+            && (best.log_prob < -3.90
+                || (edit_kind == EnglishEditKind::NeighborOrVowelSub && typed_word.len() < 6))
+        {
+            return None;
+        }
+
+        let best_lower = best.surface.to_ascii_lowercase();
+        let corrected = if delim == '.' && typed_word == lower {
+            best_lower
+        } else if best.surface != best_lower {
+            best.surface
+        } else if typed_word.as_bytes()[0].is_ascii_uppercase() {
+            let mut chars = best.surface.chars();
+            let first = chars.next()?.to_ascii_uppercase();
+            format!("{first}{}", chars.as_str())
+        } else {
+            best.surface
+        };
+        if corrected == typed_word {
+            return None;
+        }
+
+        let replace_len = typed_word.chars().count();
+        self.sessions[idx].pop_left_context_chars(replace_len);
+        let committed = format!("{corrected}{delim}");
+        let emitted_chars = committed.chars().count();
+        self.sessions[idx].record_emitted_text(&committed);
+        self.sessions[idx].en_last_autocorrect = Some(EnAutoCorrectUndo {
+            original_word: typed_word.to_string(),
+            emitted_chars,
+        });
+
+        Some(EngineResponse {
+            handled: true,
+            committed_text: committed,
+            inline_english_mode: true,
+            chinese_punctuation: self.config.chinese_punctuation,
+            candidate_layout: self.config.candidate_layout,
+            candidate_font_size: self.config.candidate_font_size,
+            show_status_toast: self.config.show_status_toast,
+            replace_prev_chars: replace_len,
+            toast_override: format!("{typed_word} → {corrected}"),
+            generation_id: self.sessions[idx].generation_id,
+            ..EngineResponse::default()
+        })
     }
 
     fn touch_session(&mut self, session_id: u64) -> Option<usize> {
@@ -1606,6 +1859,22 @@ impl ChimeEngine {
 
 fn is_cjk_hanzi(c: char) -> bool {
     ('\u{4E00}'..='\u{9FA5}').contains(&c)
+}
+
+fn is_terminal_app(app_bundle_id: &str) -> bool {
+    let lower = app_bundle_id.to_ascii_lowercase();
+    [
+        "ghostty",
+        "terminal",
+        "iterm",
+        "warp",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "hyper",
+    ]
+    .iter()
+    .any(|pat| lower.contains(pat))
 }
 
 #[derive(Debug)]
@@ -1942,5 +2211,63 @@ mod tests {
         assert!(engine.remove_installed_pack("demo-pack"));
         assert_eq!(engine.status().installed_packs, 0);
         assert_eq!(engine.status().pack_details.len(), 0);
+    }
+
+    #[test]
+    fn test_should_auto_correct_inline_english_preserve_case_exempt_terminals_and_undo_on_backspace()
+     {
+        let mut engine = ChimeEngine::default();
+        let sid = engine.create_session("md.obsidian");
+        let toggled = engine.toggle_inline_english(sid);
+        assert!(toggled.inline_english_mode);
+
+        // 1. Capitalized `Teh ` -> `The ` (`replace_prev_chars == 3`, `toast_override == "Teh →
+        //    The"`)
+        for b in *b"Teh" {
+            let r = engine.process_key(sid, key(b, 0), 500);
+            assert!(!r.handled);
+        }
+        let r_space = engine.process_key(sid, key(b' ', 0x31), 500);
+        assert!(r_space.handled);
+        assert_eq!(r_space.replace_prev_chars, 3);
+        assert_eq!(r_space.committed_text, "The ");
+        assert_eq!(r_space.toast_override, "Teh → The");
+
+        // 2. Press single `Backspace` (`0x33`) -> instant undo back to `"Teh"` AND suppresses
+        //    future auto-correct on `"teh"`!
+        let r_undo = engine.process_key(sid, key(0, 0x33), 500);
+        assert!(r_undo.handled);
+        assert_eq!(r_undo.replace_prev_chars, 4);
+        assert_eq!(r_undo.committed_text, "Teh");
+        assert!(r_undo.toast_override.contains("Teh"));
+
+        // Pressing Space right after undo keeps `"Teh "` without re-correcting!
+        let r_retype_space = engine.process_key(sid, key(b' ', 0x31), 500);
+        assert!(!r_retype_space.handled);
+
+        // 3. Sentence punctuation boundary (`recieve.` -> `receive.`) & camelCase exemption
+        //    (`useEfect ` -> untouched)
+        for b in *b"recieve" {
+            let _ = engine.process_key(sid, key(b, 0), 500);
+        }
+        let r_dot = engine.process_key(sid, key(b'.', 0x2F), 500);
+        assert!(r_dot.handled);
+        assert_eq!(r_dot.replace_prev_chars, 7);
+        assert_eq!(r_dot.committed_text, "receive.");
+
+        let _ = engine.process_key(sid, key(b' ', 0x31), 500);
+        for b in *b"useEfect" {
+            let _ = engine.process_key(sid, key(b, 0), 500);
+        }
+        let r_camel = engine.process_key(sid, key(b' ', 0x31), 500);
+        assert!(!r_camel.handled);
+
+        // 4. Terminal apps (`com.mitchellh.ghostty`) are strictly exempted in `En` mode!
+        let term_sid = engine.create_session("com.mitchellh.ghostty");
+        for b in *b"definately" {
+            let _ = engine.process_key(term_sid, key(b, 0), 500);
+        }
+        let r_term = engine.process_key(term_sid, key(b' ', 0x31), 500);
+        assert!(!r_term.handled);
     }
 }

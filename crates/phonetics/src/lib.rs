@@ -231,13 +231,20 @@ pub fn classify_code_switch(span: &str) -> CodeSwitchSignal {
     }
 
     let lower = span.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let has_english_v = bytes
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'v' && (i == 0 || !matches!(bytes[i - 1], b'l' | b'n')));
     let impossible_clusters = [
-        "str", "scr", "spr", "spl", "chr", "thr", "ph", "ck", "gh", "wh", "wr", "kn", "bl", "br",
-        "cl", "cr", "dr", "fl", "fr", "gl", "gr", "pl", "pr", "sc", "sk", "sl", "sm", "sp", "st",
-        "sw", "tr", "tw", "ct", "ft", "lt", "mp", "nd", "nk", "nt", "pt", "rd", "rk", "rl", "rm",
-        "rn", "rp", "rt", "rv", "pdf", "sql", "http", "html",
+        "str", "scr", "spr", "spl", "chr", "thr", "th", "ph", "ck", "gh", "wh", "wr", "kn", "bl",
+        "br", "cl", "cr", "dr", "fl", "fr", "gl", "gr", "pl", "pr", "sc", "sk", "sl", "sm", "sp",
+        "st", "sw", "tr", "tw", "ct", "ft", "lt", "mp", "nd", "nk", "nt", "pt", "rd", "rk", "rl",
+        "rm", "rn", "rp", "rt", "rv", "pdf", "sql", "http", "html",
     ];
-    if impossible_clusters.iter().any(|pat| lower.contains(pat)) && !can_segment_exact(&lower) {
+    if (has_english_v || impossible_clusters.iter().any(|pat| lower.contains(pat)))
+        && !can_segment_exact(&lower)
+    {
         return CodeSwitchSignal::PhonotacticEnglish;
     }
 
