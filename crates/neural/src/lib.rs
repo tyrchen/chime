@@ -143,7 +143,7 @@ impl SafetensorsReranker {
             mlx_model,
             vocab,
             kv_cache,
-            weight_scale: 0.58,
+            weight_scale: 0.65,
         })
     }
 
@@ -233,11 +233,7 @@ impl SafetensorsReranker {
             .sum::<f32>()
             / (valid_count as f32);
 
-        let scale = if has_left_ctx {
-            self.weight_scale
-        } else {
-            self.weight_scale * 0.92
-        };
+        let scale = self.weight_scale;
 
         norm_scores
             .into_iter()

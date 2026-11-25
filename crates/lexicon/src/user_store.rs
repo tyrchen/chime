@@ -547,7 +547,7 @@ impl UserStore {
     }
 
     fn index_custom_phrase(&mut self, reading: &str, surface: &str, weight: f32) {
-        self.reading_trie.update(reading, 1);
+        let _ = self.reading_trie.update(reading, 1);
         let list = self.custom_words.entry(reading.to_string()).or_default();
         if let Some(existing) = list.iter_mut().find(|(s, _)| s == surface) {
             existing.1 = weight;

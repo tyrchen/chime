@@ -1,5 +1,5 @@
 //! Apple Silicon Metal GPU Qwen3 / Qwen2.5 Causal Transformer Reranker powered by `mlx-rs`
-//! (`0.33`), supporting both native **4-bit MLX affine quantized** (`quantized_matmul` +
+//! (`0.34`), supporting both native **4-bit MLX affine quantized** (`quantized_matmul` +
 //! `dequantize`, ~60 MB) and `FP16`/`F32` `SafeTensors` weights!
 
 use std::{collections::HashMap, path::Path};
@@ -8,7 +8,10 @@ use mlx_rs::{
     Array, Dtype as MlxDtype,
     fast::{ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention},
     nn::{log_softmax, silu},
-    ops::{concatenate, dequantize, indexing::TryIndexOp, quantized_matmul},
+    ops::{
+        DequantizeOptions, QuantizedMatmulOptions, concatenate, dequantize, indexing::TryIndexOp,
+        quantized_matmul,
+    },
     transforms::eval,
 };
 
@@ -62,8 +65,19 @@ impl MlxLinear {
                 biases,
                 group_size,
                 bits,
-            } => quantized_matmul(x, weight, scales, Some(biases), true, *group_size, *bits)
-                .map_err(mlx_err),
+            } => quantized_matmul(
+                x,
+                weight,
+                scales,
+                Some(biases),
+                QuantizedMatmulOptions {
+                    transpose: true,
+                    group_size: Some(*group_size),
+                    bits: Some(*bits),
+                    ..Default::default()
+                },
+            )
+            .map_err(mlx_err),
         }
     }
 }
@@ -120,10 +134,19 @@ impl MlxEmbedding {
                 let w_rows = weight.take_axis(&ids_1d, 0).map_err(mlx_err)?;
                 let s_rows = scales.take_axis(&ids_1d, 0).map_err(mlx_err)?;
                 let b_rows = biases.take_axis(&ids_1d, 0).map_err(mlx_err)?;
-                dequantize(&w_rows, &s_rows, Some(&b_rows), *group_size, *bits)
-                    .map_err(mlx_err)?
-                    .reshape(&[1, step_len, d])
-                    .map_err(mlx_err)
+                dequantize(
+                    &w_rows,
+                    &s_rows,
+                    Some(&b_rows),
+                    DequantizeOptions {
+                        group_size: Some(*group_size),
+                        bits: Some(*bits),
+                        ..Default::default()
+                    },
+                )
+                .map_err(mlx_err)?
+                .reshape(&[1, step_len, d])
+                .map_err(mlx_err)
             }
         }
     }
