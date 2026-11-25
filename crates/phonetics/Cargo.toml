@@ -1,0 +1,17 @@
+[package]
+name = "chime-phonetics"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mandarin syllable algebra, fuzzy pinyin, Shuangpin schemes, QWERTY typo model, and code-switch phonotactics"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }

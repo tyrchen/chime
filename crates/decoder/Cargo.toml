@@ -1,0 +1,16 @@
+[package]
+name = "chime-decoder"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dual-track error-tolerant Pinyin/English lattice decoder with neural reranker and anti-jitter guard"
+
+[lints]
+workspace = true
+
+[dependencies]
+chime-lexicon = { workspace = true }
+chime-phonetics = { workspace = true }
+serde = { workspace = true }
+smallvec = { workspace = true }

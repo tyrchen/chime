@@ -1,0 +1,42 @@
+[workspace]
+members = ["crates/*", "apps/*"]
+default-members = ["crates/*", "apps/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Tyr Chen <tyr.chen@gmail.com>"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+rust_2024_compatibility = { level = "warn", priority = -1 }
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+encoding_rs = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+smallvec = { version = "1.13", features = ["const_generics", "union"] }
+thiserror = "2.0"
+toml = "0.8"
+
+# Dev / testing
+rstest = "0.25"
+tempfile = "3.19"
+
+# Workspace crates
+chime-phonetics = { version = "0.1.0", path = "crates/phonetics" }
+chime-lexicon = { version = "0.1.0", path = "crates/lexicon" }
+chime-decoder = { version = "0.1.0", path = "crates/decoder" }
+chime-core = { version = "0.1.0", path = "crates/core" }

@@ -1,0 +1,21 @@
+[package]
+name = "chime-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Developer CLI for Chime IME: interactive decode, dictionary import check, sanitizer, and accuracy/latency benchmark"
+
+[[bin]]
+name = "chime"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+chime-core = { workspace = true }
+chime-lexicon = { workspace = true }
+chime-phonetics = { workspace = true }
+clap = { workspace = true }
