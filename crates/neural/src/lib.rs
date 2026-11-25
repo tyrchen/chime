@@ -14,7 +14,9 @@ use thiserror::Error;
 
 pub use crate::{
     mlx_backend::{MlxPrefixCache, MlxTransformer},
-    transformer::{ModelConfig, PrefixKvCache, TinyModelBuilder, TransformerWeights},
+    transformer::{
+        ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
+    },
     worker::{AsyncRerankHandle, RerankJob, RerankResult},
 };
 
@@ -128,6 +130,7 @@ impl SafetensorsReranker {
             let t1 = 1.min(u32::try_from(config.vocab_size - 1).unwrap_or(0));
             let _ = mlx_model.ensure_prefix_cached(&[0], &mut kv_cache);
             let _ = mlx_model.ensure_prefix_cached(&[0, t1, t1], &mut kv_cache);
+            let _ = mlx_model.ensure_prefix_cached(&[t1; 16], &mut kv_cache);
             let _ = mlx_model.score_candidates_batch(
                 &kv_cache,
                 &[vec![0, t1], vec![0, t1, t1, 0]],
@@ -140,7 +143,7 @@ impl SafetensorsReranker {
             mlx_model,
             vocab,
             kv_cache,
-            weight_scale: 0.42,
+            weight_scale: 0.58,
         })
     }
 
@@ -150,15 +153,21 @@ impl SafetensorsReranker {
         if candidate_texts.is_empty() {
             return Vec::new();
         }
-        let has_left_ctx = !left_context.trim().is_empty();
+        let trimmed_ctx = left_context.trim();
+        let has_left_ctx = !trimmed_ctx.is_empty();
         let unk = self.vocab.unk_token;
 
         let mut valid_mask = Vec::with_capacity(candidate_texts.len());
+        let mut char_lens = Vec::with_capacity(candidate_texts.len());
         let mut encoded = Vec::with_capacity(candidate_texts.len());
+        let mut max_char_len = 0usize;
         for text in candidate_texts {
             let ids = self.vocab.encode(text, false);
-            let valid = !ids.is_empty() && !ids.contains(&unk) && (has_left_ctx || ids.len() >= 2);
+            let c_len = text.chars().filter(|c| !c.is_whitespace()).count().max(1);
+            max_char_len = max_char_len.max(c_len);
+            let valid = !ids.is_empty() && !ids.contains(&unk);
             valid_mask.push(valid);
+            char_lens.push(c_len);
             if valid {
                 encoded.push(ids);
             } else {
@@ -166,14 +175,29 @@ impl SafetensorsReranker {
             }
         }
 
-        // Fast path: when left_context is empty and all candidates are single lexicon words (or OOV
-        // identifiers), Stage-1 corpus frequencies are already exact — skip GPU work in 0 µs!
+        // For short 1-3 character standalone words with no left context (`zidao`, `gen`, `sihu`),
+        // Stage-1 `core.imedict` already holds calibrated multi-corpus + 28-layer Qwen3 priors!
         let valid_count = valid_mask.iter().filter(|&&v| v).count();
-        if valid_count < 2 {
+        if valid_count < 2 || (!has_left_ctx && max_char_len <= 3) {
             return vec![0.0; candidate_texts.len()];
         }
 
-        let prefix_ids = self.vocab.encode(left_context, true);
+        // Bound sliding context window to the trailing 96 characters for consistent low-latency
+        // prefill; Qwen3 was pretrained without a synthetic `<bos>` token (`bos_token_id = null`).
+        let bounded_ctx: String = if has_left_ctx {
+            let chars: Vec<char> = trimmed_ctx.chars().collect();
+            let start = chars.len().saturating_sub(96);
+            chars[start..].iter().collect()
+        } else {
+            "。".to_string()
+        };
+
+        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
+        prefix_ids.retain(|&id| id != unk);
+        if prefix_ids.is_empty() {
+            prefix_ids.push(self.vocab.bos_token);
+        }
+
         if self
             .mlx_model
             .ensure_prefix_cached(&prefix_ids, &mut self.kv_cache)
@@ -182,17 +206,27 @@ impl SafetensorsReranker {
             return vec![0.0; candidate_texts.len()];
         }
 
-        let Ok(raw_scores) =
-            self.mlx_model
-                .score_candidates_batch(&self.kv_cache, &encoded, has_left_ctx)
+        let Ok(joint_lps) = self
+            .mlx_model
+            .score_candidates_joint_lps(&self.kv_cache, &encoded)
         else {
             return vec![0.0; candidate_texts.len()];
         };
 
-        // Zero-mean center across valid candidates so `<unk>` / skipped candidates stay neutral
-        // (0.0) and length offsets never penalize valid words against skipped entries!
+        // Intact 28-layer Qwen3 obeys the exact chain rule across 1-token (`多达`, `合适`) and
+        // 2-token (`多大`, `靠谱`) segmentations; normalize gently by character count!
+        let norm_scores: Vec<f32> = joint_lps
+            .into_iter()
+            .zip(char_lens)
+            .map(|(lp, clen)| {
+                #[allow(clippy::cast_precision_loss)]
+                let denom = (clen as f32).powf(0.42);
+                lp / denom
+            })
+            .collect();
+
         #[allow(clippy::cast_precision_loss)]
-        let mean_lp: f32 = raw_scores
+        let mean_lp: f32 = norm_scores
             .iter()
             .zip(valid_mask.iter())
             .filter_map(|(&s, &v)| v.then_some(s))
@@ -202,10 +236,10 @@ impl SafetensorsReranker {
         let scale = if has_left_ctx {
             self.weight_scale
         } else {
-            self.weight_scale * 0.55
+            self.weight_scale * 0.92
         };
 
-        raw_scores
+        norm_scores
             .into_iter()
             .zip(valid_mask)
             .map(|(lp, valid)| if valid { (lp - mean_lp) * scale } else { 0.0 })

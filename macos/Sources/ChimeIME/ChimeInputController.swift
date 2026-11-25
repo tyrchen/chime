@@ -127,8 +127,33 @@ public final class ChimeInputController: IMKInputController {
         let isCtrlPeriod = ctrlOnly && (keyCode == 0x2F || event.charactersIgnoringModifiers == ".")
         let secure = IsSecureEventInputEnabled()
 
+        // Opportunistically observe up to 96 UTF-16 code units before the cursor from host apps
+        // that implement `selectedRange` + `attributedSubstring` so the sliding context window
+        // stays locked onto real document text even across mouse clicks or edits!
+        let observedLeftContext: String? = {
+            if secure || type != .keyDown {
+                return nil
+            }
+            let sel = client.selectedRange()
+            guard sel.location != NSNotFound, sel.location > 0 else {
+                return nil
+            }
+            let takeLen = min(sel.location, 96)
+            let range = NSRange(location: sel.location - takeLen, length: takeLen)
+            if let attr = client.attributedSubstring(from: range), !attr.string.isEmpty {
+                return attr.string
+            }
+            return nil
+        }()
+
         let response: ChimeResponse? = MainActor.assumeIsolated {
             ChimeEngineBridge.shared.registerClient(controllerKey: key, client: unsafeClientObj)
+            if let observedLeftContext {
+                ChimeEngineBridge.shared.syncSurroundingContext(
+                    controllerKey: key,
+                    leftContext: observedLeftContext
+                )
+            }
 
             if type == .flagsChanged {
                 return ChimeEngineBridge.shared.pollLeftShiftTap(
@@ -164,7 +189,7 @@ public final class ChimeInputController: IMKInputController {
     override public func commitComposition(_ sender: Any!) {
         let key = ObjectIdentifier(self)
         MainActor.assumeIsolated {
-            ChimeEngineBridge.shared.reset(controllerKey: key)
+            ChimeEngineBridge.shared.commitComposition(controllerKey: key)
         }
     }
 

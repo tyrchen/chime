@@ -171,6 +171,24 @@ public final class ChimeEngineBridge {
         chime_reset_session(handle, slot.sessionId)
     }
 
+    public func commitComposition(controllerKey: ObjectIdentifier) {
+        guard let slot = slots[controllerKey], let handle, slot.sessionId != 0 else { return }
+        let rawPtr = chime_commit_composition(handle, slot.sessionId)
+        let resp = decodeAndFree(rawPtr)
+        if resp.candidates.isEmpty && resp.ghost_text.isEmpty {
+            CandidatePanel.shared.hide()
+        } else {
+            CandidatePanel.shared.update(response: resp, caretRect: slot.lastCaretRect)
+        }
+    }
+
+    public func syncSurroundingContext(controllerKey: ObjectIdentifier, leftContext: String) {
+        guard let slot = slots[controllerKey], let handle, slot.sessionId != 0 else { return }
+        leftContext.withCString { cStr in
+            chime_sync_context(handle, slot.sessionId, cStr)
+        }
+    }
+
     public func registerClient(controllerKey: ObjectIdentifier, client: AnyObject) {
         if var slot = slots[controllerKey] {
             slot.lastClientObject = client
@@ -343,16 +361,18 @@ public final class ChimeEngineBridge {
 
     private func scheduleAsyncRerankPoll(controllerKey: ObjectIdentifier, sessionId: UInt64) {
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(12))
-            guard let self, let handle = self.handle, let slot = self.slots[controllerKey], slot.sessionId == sessionId else {
-                return
-            }
-            guard let rawPtr = chime_poll_async_rerank(handle, sessionId) else {
-                return
-            }
-            let updated = self.decodeAndFree(rawPtr)
-            if !updated.candidates.isEmpty || !updated.ghost_text.isEmpty {
-                CandidatePanel.shared.update(response: updated, caretRect: slot.lastCaretRect)
+            for delayMs in [14, 24, 40] {
+                try? await Task.sleep(for: .milliseconds(delayMs))
+                guard let self, let handle = self.handle, let slot = self.slots[controllerKey], slot.sessionId == sessionId else {
+                    return
+                }
+                if let rawPtr = chime_poll_async_rerank(handle, sessionId) {
+                    let updated = self.decodeAndFree(rawPtr)
+                    if !updated.candidates.isEmpty || !updated.ghost_text.isEmpty {
+                        CandidatePanel.shared.update(response: updated, caretRect: slot.lastCaretRect)
+                    }
+                    return
+                }
             }
         }
     }

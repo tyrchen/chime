@@ -269,12 +269,107 @@ pub fn annotate_chinese_word<S: std::hash::BuildHasher>(
     }
 }
 
+/// Genuine modern Mandarin dual-reading characters whose secondary reading is actively used in
+/// contemporary Chinese (`长`, `行`, `重`, `乐`, `还`, `觉`, `似`, etc.). Prevents archaic Unihan
+/// `to_pinyin_multi()` readings (`硬=geng`, `她=jie`, `听=yin`, `说=yue`) from polluting Top-5!
+const MODERN_DAILY_HETERONYM_CHARS: &[(&str, &str, f32)] = &[
+    ("长", "chang", -2.95),
+    ("长", "zhang", -3.25),
+    ("行", "xing", -2.90),
+    ("行", "hang", -3.40),
+    ("重", "zhong", -3.05),
+    ("重", "chong", -3.45),
+    ("乐", "le", -3.25),
+    ("乐", "yue", -3.60),
+    ("还", "hai", -2.65),
+    ("还", "huan", -3.75),
+    ("觉", "jue", -3.20),
+    ("觉", "jiao", -3.65),
+    ("着", "zhe", -2.85),
+    ("着", "zhao", -3.55),
+    ("着", "zhuo", -3.85),
+    ("了", "le", -2.25),
+    ("了", "liao", -3.70),
+    ("的", "de", -2.05),
+    ("的", "di", -4.15),
+    ("地", "di", -3.05),
+    ("地", "de", -3.55),
+    ("得", "de", -2.85),
+    ("得", "dei", -3.65),
+    ("都", "dou", -2.65),
+    ("都", "du", -3.75),
+    ("大", "da", -2.55),
+    ("似", "si", -3.55),
+    ("似", "shi", -4.20),
+    ("差", "cha", -3.35),
+    ("差", "chai", -4.05),
+    ("参", "can", -3.55),
+    ("参", "shen", -4.25),
+    ("数", "shu", -3.20),
+    ("调", "tiao", -3.45),
+    ("调", "diao", -3.55),
+    ("模", "mo", -3.55),
+    ("模", "mu", -4.20),
+    ("奇", "qi", -3.55),
+    ("奇", "ji", -4.35),
+    ("弹", "tan", -3.75),
+    ("弹", "dan", -3.80),
+    ("省", "sheng", -3.45),
+    ("省", "xing", -4.15),
+    ("传", "chuan", -3.35),
+    ("传", "zhuan", -4.05),
+    ("率", "lv", -3.55),
+    ("率", "shuai", -3.95),
+    ("降", "jiang", -3.55),
+    ("降", "xiang", -4.05),
+    ("便", "bian", -3.35),
+    ("便", "pian", -3.95),
+    ("盛", "sheng", -3.75),
+    ("盛", "cheng", -4.15),
+    ("会", "hui", -2.65),
+    ("会", "kuai", -4.25),
+    ("给", "gei", -2.90),
+    ("给", "ji", -4.15),
+    ("藏", "cang", -3.65),
+    ("藏", "zang", -3.95),
+    ("朝", "chao", -3.55),
+    ("朝", "zhao", -3.95),
+    ("宿", "su", -3.85),
+    ("宿", "xiu", -4.35),
+    ("折", "zhe", -3.65),
+    ("折", "she", -4.25),
+    ("强", "qiang", -3.15),
+    ("强", "jiang", -4.35),
+    ("恶", "e", -3.65),
+    ("恶", "wu", -4.25),
+    ("单", "dan", -3.25),
+    ("单", "shan", -4.35),
+    ("解", "jie", -3.20),
+    ("系", "xi", -3.25),
+    ("壳", "ke", -3.95),
+    ("壳", "qiao", -4.35),
+    ("血", "xue", -3.55),
+    ("血", "xie", -4.05),
+    ("薄", "bo", -3.85),
+    ("薄", "bao", -3.95),
+    ("露", "lu", -3.65),
+    ("露", "lou", -4.05),
+    ("落", "luo", -3.35),
+    ("落", "la", -4.25),
+    ("称", "cheng", -3.40),
+    ("没", "mei", -2.65),
+    ("没", "mo", -3.95),
+    ("跟", "gen", -2.95),
+    ("根", "gen", -3.35),
+];
+
 /// Populates all common Unicode CJK characters (including heteronym readings) so no character is
 /// ever unreachable.
 pub fn populate_standard_cjk_characters(lex: &mut Lexicon) -> usize {
     let mut added = 0usize;
-    // Cover BMP CJK Unified Ideographs U+4E00..=U+9FA5 (20,902 characters) with realistic baseline
-    // log-prob.
+    // Cover BMP CJK Unified Ideographs U+4E00..=U+9FA5 (20,902 characters) with deep fallback
+    // log-prob (-9.4) so obscure chars (`郠`, `绠`, `垜`) stay in the expanded single-char grid
+    // and never pollute Top-5 candidates!
     for code in 0x4E00u32..=0x9FA5u32 {
         let Some(ch) = char::from_u32(code) else {
             continue;
@@ -284,13 +379,15 @@ pub fn populate_standard_cjk_characters(lex: &mut Lexicon) -> usize {
         };
         let surface = ch.to_string();
         for (idx, py) in multi.into_iter().take(3).enumerate() {
-            // Unranked CJK fallback sits at -7.8 so real corpus-ranked characters always win!
             #[allow(clippy::cast_precision_loss)]
-            let base_lp = -7.8 - (idx as f32) * 0.8;
+            let base_lp = -9.4 - (idx as f32) * 0.9;
             if lex.insert_pinyin_word(&surface, py.plain(), base_lp, false) {
                 added += 1;
             }
         }
+    }
+    for &(ch_surf, py, lp) in MODERN_DAILY_HETERONYM_CHARS {
+        let _ = lex.insert_pinyin_word(ch_surf, py, lp, false);
     }
     added
 }
@@ -355,20 +452,8 @@ pub fn build_comprehensive_lexicon(
         // -2.3] to match our lattice dynamic range!
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
         let raw_ln = ((freq.max(1) as f64).ln() - denom) as f32;
-        let scaled_lp = (-2.1 + (raw_ln + 4.5) * 0.31).clamp(-6.3, -2.2);
+        let scaled_lp = (-2.35 + (raw_ln + 4.5) * 0.32).clamp(-6.6, -2.45);
         lex.insert_pinyin_word(word, &py, scaled_lp, false);
-
-        // For single characters, also propagate corpus rank (slightly discounted) to secondary
-        // heteronym readings so common heteronym characters (`似` si/shi, `长` chang/zhang, `行`
-        // xing/hang) appear near the top when picking single characters!
-        let mut ch_iter = word.chars();
-        if let (Some(only_ch), None) = (ch_iter.next(), ch_iter.next())
-            && let Some(multi) = only_ch.to_pinyin_multi()
-        {
-            for alt_py in multi.into_iter().skip(1).take(2) {
-                lex.insert_pinyin_word(word, alt_py.plain(), (scaled_lp - 0.75).max(-6.8), false);
-            }
-        }
     }
 
     // 4. Optional English dictionary words (common lowercase words length 4..=14).

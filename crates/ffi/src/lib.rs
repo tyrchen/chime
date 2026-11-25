@@ -140,6 +140,48 @@ pub unsafe extern "C" fn chime_reset_session(engine: *mut ChimeEngineHandle, ses
     }
 }
 
+/// Clears active preedit on `IMKInputController.commitComposition` without wiping post-commit
+/// `ghost_suggestion` (`⇥ 联想`)!
+///
+/// # Safety
+///
+/// `engine` must be valid. Non-null return must be freed via [`chime_string_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_commit_composition(
+    engine: *mut ChimeEngineHandle,
+    session_id: u64,
+) -> *mut c_char {
+    if engine.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    let resp = eng.inner.commit_composition_if_active(session_id);
+    encode_json(&resp)
+}
+
+/// Synchronizes `session_id`'s sliding `left_context` window from the host app's live text before
+/// cursor when idle.
+///
+/// # Safety
+///
+/// `engine` must be valid; `surrounding_left` may be null or a valid NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_sync_context(
+    engine: *mut ChimeEngineHandle,
+    session_id: u64,
+    surrounding_left: *const c_char,
+) {
+    if engine.is_null() || surrounding_left.is_null() {
+        return;
+    }
+    // SAFETY: Valid NUL-terminated UTF-8 C string.
+    let text = unsafe { CStr::from_ptr(surrounding_left) }.to_string_lossy();
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    eng.inner.sync_surrounding_context(session_id, &text);
+}
+
 /// Toggles inline English mode on a clean `< 250ms` single Left-Shift tap, returning JSON.
 ///
 /// # Safety

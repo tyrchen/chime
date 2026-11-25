@@ -287,6 +287,92 @@ const COUPLET_CHAINS: &[(&str, &str, &str, &str, &str)] = &[
         "yue you yin qing yuan que",
     ),
     (
+        "月有阴晴圆缺",
+        "yue you yin qing yuan que",
+        "，",
+        "此事古难全",
+        "ci shi gu nan quan",
+    ),
+    (
+        "此事古难全",
+        "ci shi gu nan quan",
+        "。",
+        "但愿人长久",
+        "dan yuan ren chang jiu",
+    ),
+    // 支持高频民间俗语/混搭对仗（天有不测风云 / 月有悲欢离合 -> 人有旦夕祸福）
+    (
+        "天有不测风云",
+        "tian you bu ce feng yun",
+        "，",
+        "人有旦夕祸福",
+        "ren you dan xi huo fu",
+    ),
+    (
+        "月有悲欢离合",
+        "yue you bei huan li he",
+        "，",
+        "人有旦夕祸福",
+        "ren you dan xi huo fu",
+    ),
+    // 经典中文绕口令（八百标兵奔北坡、吃葡萄不吐葡萄皮等）
+    (
+        "八百标兵奔北坡",
+        "ba bai biao bing ben bei po",
+        "，",
+        "北坡炮兵并排跑",
+        "bei po pao bing bing pai pao",
+    ),
+    (
+        "北坡炮兵并排跑",
+        "bei po pao bing bing pai pao",
+        "。",
+        "炮兵怕把标兵碰",
+        "pao bing pa ba biao bing peng",
+    ),
+    (
+        "炮兵怕把标兵碰",
+        "pao bing pa ba biao bing peng",
+        "，",
+        "标兵怕碰炮兵炮",
+        "biao bing pa peng pao bing pao",
+    ),
+    (
+        "吃葡萄不吐葡萄皮",
+        "chi pu tao bu tu pu tao pi",
+        "，",
+        "不吃葡萄倒吐葡萄皮",
+        "bu chi pu tao dao tu pu tao pi",
+    ),
+    (
+        "四是四，十是十",
+        "si shi si shi shi shi",
+        "，",
+        "十四是十四，四十是四十",
+        "shi si shi shi si si shi shi si shi",
+    ),
+    (
+        "扁担长，板凳宽",
+        "bian dan chang ban deng kuan",
+        "，",
+        "扁担没有板凳宽",
+        "bian dan mei you ban deng kuan",
+    ),
+    (
+        "红凤凰，粉凤凰",
+        "hong feng huang fen feng huang",
+        "，",
+        "红粉凤凰，花凤凰",
+        "hong fen feng huang hua feng huang",
+    ),
+    (
+        "黑化肥发灰，灰化肥发黑",
+        "hei hua fei fa hui hui hua fei fa hei",
+        "，",
+        "黑化肥发灰会挥发",
+        "hei hua fei fa hui hui hui fa",
+    ),
+    (
         "不识庐山真面目",
         "bu shi lu shan zhen mian mu",
         "，",
@@ -676,19 +762,42 @@ const STANDALONE_IDIOMS: &[(&str, &str)] = &[
     ("开源节流", "kai yuan jie liu"),
     ("一目了然", "yi mu liao ran"),
     ("心血来潮", "xin xue lai chao"),
+    ("悲欢离合", "bei huan li he"),
+    ("阴晴圆缺", "yin qing yuan que"),
+    ("旦夕祸福", "dan xi huo fu"),
+    ("不测风云", "bu ce feng yun"),
+    ("八百标兵", "ba bai biao bing"),
+    ("奔北坡", "ben bei po"),
+    ("北坡炮兵", "bei po pao bing"),
+    ("并排跑", "bing pai pao"),
+    ("一气呵成", "yi qi he cheng"),
+    ("水到渠成", "shui dao qu cheng"),
+    ("立竿见影", "li gan jian ying"),
+    ("行云流水", "xing yun liu shui"),
+    ("炉火纯青", "lu huo chun qing"),
+    ("绘声绘色", "hui sheng hui se"),
+    ("耐人寻味", "nai ren xun wei"),
+    ("津津乐道", "jin jin le dao"),
+    ("不言而喻", "bu yan er yu"),
+    ("显而易见", "xian er yi jian"),
+    ("一劳永逸", "yi lao yong yi"),
+    ("循规蹈矩", "xun gui dao ju"),
+    ("大显身手", "da xian shen shou"),
+    ("随心所欲", "sui xin suo yu"),
 ];
 
 /// Populates `lex` with classical poetry couplets, ancient prose quotes, proverbs, idioms,
 /// and registers next-clause continuation chains for `Tab` auto-completion.
 pub fn populate_poetry_and_idioms(lex: &mut Lexicon) {
     for &(clause_a, py_a, joiner, clause_b, py_b) in COUPLET_CHAINS {
-        lex.insert_pinyin_word(clause_a, py_a, -3.55, false);
+        let clean_py_a = py_a.replace('，', "");
+        lex.insert_pinyin_word(clause_a, &clean_py_a, -3.45, false);
         let clean_py_b = py_b.replace('，', "");
-        lex.insert_pinyin_word(clause_b, &clean_py_b, -3.65, false);
+        lex.insert_pinyin_word(clause_b, &clean_py_b, -3.55, false);
         lex.insert_continuation(clause_a, format!("{joiner}{clause_b}"));
         lex.insert_bigram_boost(clause_a, clause_b, 2.8);
     }
     for &(idiom, py) in STANDALONE_IDIOMS {
-        lex.insert_pinyin_word(idiom, py, -3.70, false);
+        lex.insert_pinyin_word(idiom, py, -3.65, false);
     }
 }

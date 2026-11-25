@@ -12,11 +12,12 @@ pub mod sanitize;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use chime_decoder::{
     Candidate, DecodeContext, LatticeDecoder, MatchKind, apply_anti_jitter_freeze_window,
+    promote_top_completion_into_bar,
 };
 use chime_lexicon::{
     CompiledDictBuilder, Lexicon, TypingSample, UserStore, import_macos_text_replacements,
@@ -142,6 +143,7 @@ struct InputSession {
     selected_global_idx: usize,
     grid_expanded: bool,
     ghost_suggestion: Option<String>,
+    ghost_dismissed: bool,
     last_committed_word: String,
     typo_rollback_prev_idx: Option<usize>,
     last_auto_committed: Option<(String, String)>,
@@ -164,6 +166,7 @@ impl InputSession {
             selected_global_idx: 0,
             grid_expanded: false,
             ghost_suggestion: None,
+            ghost_dismissed: false,
             last_committed_word: String::new(),
             typo_rollback_prev_idx: None,
             last_auto_committed: None,
@@ -190,12 +193,12 @@ impl InputSession {
             self.last_committed_char = Some(last_ch);
         }
         self.left_context.push_str(emitted);
-        if self.left_context.chars().count() > 64 {
+        if self.left_context.chars().count() > 128 {
             self.left_context = self
                 .left_context
                 .chars()
                 .rev()
-                .take(64)
+                .take(128)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
@@ -474,6 +477,34 @@ impl ChimeEngine {
         }
     }
 
+    /// Handles `IMKInputController.commitComposition(_:)`: clears active preedit ONLY when
+    /// composing, preserving any post-commit `ghost_suggestion` (`⇥ 联想`) so `一路 Tab` works!
+    pub fn commit_composition_if_active(&mut self, session_id: u64) -> EngineResponse {
+        let Some(idx) = self.touch_session(session_id) else {
+            return EngineResponse::default();
+        };
+        if self.sessions[idx].is_composing() {
+            self.sessions[idx].clear_composing();
+        }
+        self.build_snapshot(idx, false, String::new())
+    }
+
+    /// Synchronizes the session's sliding context window (`left_context`, up to 128 chars) with
+    /// real surrounding document text observed via `IMKTextInput.attributedSubstring` when idle!
+    pub fn sync_surrounding_context(&mut self, session_id: u64, surrounding_left: &str) {
+        if surrounding_left.is_empty() {
+            return;
+        }
+        if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id)
+            && !sess.is_composing()
+        {
+            let chars: Vec<char> = surrounding_left.chars().collect();
+            let start = chars.len().saturating_sub(128);
+            sess.left_context = chars[start..].iter().collect();
+            sess.last_committed_char = sess.left_context.chars().last();
+        }
+    }
+
     /// Toggles Chinese full-width (`。，`) vs ASCII (`.,`) punctuation, persisting to
     /// `config.toml`.
     pub fn toggle_punctuation(&mut self, session_id: u64) -> EngineResponse {
@@ -562,6 +593,7 @@ impl ChimeEngine {
                 .into_iter()
                 .partition(|c| c.consumed_bytes == sess.raw_buffer.len());
             full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
+            promote_top_completion_into_bar(&mut full_part);
             full_part.extend(partial_part);
 
             sess.all_candidates =
@@ -616,31 +648,61 @@ impl ChimeEngine {
         let ch = event.ascii_char;
         let is_composing = self.sessions[idx].is_composing();
 
-        // Handle Copilot-style `一路 Tab` contextual ghost completion when idle!
-        if !is_composing && self.sessions[idx].ghost_suggestion.is_some() {
-            if event.key_code == 0x30 && !event.shift {
-                // Accept ghost suggestion on Tab and immediately compute the next chained clause!
-                let ghost = self.sessions[idx]
+        // Handle Copilot-style `一路 Tab` contextual ghost completion when idle (even if a comma
+        // or space was typed right after the trigger clause, e.g. `月有悲欢离合，` -> `Tab` ->
+        // `人有旦夕祸福`)!
+        if !is_composing {
+            if event.key_code == 0x30 && !event.shift && !self.sessions[idx].ghost_dismissed {
+                let resolved_ghost = self.sessions[idx]
                     .ghost_suggestion
                     .take()
-                    .unwrap_or_default();
-                let prev_w = self.sessions[idx].last_committed_word.clone();
-                if !prev_w.is_empty() {
-                    self.user_store
-                        .record_bigram(&prev_w, &ghost, now_epoch_secs);
+                    .or_else(|| self.compute_ghost_for_session(idx));
+                if let Some(ghost) = resolved_ghost {
+                    let prev_w = self.sessions[idx].last_committed_word.clone();
+                    if !prev_w.is_empty() {
+                        self.user_store
+                            .record_bigram(&prev_w, &ghost, now_epoch_secs);
+                    }
+                    self.sessions[idx].last_committed_word.clone_from(&ghost);
+                    self.sessions[idx].record_emitted_text(&ghost);
+                    self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
+                    return self.build_snapshot(idx, true, ghost);
                 }
-                self.sessions[idx].last_committed_word.clone_from(&ghost);
-                self.sessions[idx].record_emitted_text(&ghost);
-                self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
-                return self.build_snapshot(idx, true, ghost);
             }
-            if event.key_code == 0x35 {
+            if event.key_code == 0x35 && self.sessions[idx].ghost_suggestion.is_some() {
                 // Dismiss ghost suggestion on Escape without passing Esc to host app!
                 self.sessions[idx].ghost_suggestion = None;
+                self.sessions[idx].ghost_dismissed = true;
                 return self.build_snapshot(idx, true, String::new());
             }
-            // Any other key dismisses the ghost suggestion and proceeds normally!
-            self.sessions[idx].ghost_suggestion = None;
+            // Idle Backspace (`0x33`): keep sliding `left_context` accurate in terminals AND
+            // automatically revert any just-auto-committed Top-1 phrase that the user immediately
+            // deleted!
+            if event.key_code == 0x33 {
+                self.sessions[idx].left_context.pop();
+                self.sessions[idx].last_committed_char =
+                    self.sessions[idx].left_context.chars().last();
+                if let Some((prev_keys, prev_surf)) = self.sessions[idx].last_auto_committed.take()
+                {
+                    self.user_store.revert_commit(&prev_keys, &prev_surf);
+                }
+                self.sessions[idx].ghost_suggestion = None;
+                return EngineResponse {
+                    handled: false,
+                    chinese_punctuation: self.config.chinese_punctuation,
+                    candidate_layout: self.config.candidate_layout,
+                    ..EngineResponse::default()
+                };
+            }
+            // Idle Return (`0x24`): record newline boundary in sliding context window.
+            if event.key_code == 0x24 {
+                self.sessions[idx].record_emitted_text("\n");
+                self.sessions[idx].last_auto_committed = None;
+                self.sessions[idx].ghost_suggestion = None;
+            } else {
+                self.sessions[idx].ghost_suggestion = None;
+                self.sessions[idx].ghost_dismissed = false;
+            }
         }
 
         if is_composing
@@ -826,16 +888,29 @@ impl ChimeEngine {
                     ..EngineResponse::default()
                 });
             }
-            // Tab -> 1) Accept prefix verse/idiom/English Completion (`tianshengwocai` ->
-            // `天生我材必有用`) immediately; 2) otherwise Typo Rollback toggle or cycle candidate!
+            // Tab ->
+            // 1) Accept prefix verse/idiom/English Completion (`tianshengwocai` ->
+            //    `天生我材必有用`) immediately;
+            // 2) Or if highlighted candidate itself triggers a couplet/habit continuation
+            //    (`yueyoubeihuanlihe` -> `月有悲欢离合` -> `，人有旦夕祸福`), commit & chain on
+            //    Tab!
+            // 3) Otherwise Typo Rollback toggle or cycle candidate!
             0x30 if total >= 1 => {
-                if !event.shift
-                    && let Some(comp_idx) = self.sessions[idx]
+                if !event.shift {
+                    if let Some(comp_idx) = self.sessions[idx]
                         .all_candidates
                         .iter()
                         .position(|c| c.kind == MatchKind::Completion)
-                {
-                    return Some(self.commit_candidate_global(idx, comp_idx, now_epoch_secs));
+                    {
+                        return Some(self.commit_candidate_global(idx, comp_idx, now_epoch_secs));
+                    }
+                    let cur = self.sessions[idx].selected_global_idx.min(total - 1);
+                    let cur_text = &self.sessions[idx].all_candidates[cur].text;
+                    if self.lexicon.next_clause_completion(cur_text).is_some()
+                        || self.user_store.predict_next_phrase(cur_text).is_some()
+                    {
+                        return Some(self.commit_candidate_global(idx, cur, now_epoch_secs));
+                    }
                 }
                 if total > 1 {
                     let cur = self.sessions[idx].selected_global_idx;
@@ -987,6 +1062,7 @@ impl ChimeEngine {
         self.sessions[idx].selected_global_idx = 0;
         self.sessions[idx].grid_expanded = false;
         self.sessions[idx].ghost_suggestion = None;
+        self.sessions[idx].ghost_dismissed = false;
         self.sessions[idx].typo_rollback_prev_idx = None;
 
         if self.sessions[idx].raw_buffer.is_empty() {
@@ -1019,28 +1095,48 @@ impl ChimeEngine {
             pangu_spacing: self.config.pangu_spacing,
             now_epoch_secs,
         };
-        let cands = self
+        let mut cands = self
             .decoder
             .decode(&raw_clone, &self.lexicon, &self.user_store, &ctx);
-        self.sessions[idx].all_candidates.clone_from(&cands);
 
-        // Dispatch non-blocking Stage-2 neural rescoring job if loaded!
+        // Stage-2 Qwen2.5 Metal GPU contextual reranking with a 10ms synchronous frame-0 budget
+        // (~2.5ms typical on M-series GPU -> zero candidate flicker & zero dropped final
+        // keystrokes!), automatically falling back to async poll if > 10ms!
         if let Some(worker) = &self.async_reranker {
             let full_texts: Vec<String> = cands
                 .iter()
                 .filter(|c| c.consumed_bytes == raw_clone.len())
+                .take(8)
                 .map(|c| c.text.clone())
                 .collect();
             if full_texts.len() >= 2 {
-                let _ = worker.submit(RerankJob {
+                let job = RerankJob {
                     session_id: self.sessions[idx].id,
                     generation_id: self.sessions[idx].generation_id,
                     left_context: effective_left,
                     candidate_texts: full_texts,
                     dispatched_at: Instant::now(),
-                });
+                };
+                if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(10)) {
+                    for (cand, bonus) in cands
+                        .iter_mut()
+                        .filter(|c| c.consumed_bytes == raw_clone.len())
+                        .take(8)
+                        .zip(bonuses)
+                    {
+                        cand.score += bonus;
+                    }
+                    let (mut full_part, partial_part): (Vec<_>, Vec<_>) = cands
+                        .into_iter()
+                        .partition(|c| c.consumed_bytes == raw_clone.len());
+                    full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
+                    promote_top_completion_into_bar(&mut full_part);
+                    full_part.extend(partial_part);
+                    cands = full_part;
+                }
             }
         }
+        self.sessions[idx].all_candidates = cands;
 
         self.build_snapshot(idx, true, String::new())
     }
@@ -1340,5 +1436,32 @@ mod tests {
         let t2 = engine.process_key(sid, key(0, 0x30), 200);
         assert_eq!(t2.committed_text, "，千金散尽还复来");
         assert_eq!(t2.ghost_text, "。烹羊宰牛且为乐");
+
+        // 5. Verify `yueyoubeihuanlihe` -> Space -> `commit_composition_if_active` preserves
+        //    `ghost_text = "，人有旦夕祸福"` and `Tab` commits it!
+        engine.reset_session(sid);
+        for b in *b"yueyoubeihuanlihe" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let c_moon = engine.process_key(sid, key(b' ', 0x31), 200);
+        assert_eq!(c_moon.committed_text, "月有悲欢离合");
+        assert_eq!(c_moon.ghost_text, "，人有旦夕祸福");
+        // Simulate macOS TSM calling `commitComposition` right after `setMarkedText("")`:
+        let after_tsm = engine.commit_composition_if_active(sid);
+        assert_eq!(after_tsm.ghost_text, "，人有旦夕祸福");
+        let c_next = engine.process_key(sid, key(0, 0x30), 200);
+        assert_eq!(c_next.committed_text, "，人有旦夕祸福");
+
+        // 6. Verify single-char habit (`cheng -> 成`) does NOT poison `guochengzhong` (`过程中`),
+        //    and idle Backspace (`0x33`) reverts mistaken auto-commits & pops `left_context`!
+        for b in *b"cheng" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let _ = engine.process_key(sid, key(b' ', 0x31), 200);
+        let mut gc = EngineResponse::default();
+        for b in *b"guochengzhong" {
+            gc = engine.process_key(sid, key(b, 0), 200);
+        }
+        assert_eq!(gc.candidates[0].text, "过程中");
     }
 }

@@ -1,7 +1,10 @@
 //! Dedicated actor thread owning the non-`Send` `mlx_rs::Array` Metal GPU reranker and
 //! communicating strictly via `flume` channels.
 
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use flume::{Receiver, Sender, TrySendError};
 
@@ -37,6 +40,10 @@ pub struct RerankResult {
 
 enum ActorCmd {
     Async(RerankJob),
+    TimedOrAsync {
+        job: RerankJob,
+        sync_reply_tx: Sender<Vec<f32>>,
+    },
     Sync {
         left_context: String,
         candidate_texts: Vec<String>,
@@ -95,6 +102,22 @@ impl AsyncRerankHandle {
                             elapsed_ms,
                         });
                     }
+                    ActorCmd::TimedOrAsync { job, sync_reply_tx } => {
+                        let bonuses =
+                            reranker.score_candidates(&job.left_context, &job.candidate_texts);
+                        // Deliver synchronously if caller is still within its frame budget;
+                        // otherwise seamlessly fall back to async `result_tx`!
+                        if sync_reply_tx.send(bonuses.clone()).is_err() {
+                            let elapsed_ms = u64::try_from(job.dispatched_at.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
+                            let _ = result_tx.try_send(RerankResult {
+                                session_id: job.session_id,
+                                generation_id: job.generation_id,
+                                bonus_scores: bonuses,
+                                elapsed_ms,
+                            });
+                        }
+                    }
                     ActorCmd::Sync {
                         left_context,
                         candidate_texts,
@@ -131,6 +154,23 @@ impl AsyncRerankHandle {
             self.cmd_tx.try_send(ActorCmd::Async(job)),
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
         )
+    }
+
+    /// Submits a rerank job and waits up to `budget` (e.g., `10ms`) for an immediate Metal GPU
+    /// result so 99% of keystrokes render Stage-2 contextually reranked candidates on frame 0!
+    /// If the GPU exceeds `budget`, returns `None` and delivers the result asynchronously via
+    /// [`Self::drain_results`].
+    #[must_use]
+    pub fn submit_with_budget(&self, job: RerankJob, budget: Duration) -> Option<Vec<f32>> {
+        let (sync_reply_tx, sync_reply_rx) = flume::bounded(1);
+        if matches!(
+            self.cmd_tx
+                .try_send(ActorCmd::TimedOrAsync { job, sync_reply_tx }),
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
+        ) {
+            return None;
+        }
+        sync_reply_rx.recv_timeout(budget).ok()
     }
 
     /// Synchronously scores a candidate batch via the dedicated MLX Metal worker (used by CLI

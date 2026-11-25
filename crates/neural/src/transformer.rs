@@ -8,12 +8,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::NeuralError;
 
+/// Optional MLX affine quantization metadata (`group_size = 64, bits = 4`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuantizationConfig {
+    /// Group size along input dimension (typically `64`).
+    pub group_size: i32,
+    /// Bits per quantized weight (`4` or `8`).
+    pub bits: i32,
+}
+
 /// Hyperparameters for the compact Causal Transformer reranker (`config.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Hidden embedding dimension (`d_model`, e.g. 384 or 512 for 65M–90M).
+    /// Hidden embedding dimension (`d_model`, e.g. 1024 for `Qwen3-0.6B`).
     pub hidden_size: usize,
-    /// `SwiGLU` intermediate dimension (`d_ff`, e.g. 1024 or 1536).
+    /// `SwiGLU` intermediate dimension (`d_ff`, e.g. 3072 for `Qwen3-0.6B`).
     pub intermediate_size: usize,
     /// Number of transformer decoder blocks.
     pub num_hidden_layers: usize,
@@ -21,12 +30,31 @@ pub struct ModelConfig {
     pub num_attention_heads: usize,
     /// Number of key/value heads (Grouped-Query Attention).
     pub num_key_value_heads: usize,
+    /// Optional explicit per-head dimension (`128` in `Qwen3-0.6B`, `None` defaults to
+    /// `hidden_size / num_attention_heads`).
+    #[serde(default)]
+    pub head_dim: Option<usize>,
     /// Compact vocabulary size (e.g. 24,576).
     pub vocab_size: usize,
     /// `RMSNorm` epsilon.
     pub rms_norm_eps: f32,
     /// Rotary embedding base frequency (`theta`).
     pub rope_theta: f32,
+    /// Optional native MLX 4-bit/8-bit quantization config.
+    #[serde(default)]
+    pub quantization: Option<QuantizationConfig>,
+}
+
+impl ModelConfig {
+    /// Returns the explicit `head_dim` if configured (`Qwen3`), or `hidden_size /
+    /// num_attention_heads`.
+    #[must_use]
+    pub const fn effective_head_dim(&self) -> usize {
+        match self.head_dim {
+            Some(hd) if hd > 0 => hd,
+            _ => self.hidden_size / self.num_attention_heads,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -407,9 +435,11 @@ impl TinyModelBuilder {
             num_hidden_layers: 1,
             num_attention_heads: 2,
             num_key_value_heads: 2,
+            head_dim: None,
             vocab_size: v,
             rms_norm_eps: 1e-6,
             rope_theta: 10_000.0,
+            quantization: None,
         };
 
         // Construct orthogonal basis embeddings so context -> target associations score

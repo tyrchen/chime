@@ -2,6 +2,7 @@ DIST_DIR ?= $(CURDIR)/dist
 APP_BUNDLE := $(DIST_DIR)/Chime.app
 CORE_DICT := $(DIST_DIR)/core.imedict
 NGRAMS_TSV := $(DIST_DIR)/ngrams.tsv
+MULTI_LEX_TSV := $(DIST_DIR)/multi_lexicon.tsv
 BASE_NEURAL_DIR := $(DIST_DIR)/base_neural
 ICONSET_DIR := $(DIST_DIR)/AppIcon.iconset
 MENU_ICON_PDF := $(DIST_DIR)/menu_icon.pdf
@@ -26,17 +27,17 @@ fmt:
 	@cargo +nightly fmt --all
 
 build-models:
-	@if [ ! -f "$(BASE_NEURAL_DIR)/model.safetensors" ] || [ ! -f "$(NGRAMS_TSV)" ]; then \
-		uv run --python 3.12 --no-project --with torch --with transformers --with huggingface_hub --with safetensors \
-			python -I tools/distill_qwen_base.py --out-neural "$(BASE_NEURAL_DIR)" --out-ngrams "$(NGRAMS_TSV)"; \
+	@if [ ! -f "$(BASE_NEURAL_DIR)/model.safetensors" ] || [ ! -f "$(NGRAMS_TSV)" ] || [ ! -f "$(MULTI_LEX_TSV)" ]; then \
+		uv run --python 3.12 --no-project --with torch --with transformers --with huggingface_hub --with safetensors --with wordfreq --with pypinyin --with mlx \
+			python -I tools/distill_qwen_base.py --out-neural "$(BASE_NEURAL_DIR)" --out-ngrams "$(NGRAMS_TSV)" --out-lexicon "$(MULTI_LEX_TSV)"; \
 	fi
 
 build-core-dict: build-models
 	@mkdir -p "$(DIST_DIR)"
 	@if [ -n "$(JIEBA_DICT)" ] && [ -f "$(JIEBA_DICT)" ]; then \
-		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --ngrams "$(NGRAMS_TSV)" --min-freq 20; \
+		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MULTI_LEX_TSV)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
 	else \
-		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --ngrams "$(NGRAMS_TSV)"; \
+		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MULTI_LEX_TSV)" --ngrams "$(NGRAMS_TSV)"; \
 	fi
 
 build-icons:
@@ -66,7 +67,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	@cp NOTICE "$(APP_BUNDLE)/Contents/Resources/NOTICE"
 	@chmod -R u+rwX,go+rX "$(APP_BUNDLE)"
 	@codesign --force --deep --sign - "$(APP_BUNDLE)"
-	@echo "Built $(APP_BUNDLE) (core.imedict + Qwen2.5 MLX Metal neural base + localized icons)"
+	@echo "Built $(APP_BUNDLE) (core.imedict + Qwen3 4-bit MLX Metal neural base + localized icons)"
 
 install-macos: macos-bundle
 	@mkdir -p "$(HOME)/Library/Input Methods"

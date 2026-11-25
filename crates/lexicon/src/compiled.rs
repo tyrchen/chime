@@ -241,6 +241,41 @@ impl CompiledDict {
         None
     }
 
+    /// Returns true in $O(\log N)$ if at least one indexed Pinyin sequence strictly longer than
+    /// `prefix` starts with `prefix` (enabling fast 5..=12 syllable verse/idiom lattice edges).
+    #[must_use]
+    pub fn has_longer_pinyin_prefix(&self, prefix: &[SyllableId]) -> bool {
+        if prefix.is_empty() {
+            return false;
+        }
+        let buf = self.backing.as_ref();
+        let mut lo = 0usize;
+        let mut hi = self.pinyin_group_count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let grp_off = self.pinyin_groups_off + mid * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if self.cmp_syllables(syl_idx, syl_len, prefix) == Ordering::Less {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        for idx in lo..(lo + 2).min(self.pinyin_group_count) {
+            let grp_off = self.pinyin_groups_off + idx * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if !self.starts_with_syllables(syl_idx, syl_len, prefix) {
+                return false;
+            }
+            if syl_len > prefix.len() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Collects up to `limit` Pinyin prefix completions (`query.len() >= 3`, e.g. `tianshengwocai`
     /// -> `天生我材必有用`) in $O(\log N)$ via binary search over sorted `pinyin_groups`.
     pub fn complete_pinyin_prefix_into(
@@ -283,6 +318,58 @@ impl CompiledDict {
             }
             idx += 1;
         }
+        matches.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        for item in matches.into_iter().take(limit) {
+            if !out.iter().any(|e| e.surface == item.surface) {
+                out.push(item);
+            }
+        }
+    }
+
+    /// Collects top high-frequency 2-syllable everyday words starting with `first_syl` (`gen` ->
+    /// `根据`, `根本`) in $O(\log N)$ so single-syllable candidate bars offer high-utility words
+    /// instead of archaic single characters!
+    pub fn complete_2syl_from_single_into(
+        &self,
+        first_syl: SyllableId,
+        limit: usize,
+        out: &mut Vec<WordEntry>,
+    ) {
+        let query = [first_syl];
+        let buf = self.backing.as_ref();
+        let mut lo = 0usize;
+        let mut hi = self.pinyin_group_count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let grp_off = self.pinyin_groups_off + mid * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if self.cmp_syllables(syl_idx, syl_len, &query) == Ordering::Less {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        let mut matches = Vec::new();
+        let mut idx = lo;
+        let mut scanned = 0usize;
+        while idx < self.pinyin_group_count && scanned < 512 {
+            let grp_off = self.pinyin_groups_off + idx * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if !self.starts_with_syllables(syl_idx, syl_len, &query) {
+                break;
+            }
+            if syl_len == 2 {
+                let rec_start = read_u32(buf, grp_off + 8) as usize;
+                let rec_count = (read_u32(buf, grp_off + 12) as usize).min(2);
+                self.collect_word_records(rec_start, rec_count, &mut matches);
+            }
+            idx += 1;
+            scanned += 1;
+        }
+        matches.retain(|w| w.log_prob >= -4.25 && w.surface.chars().count() == 2);
         matches.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
         for item in matches.into_iter().take(limit) {
             if !out.iter().any(|e| e.surface == item.surface) {

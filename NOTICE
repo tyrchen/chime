@@ -4,14 +4,19 @@ Chime Third-Party Open Data Attributions
 Chime's engine code is dual-licensed under MIT OR Apache-2.0.
 Compiled base dictionary builds (`core.imedict`) incorporate open, permissively licensed lexical data from:
 
-1. mozillazg/pinyin-data & rust-pinyin (MIT License)
+1. mozillazg/pinyin-data, phrase-pinyin-data & rust-pinyin (MIT License)
    https://github.com/mozillazg/pinyin-data
+   https://github.com/mozillazg/phrase-pinyin-data
    Copyright (c) mozillazg
 
-2. fxsjy/jieba & messense/jieba-rs word frequency list (MIT License)
+2. rspeer/wordfreq multilingual spoken & web corpus frequencies (Apache License 2.0 / CC-BY-SA 4.0 data sources)
+   https://github.com/rspeer/wordfreq
+   Copyright (c) Luminoso Technologies, Inc. / Robyn Speer
+
+3. fxsjy/jieba & messense/jieba-rs word frequency list (MIT License)
    https://github.com/messense/jieba-rs
    Copyright (c) Sun Junyi, messense
 
-3. Qwen/Qwen2.5-0.5B base language model weights & vocabulary (Apache License 2.0)
-   https://huggingface.co/Qwen/Qwen2.5-0.5B
+4. Qwen/Qwen3-0.6B-Base language model weights & vocabulary (Apache License 2.0)
+   https://huggingface.co/Qwen/Qwen3-0.6B-Base
    Copyright (c) Alibaba Cloud Qwen Team

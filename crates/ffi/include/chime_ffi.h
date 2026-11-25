@@ -21,6 +21,12 @@ void chime_engine_free(ChimeEngineHandle *engine);
 uint64_t chime_session_create(ChimeEngineHandle *engine, const char *app_bundle_id);
 void chime_session_destroy(ChimeEngineHandle *engine, uint64_t session_id);
 void chime_reset_session(ChimeEngineHandle *engine, uint64_t session_id);
+char *chime_commit_composition(ChimeEngineHandle *engine, uint64_t session_id);
+void chime_sync_context(
+    ChimeEngineHandle *engine,
+    uint64_t session_id,
+    const char *surrounding_left
+);
 
 char *chime_toggle_english(ChimeEngineHandle *engine, uint64_t session_id);
 char *chime_toggle_punctuation(ChimeEngineHandle *engine, uint64_t session_id);

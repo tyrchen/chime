@@ -13,8 +13,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chime_core::{
-    ChimeConfig, ChimeEngine, KeyEvent, build_colab_training_jsonl, build_imepack_dir,
-    install_imepack_dir,
+    ChimeEngine, KeyEvent, build_colab_training_jsonl, build_imepack_dir, install_imepack_dir,
 };
 use chime_decoder::{Candidate, DecodeContext, LatticeDecoder, NeuralReranker};
 use chime_lexicon::{
@@ -73,6 +72,9 @@ enum Commands {
         /// Optional compiled `.imedict` path to mount.
         #[arg(long)]
         dict: Option<PathBuf>,
+        /// Optional neural reranker directory (`dist/base_neural`) for Stage-2 Metal GPU scoring.
+        #[arg(long)]
+        neural: Option<PathBuf>,
     },
     /// Build the comprehensive permissive base `.imedict` binary lexicon.
     DictBuildBase {
@@ -89,6 +91,9 @@ enum Commands {
         /// Optional teacher-scored Bigram/Trigram TSV (`dist/ngrams.tsv`).
         #[arg(long)]
         ngrams: Option<PathBuf>,
+        /// Optional multi-corpus distilled lexicon TSV (`surface\tpinyin\tlog_prob`).
+        #[arg(long)]
+        extra_tsv: Option<PathBuf>,
         /// Minimum frequency filter for multi-character Jieba words.
         #[arg(long, default_value_t = 25)]
         min_freq: u64,
@@ -179,16 +184,30 @@ fn main() -> Result<()> {
             context,
             app,
             dict,
+            neural,
         } => {
-            let mut engine = ChimeEngine::new(ChimeConfig {
-                scheme: scheme.into(),
-                ..ChimeConfig::default()
-            });
+            let mut lex = Lexicon::with_builtin_seed();
             if let Some(d_path) = dict {
-                engine.lexicon_mut().mount_compiled_mmap(&d_path)?;
+                lex.mount_compiled_mmap(&d_path)?;
             }
+            let mut decoder = LatticeDecoder::new();
+            if let Some(np) = neural
+                && np.join("model.safetensors").exists()
+            {
+                let slm = AsyncRerankHandle::spawn_from_dir(&np)?;
+                decoder = decoder.with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
+            }
+            let user_store = chime_lexicon::UserStore::new();
+            let ctx = DecodeContext {
+                left_context: &context,
+                app_bundle_id: &app,
+                scheme: scheme.into(),
+                fuzzy: chime_phonetics::FuzzyConfig::default(),
+                pangu_spacing: true,
+                now_epoch_secs: 1_000,
+            };
             let t0 = Instant::now();
-            let cands = engine.decode_stateless(&input, &context, &app);
+            let cands = decoder.decode(&input, &lex, &user_store, &ctx);
             let elapsed_us = t0.elapsed().as_micros();
 
             writeln!(stdout, "Input: {input}  (decoded in {elapsed_us} us)")?;
@@ -209,6 +228,7 @@ fn main() -> Result<()> {
             jieba_dict,
             english_words,
             ngrams,
+            extra_tsv,
             min_freq,
         } => {
             let jieba_text = if let Some(p) = jieba_dict {
@@ -227,6 +247,19 @@ fn main() -> Result<()> {
 
             let t0 = Instant::now();
             let mut lex = build_comprehensive_lexicon(&jieba_text, eng_ref, min_freq);
+            if let Some(ext_path) = extra_tsv
+                && ext_path.exists()
+            {
+                let ext_text = fs::read_to_string(&ext_path)?;
+                for raw_line in ext_text.lines() {
+                    let mut cols = raw_line.split('\t');
+                    if let (Some(w), Some(py), Some(lp_s)) = (cols.next(), cols.next(), cols.next())
+                        && let Ok(lp) = lp_s.parse::<f32>()
+                    {
+                        let _ = lex.insert_pinyin_word(w, py, lp, false);
+                    }
+                }
+            }
             if let Some(ng_path) = ngrams
                 && ng_path.exists()
             {
@@ -612,6 +645,78 @@ fn run_golden_eval(
             app: "md.obsidian",
             keys: "shuruga",
             expected_top1: "输入法",
+        },
+        Case {
+            category: "tongue-twister",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "babaibiaobingbenbeipo",
+            expected_top1: "八百标兵奔北坡",
+        },
+        Case {
+            category: "proverb-6syl",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "月有悲欢离合，",
+            app: "com.mitchellh.ghostty",
+            keys: "renyoudanxihuofu",
+            expected_top1: "人有旦夕祸福",
+        },
+        Case {
+            category: "particle-phrase",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "我在",
+            app: "com.mitchellh.ghostty",
+            keys: "shiyongdeguochengzhong",
+            expected_top1: "使用的过程中",
+        },
+        Case {
+            category: "colloquial-kaopu",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "感觉第一候选字有时候不那么",
+            app: "com.mitchellh.ghostty",
+            keys: "kaopu",
+            expected_top1: "靠谱",
+        },
+        Case {
+            category: "hiatus-jietu",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "wojielejigetu",
+            expected_top1: "我截了几个图",
+        },
+        Case {
+            category: "context-zui-heshi",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "打字的过程中要维护一个上下文窗口，这样才能推荐出来最",
+            app: "com.mitchellh.ghostty",
+            keys: "heshi",
+            expected_top1: "合适",
+        },
+        Case {
+            category: "single-syl-gen",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "gen",
+            expected_top1: "跟",
+        },
+        Case {
+            category: "spoken-duoda",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "究竟有",
+            app: "com.mitchellh.ghostty",
+            keys: "duoda",
+            expected_top1: "多大",
+        },
+        Case {
+            category: "typo-fuzzy-mohuyin",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "mohuyign",
+            expected_top1: "模糊音",
         },
     ];
 

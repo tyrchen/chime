@@ -268,6 +268,58 @@ impl UserStore {
         }
     }
 
+    /// Reverts an accidental auto-commit when the user immediately presses Backspace after Space,
+    /// preventing mis-segmented Top-1 commits (`过成中`, `最和是`) from polluting `user_habits`!
+    pub fn revert_commit(&mut self, reading: &str, surface: &str) {
+        if reading.is_empty() || surface.is_empty() {
+            return;
+        }
+        let key = (reading.to_string(), surface.to_string());
+        let mut should_remove = false;
+        let mut updated_weight = 0.0_f32;
+        let mut updated_count = 0_u64;
+
+        if let Some(entry) = self.habits.get_mut(&key) {
+            entry.commit_count = entry.commit_count.saturating_sub(1);
+            entry.weight = (entry.weight - 1.0).max(0.0);
+            if entry.commit_count == 0 || entry.weight <= 0.05 {
+                should_remove = true;
+            } else {
+                updated_weight = entry.weight;
+                updated_count = entry.commit_count;
+            }
+        } else {
+            return;
+        }
+
+        if should_remove {
+            self.habits.remove(&key);
+            if let Some(list) = self.custom_words.get_mut(reading) {
+                list.retain(|(s, _)| s != surface);
+            }
+            if let Some(conn) = &self.conn {
+                let _ = conn.execute(
+                    "DELETE FROM user_habits WHERE reading = ?1 AND surface = ?2",
+                    params![reading, surface],
+                );
+            }
+        } else {
+            self.index_custom_phrase(reading, surface, updated_weight);
+            if let Some(conn) = &self.conn {
+                let _ = conn.execute(
+                    "UPDATE user_habits SET weight = ?3, commit_count = ?4
+                     WHERE reading = ?1 AND surface = ?2",
+                    params![
+                        reading,
+                        surface,
+                        updated_weight,
+                        i64::try_from(updated_count).unwrap_or(1)
+                    ],
+                );
+            }
+        }
+    }
+
     /// Records that the user rejected `rejected` and chose `preferred` for `reading`.
     pub fn record_negative_feedback(&mut self, reading: &str, rejected: &str, preferred: &str) {
         if rejected == preferred || reading.is_empty() {

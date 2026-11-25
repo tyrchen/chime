@@ -336,6 +336,15 @@ pub fn format_segmented_preedit(raw: &str, scheme: ShuangpinScheme) -> String {
             }
         }
         if chosen_len == 0 {
+            for len in (2..=max_len).rev() {
+                let sub = &lower[pos..pos + len];
+                if !sub.contains('\'') && !generate_typo_variants(sub).is_empty() {
+                    chosen_len = len;
+                    break;
+                }
+            }
+        }
+        if chosen_len == 0 {
             chosen_len = 1;
         }
         parts.push(&raw[pos..pos + chosen_len]);

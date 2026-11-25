@@ -309,6 +309,24 @@ impl Lexicon {
         out
     }
 
+    /// Returns true if any word or verse strictly longer than `prefix` starts with `prefix`.
+    #[must_use]
+    pub fn has_longer_pinyin_prefix(&self, prefix: &[SyllableId]) -> bool {
+        if prefix.is_empty() {
+            return false;
+        }
+        if self
+            .compiled_layers
+            .iter()
+            .any(|l| l.has_longer_pinyin_prefix(prefix))
+        {
+            return true;
+        }
+        self.exact_map
+            .keys()
+            .any(|k| k.len() > prefix.len() && k.starts_with(prefix))
+    }
+
     /// Finds top Pinyin prefix completions (`query.len() >= 3`, e.g. `tianshengwocai` ->
     /// `天生我材必有用`).
     #[must_use]
@@ -324,6 +342,24 @@ impl Lexicon {
             .collect();
         for layer in &self.compiled_layers {
             layer.complete_pinyin_prefix_into(query, limit, &mut out);
+        }
+        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out.truncate(limit);
+        out
+    }
+
+    /// Finds top high-frequency 2-syllable words starting with `first_syl` (`gen` -> `根据`,
+    /// `根本`).
+    #[must_use]
+    pub fn complete_2syl_from_single(&self, first_syl: SyllableId, limit: usize) -> Vec<WordEntry> {
+        let mut out: Vec<WordEntry> = self
+            .exact_map
+            .iter()
+            .filter(|(k, _)| k.len() == 2 && k[0] == first_syl)
+            .flat_map(|(_, v)| v.iter().filter(|w| w.log_prob >= -4.25).take(2).cloned())
+            .collect();
+        for layer in &self.compiled_layers {
+            layer.complete_2syl_from_single_into(first_syl, limit, &mut out);
         }
         out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
         out.truncate(limit);

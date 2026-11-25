@@ -217,12 +217,20 @@ impl LatticeDecoder {
                         st.last_word.clone()
                     };
 
+                    let boundary_cost = if is_grammatical_affix(&edge.surface)
+                        || is_grammatical_affix(&st.last_word)
+                    {
+                        0.14
+                    } else {
+                        0.55
+                    };
+
                     next_states.push(BeamState {
                         text: composed,
                         prev_content_word: next_prev_content,
                         last_word: edge.surface.clone(),
                         last_is_english: edge.is_english,
-                        score: st.score + edge.score + direct_bg.max(skip_bg) + tg - 0.55,
+                        score: st.score + edge.score + direct_bg.max(skip_bg) + tg - boundary_cost,
                         kind: next_kind,
                     });
                 }
@@ -251,18 +259,48 @@ impl LatticeDecoder {
         ctx: &DecodeContext<'_>,
     ) -> Vec<Candidate> {
         let n = raw_input.len();
+        let lower_all = raw_input.to_ascii_lowercase();
+        let single_exact_syl = if ctx.scheme == ShuangpinScheme::Full && !raw_input.contains('\'') {
+            lookup_syllable(&lower_all)
+        } else {
+            None
+        };
+        let is_single_syllable_input = single_exact_syl.is_some();
+
         let mut full_candidates: Vec<Candidate> = terminal_beams
             .iter()
+            .filter(|st| {
+                // Never split a valid single syllable (`gen`) into multi-char vowel fragments
+                // (`g + en = 个嗯`) when no apostrophe `'` was typed!
+                !(is_single_syllable_input && !st.last_is_english && st.text.chars().count() > 1)
+            })
             .map(|st| {
-                let user_delta = user_store.score_boost(
-                    raw_input,
-                    &st.text,
-                    ctx.app_bundle_id,
-                    ctx.now_epoch_secs,
-                );
+                let user_delta = if st.text.chars().count() == 1 && !is_single_syllable_input {
+                    0.0
+                } else {
+                    user_store.score_boost(
+                        raw_input,
+                        &st.text,
+                        ctx.app_bundle_id,
+                        ctx.now_epoch_secs,
+                    )
+                };
+                // Demote rare single characters (`哏`, `艮`, `揯`) below top everyday 2-character
+                // words (`根据`, `根本`) in the horizontal Top-5 bar; rare chars stay in the `5x5`
+                // `↓` character grid!
+                let rare_single_pen = if is_single_syllable_input
+                    && !st.last_is_english
+                    && st.kind == MatchKind::Exact
+                    && st.text.chars().count() == 1
+                    && st.score < -4.35
+                {
+                    -3.20
+                } else {
+                    0.0
+                };
                 Candidate {
                     text: st.text.clone(),
-                    score: st.score + user_delta,
+                    score: st.score + user_delta + rare_single_pen,
                     kind: st.kind,
                     consumed_bytes: n,
                 }
@@ -270,7 +308,7 @@ impl LatticeDecoder {
             .collect();
 
         // Include custom user-coined full phrases from L1 Cedar trie!
-        for (surf, weight) in user_store.lookup_custom_phrases(&raw_input.to_ascii_lowercase()) {
+        for (surf, weight) in user_store.lookup_custom_phrases(&lower_all) {
             if !full_candidates.iter().any(|c| c.text == *surf) {
                 full_candidates.push(Candidate {
                     text: surf.clone(),
@@ -281,8 +319,28 @@ impl LatticeDecoder {
             }
         }
 
+        // On single-syllable inputs (`gen`), populate high-utility 2-syllable everyday words
+        // (`根据`, `根本`) into slots #4/#5 instead of cold Unihan single characters!
+        if let Some(syl_id) = single_exact_syl {
+            for phrase in lexicon.complete_2syl_from_single(syl_id, 3) {
+                if !full_candidates.iter().any(|c| c.text == phrase.surface) {
+                    let bg = if ctx.left_context.is_empty() {
+                        0.0
+                    } else {
+                        let (_, prev_w) = extract_context_anchors(ctx.left_context);
+                        lexicon.bigram_bonus(&prev_w, &phrase.surface) * 0.5
+                    };
+                    full_candidates.push(Candidate {
+                        text: phrase.surface,
+                        score: phrase.log_prob - 1.25 + bg,
+                        kind: MatchKind::Completion,
+                        consumed_bytes: n,
+                    });
+                }
+            }
+        }
+
         // Append English prefix completions (`chatg` -> `ChatGPT`, `kubern` -> `Kubernetes`).
-        let lower_all = raw_input.to_ascii_lowercase();
         for comp in lexicon.complete_english_prefix(&lower_all, 3) {
             if !full_candidates.iter().any(|c| c.text == comp.surface) {
                 full_candidates.push(Candidate {
@@ -294,22 +352,26 @@ impl LatticeDecoder {
             }
         }
 
-        // Append classical poetry, idiom & proverb prefix completions (`tianshengwocai` ->
-        // `天生我材必有用`) when 3+ syllables are typed!
+        // Append classical poetry, tongue-twister, idiom & proverb prefix completions
+        // (`tianshengwocai` / fuzzy `tianshenwocai` -> `天生我材必有用`, `babaibiaobing` ->
+        // `八百标兵奔北坡`) when 3+ syllables are typed!
         if let Some(exact_syls) = extract_greedy_syllables(&lower_all, ctx.scheme)
             && exact_syls.len() >= 3
         {
-            for verse in lexicon.complete_pinyin_prefix(&exact_syls, 3) {
-                if !full_candidates.iter().any(|c| c.text == verse.surface) {
-                    #[allow(clippy::cast_precision_loss)]
-                    let comp_score =
-                        verse.log_prob + ((exact_syls.len().saturating_sub(2)) as f32) * 0.65;
-                    full_candidates.push(Candidate {
-                        text: verse.surface,
-                        score: comp_score,
-                        kind: MatchKind::Completion,
-                        consumed_bytes: n,
-                    });
+            for (q_syls, fz_pen) in expand_fuzzy_prefix_queries(&exact_syls, &ctx.fuzzy) {
+                for verse in lexicon.complete_pinyin_prefix(&q_syls, 3) {
+                    if !full_candidates.iter().any(|c| c.text == verse.surface) {
+                        #[allow(clippy::cast_precision_loss)]
+                        let comp_score = verse.log_prob
+                            + ((q_syls.len().saturating_sub(2)) as f32) * 0.75
+                            - fz_pen;
+                        full_candidates.push(Candidate {
+                            text: verse.surface,
+                            score: comp_score,
+                            kind: MatchKind::Completion,
+                            consumed_bytes: n,
+                        });
+                    }
                 }
             }
         }
@@ -328,6 +390,13 @@ impl LatticeDecoder {
                 cand.score += bonus;
             }
             full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
+
+        // Guarantee the highest-ranked `Completion` candidate (`… ⇥`) sits in the visible Top-2
+        // of the compact 1x5 bar on multi-syllable / English prefixes so `Tab` completion is
+        // immediately discoverable, while keeping #1-#3 on 1-syllable inputs as primary chars!
+        if !is_single_syllable_input {
+            promote_top_completion_into_bar(&mut full_candidates);
         }
 
         // 1) Append multi-character partial prefix word candidates (`consumed_bytes < n`, `chars >=
@@ -421,18 +490,21 @@ impl LatticeDecoder {
         );
 
         // Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`).
+        // Never trigger on spans that are already valid canonical single syllables (`gen`, `ban`)!
         if ctx.scheme == ShuangpinScheme::Full {
             for start in 0..n {
                 for len in 2..=6.min(n - start) {
                     let sub = &lower[start..start + len];
-                    if !sub.bytes().all(|b| b.is_ascii_lowercase()) {
+                    if !sub.bytes().all(|b| b.is_ascii_lowercase())
+                        || chime_phonetics::is_valid_syllable(sub)
+                    {
                         continue;
                     }
-                    for entry in lexicon.lookup_skeleton(sub).into_iter().take(4) {
+                    for entry in lexicon.lookup_skeleton(sub).into_iter().take(3) {
                         edges[start].push(LatticeEdge {
                             end: start + len,
                             surface: entry.surface,
-                            score: entry.log_prob - 1.15,
+                            score: entry.log_prob - 1.35,
                             kind: MatchKind::Abbreviation,
                             is_english: false,
                         });
@@ -517,24 +589,43 @@ impl LatticeDecoder {
                 if sub.contains('\'') {
                     break;
                 }
-                if let Some(id) = lookup_syllable(sub) {
+                let is_exact_syl = lookup_syllable(sub);
+                if let Some(id) = is_exact_syl {
                     spans[i].push((i + len, id, 0.0, MatchKind::Exact));
                     for (fid, pen) in ctx.fuzzy.expand(sub) {
                         spans[i].push((i + len, fid, -pen, MatchKind::Fuzzy));
                     }
                 }
                 if len >= 2 {
+                    // When `sub` is ALREADY a valid syllable (`duo`, `da`, `gen`), penalize typo
+                    // neighbors heavily (`-2.75`) so real words win cleanly without blocking 3-syl
+                    // lexical typo recovery (`shulufa -> 输入法`); when `sub` is NOT a valid
+                    // syllable (`shaung`, `yign` in `mohuyign`), recover fast (`-1.45`) AND allow
+                    // one fuzzy rhyme step (`yign -> ying -> yin` -> `模糊音`)!
+                    let base_typo_pen = if is_exact_syl.is_some() { 2.75 } else { 1.45 };
                     for (tid, edit) in generate_typo_variants(sub) {
+                        let t_cost = -(base_typo_pen + edit.cost());
                         if !spans[i]
                             .iter()
                             .any(|&(e, existing, _, _)| e == i + len && existing == tid)
                         {
-                            spans[i].push((
-                                i + len,
-                                tid,
-                                -(1.65 + edit.cost()),
-                                MatchKind::TypoCorrected,
-                            ));
+                            spans[i].push((i + len, tid, t_cost, MatchKind::TypoCorrected));
+                        }
+                        if is_exact_syl.is_none() && len >= 3 {
+                            let canonical_t = chime_phonetics::canonical_syllable(tid);
+                            for (fid, fpen) in ctx.fuzzy.expand(canonical_t) {
+                                if !spans[i]
+                                    .iter()
+                                    .any(|&(e, existing, _, _)| e == i + len && existing == fid)
+                                {
+                                    spans[i].push((
+                                        i + len,
+                                        fid,
+                                        t_cost - fpen,
+                                        MatchKind::TypoCorrected,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -543,7 +634,7 @@ impl LatticeDecoder {
         spans
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn populate_mandarin_edges(
         lower: &str,
         syl_edges: &[Vec<(usize, SyllableId, f32, MatchKind)>],
@@ -554,50 +645,123 @@ impl LatticeDecoder {
         is_dev_app: bool,
         edges: &mut [Vec<LatticeEdge>],
     ) {
+        type EdgeVisit = (usize, usize, SmallVec<[SyllableId; 8]>, f32, MatchKind);
         let n = lower.len();
         for start in 0..n {
-            let mut stack: Vec<(usize, SmallVec<[SyllableId; 4]>, f32, MatchKind)> = Vec::new();
+            let mut stack: Vec<EdgeVisit> = Vec::new();
             for &(end1, id1, cost1, kind1) in &syl_edges[start] {
                 let mut seq = SmallVec::new();
                 seq.push(id1);
-                stack.push((end1, seq, cost1, kind1));
+                stack.push((end1, start, seq, cost1, kind1));
             }
 
-            while let Some((cur_end, seq, acc_cost, acc_kind)) = stack.pop() {
+            while let Some((cur_end, last_syl_start, seq, acc_cost, acc_kind)) = stack.pop() {
                 let raw_slice = &lower[start..cur_end];
                 let entries: Vec<WordEntry> = lexicon.lookup_exact(&seq);
                 let take_limit = if start == 0 && seq.len() == 1 { 32 } else { 8 };
                 for entry in entries.into_iter().take(take_limit) {
+                    let is_single_char = entry.surface.chars().count() == 1;
+                    // Anti-Cold-Word & Single-Syllable Exact Dominance:
+                    // 1) Never inject cold fuzzy single characters (`耕`, `梗`, `绠`, `郠`) when
+                    //    typing a single syllable (`gen`); keep only ultra-common chars (`更`) with
+                    //    a `-1.65` penalty so exact chars (`跟`, `根`) always take #1 and #2!
+                    // 2) Suppress 1-char typo guesses on already-valid single-syllable inputs!
+                    let single_non_exact_pen = if is_single_char && seq.len() == 1 {
+                        match acc_kind {
+                            MatchKind::Fuzzy => {
+                                if entry.log_prob < -4.15 {
+                                    continue;
+                                }
+                                -1.65
+                            }
+                            MatchKind::TypoCorrected => {
+                                if start == 0
+                                    && cur_end == n
+                                    && chime_phonetics::is_valid_syllable(raw_slice)
+                                {
+                                    continue;
+                                }
+                                if entry.log_prob < -4.30 {
+                                    continue;
+                                }
+                                -0.85
+                            }
+                            _ => 0.0,
+                        }
+                    } else {
+                        0.0
+                    };
+
                     let tech_bonus = if is_dev_app && entry.is_tech_term {
                         0.45
                     } else {
                         0.0
                     };
-                    let user_bonus =
-                        user_store.score_boost(raw_slice, &entry.surface, app_bundle_id, now_secs);
+                    // Scope single-character personal habits strictly to 1-syllable queries so a
+                    // single-char pick (`成`, `和`, `补`) never corrupts multi-syllable words!
+                    let user_bonus = if is_single_char && !(start == 0 && cur_end == n) {
+                        0.0
+                    } else {
+                        let raw_boost = user_store.score_boost(
+                            raw_slice,
+                            &entry.surface,
+                            app_bundle_id,
+                            now_secs,
+                        );
+                        if is_single_char {
+                            raw_boost.clamp(-1.5, 1.35)
+                        } else {
+                            raw_boost
+                        }
+                    };
                     #[allow(clippy::cast_precision_loss)]
-                    let word_len_bonus = ((seq.len().saturating_sub(1)) as f32) * 0.95;
+                    let word_len_bonus = ((seq.len().saturating_sub(1)).min(3) as f32) * 0.95
+                        + (seq.len().saturating_sub(4) as f32) * 1.18;
                     edges[start].push(LatticeEdge {
                         end: cur_end,
                         surface: entry.surface,
-                        score: entry.log_prob + acc_cost + word_len_bonus + tech_bonus + user_bonus,
+                        score: entry.log_prob
+                            + acc_cost
+                            + single_non_exact_pen
+                            + word_len_bonus
+                            + tech_bonus
+                            + user_bonus,
                         kind: acc_kind,
                         is_english: false,
                     });
                 }
 
-                if seq.len() < 4 {
-                    let next_pos = if cur_end < n && lower.as_bytes()[cur_end] == b'\'' {
-                        cur_end + 1
-                    } else {
-                        cur_end
-                    };
+                // Allow up to 12-syllable exact idioms, poems & tongue twisters (`八百标兵奔北坡`,
+                // `人有旦夕祸福`) gated by $O(\log N)$ prefix check for lengths >= 4!
+                if seq.len() < 4 || (seq.len() < 12 && lexicon.has_longer_pinyin_prefix(&seq)) {
+                    let has_sep = cur_end < n && lower.as_bytes()[cur_end] == b'\'';
+                    let next_pos = if has_sep { cur_end + 1 } else { cur_end };
                     if next_pos < n {
                         for &(end2, id2, cost2, kind2) in &syl_edges[next_pos] {
+                            // Penalize splitting a valid single syllable (`jie`, `xian`, `tian`)
+                            // across a vowel hiatus (`ji+e` `饥饿`, `ti+an` `提案`) when the user
+                            // did NOT type an apostrophe `'`!
+                            let hiatus_pen = if !has_sep
+                                && chime_phonetics::canonical_syllable(id2)
+                                    .bytes()
+                                    .next()
+                                    .is_some_and(|b| matches!(b, b'a' | b'o' | b'e'))
+                                && lookup_syllable(&lower[last_syl_start..end2]).is_some()
+                            {
+                                -1.35
+                            } else {
+                                0.0
+                            };
                             let mut next_seq = seq.clone();
                             next_seq.push(id2);
                             let merged_kind = merge_match_kind(acc_kind, kind2);
-                            stack.push((end2, next_seq, acc_cost + cost2, merged_kind));
+                            stack.push((
+                                end2,
+                                next_pos,
+                                next_seq,
+                                acc_cost + cost2 + hiatus_pen,
+                                merged_kind,
+                            ));
                         }
                     }
                 }
@@ -693,6 +857,88 @@ fn extract_greedy_syllables(
         pos += len;
     }
     Some(out)
+}
+
+/// Promotes the highest-ranked `MatchKind::Completion` candidate into slot #2 (`index 1`) so
+/// poetry/proverb/idiom `Tab` completions are always visible on Page 1 of the compact 1x5 bar.
+pub fn promote_top_completion_into_bar(candidates: &mut [Candidate]) {
+    if let Some(comp_pos) = candidates
+        .iter()
+        .position(|c| c.kind == MatchKind::Completion)
+        && comp_pos >= 2
+    {
+        candidates[1..=comp_pos].rotate_right(1);
+    }
+}
+
+fn expand_fuzzy_prefix_queries(
+    exact: &[SyllableId],
+    fuzzy: &FuzzyConfig,
+) -> Vec<(SmallVec<[SyllableId; 8]>, f32)> {
+    let mut variants: Vec<(SmallVec<[SyllableId; 8]>, f32)> =
+        vec![(SmallVec::from_slice(exact), 0.0)];
+    for (pos, &syl_id) in exact.iter().enumerate() {
+        let canonical = chime_phonetics::canonical_syllable(syl_id);
+        for (alt_id, pen) in fuzzy.expand(canonical).into_iter().take(2) {
+            if variants.len() >= 6 {
+                break;
+            }
+            let mut copy = SmallVec::from_slice(exact);
+            copy[pos] = alt_id;
+            variants.push((copy, pen));
+        }
+    }
+    variants
+}
+
+fn is_grammatical_affix(word: &str) -> bool {
+    matches!(
+        word,
+        "的" | "地"
+            | "得"
+            | "了"
+            | "着"
+            | "过"
+            | "中"
+            | "里"
+            | "上"
+            | "下"
+            | "内"
+            | "外"
+            | "前"
+            | "后"
+            | "时"
+            | "们"
+            | "不"
+            | "没"
+            | "最"
+            | "很"
+            | "太"
+            | "更"
+            | "挺"
+            | "也"
+            | "都"
+            | "就"
+            | "才"
+            | "还"
+            | "又"
+            | "再"
+            | "把"
+            | "被"
+            | "给"
+            | "让"
+            | "对"
+            | "和"
+            | "与"
+            | "个"
+            | "些"
+            | "本"
+            | "这"
+            | "那"
+            | "该"
+            | "每"
+            | "各"
+    )
 }
 
 fn is_transparent_particle(word: &str) -> bool {
