@@ -136,17 +136,28 @@ build-public-packs: build-classics-corpus
 	@/usr/bin/ditto -c -k --keepParent "$(PACKS_BUILD_DIR)/classics-poetry.imepack" "$(RELEASE_DIR)/classics-poetry.imepack.zip"
 	@/usr/bin/ditto -c -k --keepParent "$(PACKS_BUILD_DIR)/tech-developer.imepack" "$(RELEASE_DIR)/tech-developer.imepack.zip"
 
+define build-installer-pkg
+@rm -rf "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+@mkdir -p "$(DIST_DIR)/pkg-root/Library/Input Methods" "$(RELEASE_DIR)"
+@COPYFILE_DISABLE=1 /usr/bin/ditto "$(APP_BUNDLE)" "$(DIST_DIR)/pkg-root/Library/Input Methods/Chime.app"
+@chmod +x macos/Scripts/pkg_scripts/postinstall
+@COPYFILE_DISABLE=1 /usr/bin/pkgbuild --analyze --root "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist"
+@/usr/bin/plutil -replace 0.BundleIsRelocatable -bool NO "$(DIST_DIR)/component.plist"
+@/usr/bin/plutil -replace 0.BundleIsVersionChecked -bool NO "$(DIST_DIR)/component.plist"
+@COPYFILE_DISABLE=1 /usr/bin/pkgbuild \
+	--root "$(DIST_DIR)/pkg-root" \
+	--component-plist "$(DIST_DIR)/component.plist" \
+	--install-location "/" \
+	--scripts macos/Scripts/pkg_scripts \
+	--identifier "app.tyrchen.inputmethod.Chime.pkg" \
+	--version "$(VERSION)" \
+	$(1) \
+	"$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+@rm -rf "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist"
+endef
+
 release-artifacts: macos-bundle build-public-packs
-	@mkdir -p "$(RELEASE_DIR)"
-	@chmod +x macos/Scripts/pkg_scripts/postinstall
-	@/usr/bin/pkgbuild \
-		--component "$(APP_BUNDLE)" \
-		--install-location "/Library/Input Methods" \
-		--scripts macos/Scripts/pkg_scripts \
-		--identifier "app.tyrchen.inputmethod.Chime.pkg" \
-		--version "$(VERSION)" \
-		$(if $(INSTALLER_SIGN_IDENTITY),--sign "$(INSTALLER_SIGN_IDENTITY)",) \
-		"$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	$(call build-installer-pkg,$(if $(INSTALLER_SIGN_IDENTITY),--sign "$(INSTALLER_SIGN_IDENTITY)",))
 	@if [ -n "$(INSTALLER_SIGN_IDENTITY)" ]; then \
 		pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"; \
 	fi
@@ -174,17 +185,8 @@ release-notarize: macos-bundle build-public-packs
 	@spctl --assess --type exec --verbose=4 "$(APP_BUNDLE)"
 	@rm -f "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
 	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
-	@echo "3/4 Building Developer ID signed .pkg installer and submitting to Apple Notary Service..."
-	@chmod +x macos/Scripts/pkg_scripts/postinstall
-	@rm -f "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
-	@/usr/bin/pkgbuild \
-		--component "$(APP_BUNDLE)" \
-		--install-location "/Library/Input Methods" \
-		--scripts macos/Scripts/pkg_scripts \
-		--identifier "app.tyrchen.inputmethod.Chime.pkg" \
-		--version "$(VERSION)" \
-		--sign "$(INSTALLER_SIGN_IDENTITY)" \
-		"$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@echo "3/4 Building non-relocatable Developer ID signed .pkg installer and submitting to Apple Notary Service..."
+	$(call build-installer-pkg,--sign "$(INSTALLER_SIGN_IDENTITY)")
 	@pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
 	$(call run-notarytool,$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg)
 	@echo "4/4 Stapling notarization ticket to .pkg and running Gatekeeper assessment..."

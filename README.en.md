@@ -16,18 +16,18 @@ Instead of sending every keystroke to a cloud LLM or running slow autoregressive
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.7.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.7.1`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.7.0`)
+## Download & Installation (`v0.7.1`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.7.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.0-macos-arm64.pkg) | `73.9 MB` | Installs to `/Library/Input Methods/Chime.app` & auto-registers `Chime 拼音` |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.7.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.0-macos-arm64.zip) | `73.9 MB` | Unzip and drag `Chime.app` into `~/Library/Input Methods/` |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.7.1-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.1-macos-arm64.pkg) | `73.9 MB` | Installs to `/Library/Input Methods/Chime.app` & auto-enables `Chime 拼音` |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.7.1-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.7.1-macos-arm64.zip) | `73.9 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
 | **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` classical entries + `231,593` `Tab` chains + Q4 Rank-8 LoRA |
 | **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + Q4 Rank-8 LoRA |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | Release integrity checksums |

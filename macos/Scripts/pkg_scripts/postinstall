@@ -2,12 +2,27 @@
 set -e
 
 APP_PATH="/Library/Input Methods/Chime.app"
+APP_BIN="$APP_PATH/Contents/MacOS/Chime"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 if [ -d "$APP_PATH" ]; then
+    chmod -R u+rwX,go+rX "$APP_PATH" || true
     "$LSREGISTER" -f -R -trusted "$APP_PATH" >/dev/null 2>&1 || true
+
     pkill -x Chime >/dev/null 2>&1 || true
+
+    # Register & enable Chime inside the active GUI user's Aqua session so it appears immediately
+    # in the menu bar and System Settings -> Keyboard -> Input Sources without requiring logout!
+    CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
+        CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+        if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$APP_BIN" --register "$APP_PATH" >/dev/null 2>&1 || true
+        fi
+    fi
+
     killall TextInputMenuAgent imklaunchagent >/dev/null 2>&1 || true
+    killall -9 TextInputSwitcher CursorUIViewService >/dev/null 2>&1 || true
 fi
 
 exit 0
