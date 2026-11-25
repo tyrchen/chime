@@ -14,4 +14,5 @@ workspace = true
 
 [dependencies]
 chime-core = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

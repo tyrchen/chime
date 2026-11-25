@@ -23,8 +23,14 @@ panic = "warn"
 
 [workspace.dependencies]
 anyhow = "1.0"
+cedarwood = "0.5"
 clap = { version = "4.5", features = ["derive"] }
 encoding_rs = "0.8"
+flume = "0.12"
+memmap2 = "0.9"
+pinyin = { version = "0.11", default-features = false, features = ["plain", "heteronym"] }
+rusqlite = "0.41"
+safetensors = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smallvec = { version = "1.13", features = ["const_generics", "union"] }
@@ -38,5 +44,6 @@ tempfile = "3.19"
 # Workspace crates
 chime-phonetics = { version = "0.1.0", path = "crates/phonetics" }
 chime-lexicon = { version = "0.1.0", path = "crates/lexicon" }
+chime-neural = { version = "0.1.0", path = "crates/neural" }
 chime-decoder = { version = "0.1.0", path = "crates/decoder" }
 chime-core = { version = "0.1.0", path = "crates/core" }

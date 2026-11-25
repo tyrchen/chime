@@ -4,7 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Session state machine, bounded LRU session pool, TOML config, and privacy sanitizer for Chime IME"
+description = "Session state machine, smart punctuation, paging, neural async coordinator, and .imepack manager"
 
 [lints]
 workspace = true
@@ -12,7 +12,12 @@ workspace = true
 [dependencies]
 chime-decoder = { workspace = true }
 chime-lexicon = { workspace = true }
+chime-neural = { workspace = true }
 chime-phonetics = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

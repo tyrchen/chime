@@ -275,6 +275,61 @@ pub fn extract_initial_head(syllable: &str) -> &str {
     }
 }
 
+/// Formats a raw preedit buffer into human-friendly apostrophe-separated syllables
+/// (`jin'tian'wo'men`).
+#[must_use]
+pub fn format_segmented_preedit(raw: &str, scheme: ShuangpinScheme) -> String {
+    if raw.is_empty() || classify_code_switch(raw) != CodeSwitchSignal::AmbiguousAscii {
+        return raw.to_string();
+    }
+    let lower = raw.to_ascii_lowercase();
+    if scheme != ShuangpinScheme::Full {
+        let mut parts = Vec::new();
+        let mut i = 0usize;
+        while i < raw.len() {
+            let end = (i + 2).min(raw.len());
+            parts.push(&raw[i..end]);
+            i = end;
+        }
+        return parts.join("'");
+    }
+
+    let n = lower.len();
+    let mut parts = Vec::new();
+    let mut pos = 0usize;
+    while pos < n {
+        if lower.as_bytes()[pos] == b'\'' {
+            pos += 1;
+            continue;
+        }
+        let max_len = (n - pos).min(6);
+        let mut chosen_len = 0usize;
+        for len in (1..=max_len).rev() {
+            let sub = &lower[pos..pos + len];
+            if !sub.contains('\'') && is_valid_syllable(sub) {
+                // Avoid greedy over-bite (`fangan` -> prefer `fang'an` over `fan'gan` only when
+                // remainder valid; if `pos + len < n` and remainder starts with vowel like `n`/`g`
+                // where `len-1` leaves valid vowel, check!).
+                if pos + len < n
+                    && len >= 3
+                    && can_segment_exact(&lower[pos + len - 1..])
+                    && !can_segment_exact(&lower[pos + len..])
+                {
+                    continue;
+                }
+                chosen_len = len;
+                break;
+            }
+        }
+        if chosen_len == 0 {
+            chosen_len = 1;
+        }
+        parts.push(&raw[pos..pos + chosen_len]);
+        pos += chosen_len;
+    }
+    parts.join("'")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

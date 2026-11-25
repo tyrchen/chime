@@ -28,6 +28,54 @@ public final class ChimeInputController: IMKInputController {
         return Int(mask.rawValue)
     }
 
+    override public func menu() -> NSMenu! {
+        let menu = NSMenu(title: "Chime")
+        let prefsItem = NSMenuItem(
+            title: "偏好设置…",
+            action: #selector(openPreferences(_:)),
+            keyEquivalent: ","
+        )
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
+        let importItem = NSMenuItem(
+            title: "导入词库或个人模型包 (.scel / .dict.yaml / .imepack)…",
+            action: #selector(importDictionaryOrPack(_:)),
+            keyEquivalent: ""
+        )
+        importItem.target = self
+        menu.addItem(importItem)
+
+        let reloadItem = NSMenuItem(
+            title: "热重载配置与模型",
+            action: #selector(reloadEngineAssets(_:)),
+            keyEquivalent: "r"
+        )
+        reloadItem.target = self
+        menu.addItem(reloadItem)
+
+        return menu
+    }
+
+    @objc public func openPreferences(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            ChimeSettingsWindowController.shared.showWindow()
+        }
+    }
+
+    @objc public func importDictionaryOrPack(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            ChimeSettingsWindowController.shared.presentImportOpenPanel()
+        }
+    }
+
+    @objc public func reloadEngineAssets(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.reloadAssets()
+            CoreMLStatefulReranker.shared.loadInstalledModelIfPresent()
+        }
+    }
+
     override public func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let client = sender as? IMKTextInput else {
             return false
@@ -115,16 +163,14 @@ public final class ChimeInputController: IMKInputController {
             replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
         )
 
-        // Query caret rect at most once per keystroke to avoid Chromium synchronous IPC jank.
         var lineRect = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
-        let candidates = resp.candidates
         let validRect = (lineRect.origin.x != 0 || lineRect.origin.y != 0) ? lineRect : nil
 
         MainActor.assumeIsolated {
             ChimeEngineBridge.shared.updateCandidatePanel(
                 controllerKey: controllerKey,
-                candidates: candidates,
+                response: resp,
                 observedCaretRect: validRect
             )
         }

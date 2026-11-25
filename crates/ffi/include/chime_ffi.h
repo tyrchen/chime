@@ -12,6 +12,10 @@ extern "C" {
 typedef struct ChimeEngineHandle ChimeEngineHandle;
 
 ChimeEngineHandle *chime_engine_new(void);
+ChimeEngineHandle *chime_engine_new_with_dirs(
+    const char *app_support_dir,
+    const char *bundle_resources_dir
+);
 void chime_engine_free(ChimeEngineHandle *engine);
 
 uint64_t chime_session_create(ChimeEngineHandle *engine, const char *app_bundle_id);
@@ -29,6 +33,14 @@ char *chime_process_key(
     bool secure_input
 );
 char *chime_select_candidate(ChimeEngineHandle *engine, uint64_t session_id, size_t index);
+char *chime_poll_async_rerank(ChimeEngineHandle *engine, uint64_t session_id);
+
+int64_t chime_import_asset(ChimeEngineHandle *engine, const char *asset_path);
+void chime_reload_assets(ChimeEngineHandle *engine);
+char *chime_get_config_json(ChimeEngineHandle *engine);
+bool chime_set_config_json(ChimeEngineHandle *engine, const char *config_json);
+char *chime_get_status_json(ChimeEngineHandle *engine);
+
 void chime_string_free(char *ptr);
 
 #ifdef __cplusplus

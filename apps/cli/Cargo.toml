@@ -4,7 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Developer CLI for Chime IME: interactive decode, dictionary import check, sanitizer, and accuracy/latency benchmark"
+description = "CLI for Chime IME: dictionary compiler, Colab corpus synthesizer, .imepack manager, and benchmark"
 
 [[bin]]
 name = "chime"
@@ -16,6 +16,8 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 chime-core = { workspace = true }
+chime-decoder = { workspace = true }
 chime-lexicon = { workspace = true }
+chime-neural = { workspace = true }
 chime-phonetics = { workspace = true }
 clap = { workspace = true }

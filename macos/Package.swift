@@ -21,10 +21,13 @@ let package = Package(
             path: "Sources/ChimeIME",
             linkerSettings: [
                 .linkedLibrary("chime_ffi"),
+                .linkedLibrary("sqlite3"),
                 .linkedFramework("AppKit"),
+                .linkedFramework("SwiftUI"),
                 .linkedFramework("InputMethodKit"),
                 .linkedFramework("Carbon"),
-                .linkedFramework("CoreML")
+                .linkedFramework("CoreML"),
+                .linkedFramework("UniformTypeIdentifiers")
             ]
         )
     ]

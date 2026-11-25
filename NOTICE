@@ -1,0 +1,13 @@
+Chime Third-Party Open Data Attributions
+========================================
+
+Chime's engine code is dual-licensed under MIT OR Apache-2.0.
+Compiled base dictionary builds (`core.imedict`) incorporate open, permissively licensed lexical data from:
+
+1. mozillazg/pinyin-data & rust-pinyin (MIT License)
+   https://github.com/mozillazg/pinyin-data
+   Copyright (c) mozillazg
+
+2. fxsjy/jieba & messense/jieba-rs word frequency list (MIT License)
+   https://github.com/messense/jieba-rs
+   Copyright (c) Sun Junyi, messense

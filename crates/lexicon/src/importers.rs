@@ -1,8 +1,14 @@
-//! Pure-Rust third-party dictionary importers: Rime `.dict.yaml`, TSV, and Sogou `.scel`.
+//! Pure-Rust third-party dictionary importers:
+//! - Rime `.dict.yaml`
+//! - Tab-separated `.tsv`
+//! - Sogou `.scel` binary cell dictionary
+//! - Baidu `.bdict` binary dictionary
+//! - `macOS` System Text Replacements (`~/Library/KeyboardServices/TextReplacements.db`)
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 use encoding_rs::UTF_16LE;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::{Lexicon, LexiconError};
 
@@ -116,7 +122,6 @@ pub fn parse_scel_bytes(bytes: &[u8], lexicon: &mut Lexicon) -> Result<ImportSta
         WORD_OFFSET_STD
     };
 
-    // 1. Parse global UTF-16LE Pinyin index table starting at 0x1540 (+ 4-byte count header).
     let mut pinyin_map: HashMap<u16, String> = HashMap::new();
     let mut cursor = PINYIN_OFFSET + 4;
     while cursor + 4 <= word_start {
@@ -131,7 +136,6 @@ pub fn parse_scel_bytes(bytes: &[u8], lexicon: &mut Lexicon) -> Result<ImportSta
         cursor += byte_len;
     }
 
-    // 2. Parse homophone word groups starting at `word_start`.
     let mut stats = ImportStats::default();
     cursor = word_start;
     while cursor + 4 <= bytes.len() {
@@ -193,10 +197,123 @@ pub fn parse_scel_bytes(bytes: &[u8], lexicon: &mut Lexicon) -> Result<ImportSta
     Ok(stats)
 }
 
+/// Parses a Baidu Pinyin `.bdict` binary dictionary (`bipt` magic at `0x00`, word table at
+/// `0x350`).
+///
+/// # Errors
+///
+/// Returns [`LexiconError::InvalidBdict`] if the header signature or offset is invalid.
+pub fn parse_bdict_bytes(bytes: &[u8], lexicon: &mut Lexicon) -> Result<ImportStats, LexiconError> {
+    const BDICT_HEADER_LEN: usize = 0x350;
+    const INITIALS: &[&str] = &[
+        "c", "d", "b", "f", "g", "h", "ch", "j", "k", "l", "m", "n", "", "p", "q", "r", "s", "t",
+        "sh", "zh", "w", "x", "y", "z",
+    ];
+    const FINALS: &[&str] = &[
+        "uang", "iang", "iong", "ang", "eng", "ian", "iao", "ing", "ong", "uai", "uan", "ai", "an",
+        "ao", "ei", "en", "er", "ua", "ie", "in", "iu", "ou", "ia", "ue", "ui", "un", "uo", "a",
+        "e", "i", "o", "u", "v",
+    ];
+
+    if bytes.len() < BDICT_HEADER_LEN || &bytes[0..4] != b"bipt" {
+        return Err(LexiconError::InvalidBdict(
+            "missing bipt magic or header < 0x350",
+        ));
+    }
+
+    let end_offset = (read_u32_le(bytes, 0x70) as usize).min(bytes.len());
+    let mut cursor = BDICT_HEADER_LEN;
+    let mut stats = ImportStats::default();
+
+    while cursor + 4 <= end_offset {
+        let syl_len = usize::from(read_u16_le(bytes, cursor));
+        cursor += 2;
+        if syl_len == 0 || syl_len > 32 || cursor + syl_len * 2 > end_offset {
+            break;
+        }
+        let mut syllables = Vec::with_capacity(syl_len);
+        for _ in 0..syl_len {
+            let sm = usize::from(bytes[cursor]);
+            let ym = usize::from(bytes[cursor + 1]);
+            cursor += 2;
+            if let (Some(&init), Some(&fin)) = (INITIALS.get(sm), FINALS.get(ym)) {
+                syllables.push(format!("{init}{fin}"));
+            }
+        }
+        let byte_len = syl_len * 2;
+        if cursor + byte_len > end_offset {
+            break;
+        }
+        let word = decode_utf16le(&bytes[cursor..cursor + byte_len]);
+        cursor += byte_len;
+
+        stats.total_rows += 1;
+        if syllables.len() == syl_len
+            && lexicon.insert_pinyin_word(word, &syllables.join(" "), -4.1, false)
+        {
+            stats.imported_entries += 1;
+        } else {
+            stats.skipped_rows += 1;
+        }
+    }
+
+    Ok(stats)
+}
+
+/// Imports user shortcuts from `macOS` `TextReplacements.db` (`ZTEXTREPLACEMENTENTRY` `CoreData`
+/// table).
+///
+/// # Errors
+///
+/// Returns [`LexiconError::Sqlite`] if the `SQLite` database cannot be opened or queried.
+pub fn import_macos_text_replacements(
+    db_path: &Path,
+    lexicon: &mut Lexicon,
+) -> Result<ImportStats, LexiconError> {
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut stmt = conn.prepare(
+        "SELECT ZSHORTCUT, ZPHRASE FROM ZTEXTREPLACEMENTENTRY WHERE ZWASDELETED = 0 AND ZSHORTCUT \
+         IS NOT NULL AND ZPHRASE IS NOT NULL",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut stats = ImportStats::default();
+
+    while let Some(row) = rows.next()? {
+        let shortcut: String = row.get(0)?;
+        let phrase: String = row.get(1)?;
+        stats.total_rows += 1;
+        let clean_key = shortcut.trim();
+        let clean_phrase = phrase.trim();
+        if clean_key.len() < 2 || clean_phrase.is_empty() {
+            stats.skipped_rows += 1;
+            continue;
+        }
+        if lexicon.insert_pinyin_word(clean_phrase, clean_key, -3.0, false) {
+            stats.imported_entries += 1;
+        } else if clean_key.bytes().all(|b| b.is_ascii_alphabetic()) {
+            // Register arbitrary ASCII shortcut into skeleton index so typing `omw` -> `On my way!`
+            // works!
+            lexicon.insert_custom_shortcut(clean_key, clean_phrase, -2.9);
+            stats.imported_entries += 1;
+        } else {
+            stats.skipped_rows += 1;
+        }
+    }
+    Ok(stats)
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     let b0 = bytes.get(offset).copied().unwrap_or(0);
     let b1 = bytes.get(offset + 1).copied().unwrap_or(0);
     u16::from_le_bytes([b0, b1])
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    let b0 = bytes.get(offset).copied().unwrap_or(0);
+    let b1 = bytes.get(offset + 1).copied().unwrap_or(0);
+    let b2 = bytes.get(offset + 2).copied().unwrap_or(0);
+    let b3 = bytes.get(offset + 3).copied().unwrap_or(0);
+    u32::from_le_bytes([b0, b1, b2, b3])
 }
 
 fn decode_utf16le(slice: &[u8]) -> String {
@@ -206,7 +323,6 @@ fn decode_utf16le(slice: &[u8]) -> String {
 
 fn weight_to_log_prob(weight: f32) -> f32 {
     let clamped = weight.max(1.0);
-    // Map [1, 100_000] smoothly into [-6.2, -3.0].
     (-6.2 + 0.28 * clamped.ln()).clamp(-6.5, -2.5)
 }
 
@@ -247,7 +363,6 @@ sort: by_weight
         buf[0..4].copy_from_slice(b"\x40\x15\x00\x00");
         buf[4] = 0x44;
 
-        // Write Pinyin table at 0x1540 + 4: idx 0 -> "ni", idx 1 -> "hao"
         let mut cur = 0x1544;
         for (idx, py) in [(0u16, "ni"), (1u16, "hao")] {
             let utf16: Vec<u8> = py.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -259,8 +374,6 @@ sort: by_weight
             cur += utf16.len();
         }
 
-        // Append 1 homophone group at 0x2628: same=1, py_bytes_len=4 ([0, 1]), word="你好",
-        // ext_len=10
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.extend_from_slice(&4u16.to_le_bytes());
         buf.extend_from_slice(&0u16.to_le_bytes());
@@ -276,5 +389,28 @@ sort: by_weight
         let mut lex = Lexicon::new();
         let stats = parse_scel_bytes(&buf, &mut lex).unwrap_or_default();
         assert_eq!(stats.imported_entries, 1);
+    }
+
+    #[test]
+    fn test_should_import_synthetic_macos_text_replacements_sqlite() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let db_path = dir.path().join("TextReplacements.db");
+        let conn = Connection::open(&db_path).unwrap_or_else(|_| std::process::abort());
+        conn.execute_batch(
+            "CREATE TABLE ZTEXTREPLACEMENTENTRY (
+                Z_PK INTEGER PRIMARY KEY,
+                ZWASDELETED INTEGER,
+                ZSHORTCUT VARCHAR,
+                ZPHRASE VARCHAR
+            );
+            INSERT INTO ZTEXTREPLACEMENTENTRY VALUES (1, 0, 'dz', '北京市海淀区');",
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        drop(conn);
+
+        let mut lex = Lexicon::new();
+        let stats = import_macos_text_replacements(&db_path, &mut lex).unwrap_or_default();
+        assert_eq!(stats.imported_entries, 1);
+        assert_eq!(lex.lookup_skeleton("dz")[0].surface, "北京市海淀区");
     }
 }

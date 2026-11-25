@@ -1,5 +1,6 @@
 //! Joint dual-track lattice decoder (Pinyin + Fuzzy + Typo + English Code-Switching)
-//! with Beam Search pruning, `NeuralReranker` hook, and 60ms Anti-Jitter Freeze Window.
+//! with Beam Search, step-by-step prefix word candidates, `NeuralReranker` hook,
+//! and 60ms Anti-Jitter Freeze Window.
 
 #![forbid(unsafe_code)]
 
@@ -35,7 +36,8 @@ pub struct Candidate {
     pub score: f32,
     /// Dominant match kind across the candidate's spans.
     pub kind: MatchKind,
-    /// Byte length of the raw input consumed by this candidate.
+    /// Byte length of the raw input consumed by this candidate (`< raw_input.len()` for partial
+    /// prefix selection).
     pub consumed_bytes: usize,
 }
 
@@ -69,7 +71,7 @@ impl Default for DecodeContext<'_> {
     }
 }
 
-/// Pluggable Stage-2 neural language model reranker (`mlx-rs` Metal or `macOS` 15 `CoreML
+/// Pluggable Stage-2 neural language model reranker (`SafetensorsReranker` or `macOS` 15 `CoreML
 /// MLState`).
 pub trait NeuralReranker: std::fmt::Debug + Send + Sync {
     /// Scores a batch of candidate surface texts given immutable `left_context` and
@@ -100,27 +102,28 @@ struct BeamState {
     kind: MatchKind,
 }
 
-/// Stage-1 + optional Stage-2 decoder over raw preedit keystrokes.
+/// Stage-1 + optional synchronous Stage-2 decoder over raw preedit keystrokes.
 #[derive(Debug, Default)]
 pub struct LatticeDecoder {
     reranker: Option<Box<dyn NeuralReranker>>,
 }
 
 impl LatticeDecoder {
-    /// Creates a new lattice decoder without an attached neural reranker.
+    /// Creates a new lattice decoder without an attached synchronous neural reranker.
     #[must_use]
     pub fn new() -> Self {
         Self { reranker: None }
     }
 
-    /// Attaches a Stage-2 neural reranker (`mlx-rs` / `CoreML` adapter).
+    /// Attaches a synchronous Stage-2 neural reranker.
     #[must_use]
     pub fn with_reranker(mut self, reranker: Box<dyn NeuralReranker>) -> Self {
         self.reranker = Some(reranker);
         self
     }
 
-    /// Decodes `raw_input` into ranked full-sentence and prefix candidates.
+    /// Decodes `raw_input` into ranked full-sentence candidates followed by step-by-step prefix
+    /// word candidates.
     #[must_use]
     pub fn decode(
         &self,
@@ -133,7 +136,6 @@ impl LatticeDecoder {
             return Vec::new();
         }
 
-        // Fast-path for explicit code tokens (`useEffect`, `v0.1.0`, `snake_case`).
         if classify_code_switch(raw_input) == CodeSwitchSignal::HardRawCode {
             return vec![Candidate {
                 text: raw_input.to_string(),
@@ -198,22 +200,35 @@ impl LatticeDecoder {
             }
         }
 
-        self.finalize_candidates(raw_input, &beams[n], lexicon, user_store, ctx)
+        self.finalize_candidates(
+            raw_input,
+            &beams[n],
+            &edges_by_start[0],
+            lexicon,
+            user_store,
+            ctx,
+        )
     }
 
     fn finalize_candidates(
         &self,
         raw_input: &str,
         terminal_beams: &[BeamState],
+        leading_edges: &[LatticeEdge],
         lexicon: &Lexicon,
         user_store: &UserStore,
         ctx: &DecodeContext<'_>,
     ) -> Vec<Candidate> {
         let n = raw_input.len();
-        let mut candidates: Vec<Candidate> = terminal_beams
+        let mut full_candidates: Vec<Candidate> = terminal_beams
             .iter()
             .map(|st| {
-                let user_delta = user_store.score_boost(raw_input, &st.text, ctx.now_epoch_secs);
+                let user_delta = user_store.score_boost(
+                    raw_input,
+                    &st.text,
+                    ctx.app_bundle_id,
+                    ctx.now_epoch_secs,
+                );
                 Candidate {
                     text: st.text.clone(),
                     score: st.score + user_delta,
@@ -223,13 +238,25 @@ impl LatticeDecoder {
             })
             .collect();
 
+        // Include custom user-coined full phrases from L1 Cedar trie!
+        for (surf, weight) in user_store.lookup_custom_phrases(&raw_input.to_ascii_lowercase()) {
+            if !full_candidates.iter().any(|c| c.text == *surf) {
+                full_candidates.push(Candidate {
+                    text: surf.clone(),
+                    score: -2.0 + (1.0 + weight).ln(),
+                    kind: MatchKind::Exact,
+                    consumed_bytes: n,
+                });
+            }
+        }
+
         // Append English prefix completions for long pure-English inputs (`kubern` ->
         // `Kubernetes`).
         let lower_all = raw_input.to_ascii_lowercase();
         for comp in lexicon.complete_english_prefix(&lower_all, 2) {
-            if !candidates.iter().any(|c| c.text == comp.surface) {
-                candidates.push(Candidate {
-                    text: comp.surface.clone(),
+            if !full_candidates.iter().any(|c| c.text == comp.surface) {
+                full_candidates.push(Candidate {
+                    text: comp.surface,
                     score: comp.log_prob - 1.2,
                     kind: MatchKind::CodeSwitch,
                     consumed_bytes: n,
@@ -237,10 +264,44 @@ impl LatticeDecoder {
             }
         }
 
-        if !candidates.iter().any(|c| c.text == raw_input) {
+        full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        full_candidates.truncate(12);
+
+        if let Some(reranker) = &self.reranker {
+            let bonuses =
+                reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &full_candidates);
+            for (cand, bonus) in full_candidates.iter_mut().zip(bonuses) {
+                cand.score += bonus;
+            }
+            full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
+
+        // Append top partial prefix word candidates (`consumed_bytes < n`) for step-by-step phrase
+        // selection!
+        let mut prefix_edges: Vec<&LatticeEdge> =
+            leading_edges.iter().filter(|e| e.end < n).collect();
+        prefix_edges.sort_by(|a, b| b.end.cmp(&a.end).then_with(|| b.score.total_cmp(&a.score)));
+
+        for pe in prefix_edges {
+            if full_candidates.len() >= 18 {
+                break;
+            }
+            if !full_candidates.iter().any(|c| c.text == pe.surface) {
+                full_candidates.push(Candidate {
+                    text: pe.surface.clone(),
+                    score: pe.score - 6.0,
+                    kind: pe.kind,
+                    consumed_bytes: pe.end,
+                });
+            }
+        }
+
+        // Always keep raw input fallback so user is never trapped (and reachable via Tab
+        // rollback!).
+        if !full_candidates.iter().any(|c| c.text == raw_input) {
             #[allow(clippy::cast_precision_loss)]
-            let fallback_score = -8.0 - 2.5 * (n as f32);
-            candidates.push(Candidate {
+            let fallback_score = -10.0 - 2.5 * (n as f32);
+            full_candidates.push(Candidate {
                 text: raw_input.to_string(),
                 score: fallback_score,
                 kind: MatchKind::CodeSwitch,
@@ -248,18 +309,7 @@ impl LatticeDecoder {
             });
         }
 
-        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
-        candidates.truncate(16);
-
-        if let Some(reranker) = &self.reranker {
-            let bonuses = reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &candidates);
-            for (cand, bonus) in candidates.iter_mut().zip(bonuses) {
-                cand.score += bonus;
-            }
-            candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
-        }
-
-        candidates
+        full_candidates
     }
 
     #[allow(clippy::too_many_lines)]
@@ -277,18 +327,18 @@ impl LatticeDecoder {
         let syl_edges = Self::build_syllable_spans(&lower, ctx);
         let mut edges: Vec<Vec<LatticeEdge>> = vec![Vec::new(); n];
 
-        // 1. Multi-syllable & single-syllable Mandarin word lookup over up to 4 syllables.
         Self::populate_mandarin_edges(
             &lower,
             &syl_edges,
             lexicon,
             user_store,
+            ctx.app_bundle_id,
             ctx.now_epoch_secs,
             is_dev_app,
             &mut edges,
         );
 
-        // 2. Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`).
+        // Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`).
         if ctx.scheme == ShuangpinScheme::Full {
             for start in 0..n {
                 for len in 2..=6.min(n - start) {
@@ -296,10 +346,10 @@ impl LatticeDecoder {
                     if !sub.bytes().all(|b| b.is_ascii_lowercase()) {
                         continue;
                     }
-                    for entry in lexicon.lookup_skeleton(sub).iter().take(3) {
+                    for entry in lexicon.lookup_skeleton(sub).into_iter().take(4) {
                         edges[start].push(LatticeEdge {
                             end: start + len,
-                            surface: entry.surface.clone(),
+                            surface: entry.surface,
                             score: entry.log_prob - 1.15,
                             kind: MatchKind::Abbreviation,
                             is_english: false,
@@ -309,8 +359,8 @@ impl LatticeDecoder {
             }
         }
 
-        // 3. Modeless English / Code-Switch track (`macos` -> `macOS`, `github` -> `GitHub`, `pr`
-        //    -> `PR`).
+        // Modeless English / Code-Switch track (`macos` -> `macOS`, `github` -> `GitHub`, `pr` ->
+        // `PR`).
         for start in 0..n {
             for end in (start + 2)..=n {
                 let raw_sub = &raw_input[start..end];
@@ -329,7 +379,7 @@ impl LatticeDecoder {
                         };
                     edges[start].push(LatticeEdge {
                         end,
-                        surface: eng.surface.clone(),
+                        surface: eng.surface,
                         score: eng.log_prob + dev_bonus + phonotactic_bonus,
                         kind: MatchKind::CodeSwitch,
                         is_english: true,
@@ -383,15 +433,11 @@ impl LatticeDecoder {
                     break;
                 }
                 if let Some(id) = lookup_syllable(sub) {
-                    // Exact syllable match.
                     spans[i].push((i + len, id, 0.0, MatchKind::Exact));
-                    // Zero-bloat fuzzy expansion.
                     for (fid, pen) in ctx.fuzzy.expand(sub) {
                         spans[i].push((i + len, fid, -pen, MatchKind::Fuzzy));
                     }
                 }
-                // Typo variants (conservative penalty so exact matches always win unless
-                // broken/ungrammatical).
                 if len >= 2 {
                     for (tid, edit) in generate_typo_variants(sub) {
                         if !spans[i]
@@ -412,11 +458,13 @@ impl LatticeDecoder {
         spans
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn populate_mandarin_edges(
         lower: &str,
         syl_edges: &[Vec<(usize, SyllableId, f32, MatchKind)>],
         lexicon: &Lexicon,
         user_store: &UserStore,
+        app_bundle_id: &str,
         now_secs: u64,
         is_dev_app: bool,
         edges: &mut [Vec<LatticeEdge>],
@@ -432,20 +480,20 @@ impl LatticeDecoder {
 
             while let Some((cur_end, seq, acc_cost, acc_kind)) = stack.pop() {
                 let raw_slice = &lower[start..cur_end];
-                let entries: &[WordEntry] = lexicon.lookup_exact(&seq);
-                for entry in entries.iter().take(5) {
+                let entries: Vec<WordEntry> = lexicon.lookup_exact(&seq);
+                for entry in entries.into_iter().take(6) {
                     let tech_bonus = if is_dev_app && entry.is_tech_term {
                         0.45
                     } else {
                         0.0
                     };
-                    let user_bonus = user_store.score_boost(raw_slice, &entry.surface, now_secs);
-                    // Multi-character words get a cohesion bonus per extra syllable.
+                    let user_bonus =
+                        user_store.score_boost(raw_slice, &entry.surface, app_bundle_id, now_secs);
                     #[allow(clippy::cast_precision_loss)]
                     let word_len_bonus = ((seq.len().saturating_sub(1)) as f32) * 0.95;
                     edges[start].push(LatticeEdge {
                         end: cur_end,
-                        surface: entry.surface.clone(),
+                        surface: entry.surface,
                         score: entry.log_prob + acc_cost + word_len_bonus + tech_bonus + user_bonus,
                         kind: acc_kind,
                         is_english: false,
@@ -525,10 +573,7 @@ fn extract_tail_word(left_context: &str) -> String {
     chars[start..].iter().collect()
 }
 
-/// Applies the 60ms Anti-Jitter Freeze Window when an asynchronous Stage-2 rerank arrives:
-/// if `elapsed_ms > freeze_after_ms`, the #1 candidate displayed to the user is frozen so
-/// pressing Space never commits an unexpected last-millisecond swap; any superior candidate
-/// discovered by the SLM is placed at index 1 (#2 slot) instead.
+/// Applies the 60ms Anti-Jitter Freeze Window when an asynchronous Stage-2 rerank arrives.
 #[must_use]
 pub fn apply_anti_jitter_freeze_window(
     displayed: &[Candidate],
@@ -570,6 +615,12 @@ mod tests {
             cands.first().map(|c| c.text.as_str()),
             Some("我使用 macOS 和 GitHub")
         );
+        // Should also expose step-by-step prefix word candidates (`我`).
+        assert!(
+            cands
+                .iter()
+                .any(|c| c.text == "我" && c.consumed_bytes < 22)
+        );
     }
 
     #[test]
@@ -579,12 +630,10 @@ mod tests {
         let dec = LatticeDecoder::new();
         let ctx = DecodeContext::default();
 
-        // `shaungpin` has adjacent swap `au` -> `ua`
         let cands = dec.decode("shaungpin", &lex, &store, &ctx);
         assert_eq!(cands[0].text, "双拼");
         assert_eq!(cands[0].kind, MatchKind::TypoCorrected);
 
-        // `nohao` has QWERTY neighbor `o` -> `i`
         let cands2 = dec.decode("nohao", &lex, &store, &ctx);
         assert_eq!(cands2[0].text, "你好");
     }

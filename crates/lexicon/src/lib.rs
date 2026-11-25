@@ -1,30 +1,44 @@
-//! Multi-tiered lexicon storage, canonical English casing, third-party dictionary
-//! importers (`.scel`, Rime `.dict.yaml`, TSV), and online user adaptation.
+//! Multi-tiered lexicon storage: zero-copy `mmap` `.imedict` layers, dynamic overlay,
+//! canonical English casing, third-party dictionary importers, and `SQLite` WAL user store.
 
-#![forbid(unsafe_code)]
-
+pub mod base_builder;
 pub mod builtin;
+pub mod compiled;
 pub mod importers;
 pub mod user_store;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 use chime_phonetics::{SyllableId, canonical_syllable, extract_initial_head, lookup_syllable};
 use smallvec::SmallVec;
 use thiserror::Error;
 
 pub use crate::{
-    importers::{ImportStats, parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict},
-    user_store::UserStore,
+    base_builder::{annotate_chinese_word, build_comprehensive_lexicon},
+    compiled::{CompiledDict, CompiledDictBuilder},
+    importers::{
+        ImportStats, import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml,
+        parse_scel_bytes, parse_tsv_dict,
+    },
+    user_store::{TypingSample, UserHabit, UserStore},
 };
 
-/// Errors raised during lexicon loading or third-party dictionary import.
+/// Errors raised during lexicon loading, `mmap` validation, or `SQLite` persistence.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum LexiconError {
+    /// Binary `.imedict` image failed header, bounds, or UTF-8 validation.
+    #[error("invalid compiled .imedict dictionary: {0}")]
+    InvalidCompiledDict(&'static str),
     /// Binary `.scel` file is truncated or has invalid magic header.
     #[error("invalid Sogou .scel dictionary format: {0}")]
     InvalidScel(&'static str),
+    /// Binary `.bdict` file is truncated or has invalid magic header.
+    #[error("invalid Baidu .bdict dictionary format: {0}")]
+    InvalidBdict(&'static str),
+    /// `SQLite` error in `UserStore` or `TextReplacements.db` import.
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     /// I/O error while reading or saving dictionary files.
     #[error("dictionary I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -35,20 +49,20 @@ pub enum LexiconError {
 pub struct WordEntry {
     /// Target surface text (Chinese characters, English word, or mixed phrase).
     pub surface: String,
-    /// Smoothed natural log-probability (closer to `0.0` is more frequent, e.g. `-4.2`).
+    /// Smoothed natural log-probability (closer to `0.0` is more frequent, e.g. `-3.2`).
     pub log_prob: f32,
     /// True if this entry is a technical or developer-oriented term.
     pub is_tech_term: bool,
 }
 
-/// Fast multi-index lexicon supporting exact syllable chains, initial skeletons, and English
-/// casing.
-#[derive(Debug, Clone, Default)]
+/// Layered lexicon combining zero-copy `mmap` `.imedict` packs with a mutable dynamic overlay.
+#[derive(Debug, Default)]
 pub struct Lexicon {
-    exact_map: HashMap<SmallVec<[SyllableId; 4]>, Vec<WordEntry>>,
-    skeleton_map: HashMap<String, Vec<WordEntry>>,
-    english_casing: HashMap<String, WordEntry>,
-    bigram_boosts: HashMap<(String, String), f32>,
+    pub(crate) compiled_layers: Vec<CompiledDict>,
+    pub(crate) exact_map: HashMap<SmallVec<[SyllableId; 4]>, Vec<WordEntry>>,
+    pub(crate) skeleton_map: HashMap<String, Vec<WordEntry>>,
+    pub(crate) english_casing: HashMap<String, WordEntry>,
+    pub(crate) bigram_boosts: HashMap<(String, String), f32>,
 }
 
 impl Lexicon {
@@ -58,12 +72,28 @@ impl Lexicon {
         Self::default()
     }
 
-    /// Creates a lexicon preloaded with the built-in permissive seed Mandarin + English corpus.
+    /// Creates a lexicon preloaded with the built-in seed Mandarin + English corpus.
     #[must_use]
     pub fn with_builtin_seed() -> Self {
         let mut lex = Self::new();
         builtin::populate_seed_lexicon(&mut lex);
         lex
+    }
+
+    /// Mounts a zero-copy `mmap` `.imedict` compiled dictionary layer at highest static priority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexiconError`] if the file cannot be mapped or fails validation.
+    pub fn mount_compiled_mmap(&mut self, path: &Path) -> Result<(), LexiconError> {
+        let dict = CompiledDict::open_mmap(path)?;
+        self.compiled_layers.insert(0, dict);
+        Ok(())
+    }
+
+    /// Mounts an already-validated [`CompiledDict`].
+    pub fn mount_compiled_dict(&mut self, dict: CompiledDict) {
+        self.compiled_layers.insert(0, dict);
     }
 
     /// Inserts a Mandarin word entry under its normalized space-separated Pinyin reading.
@@ -91,16 +121,13 @@ impl Lexicon {
             return false;
         }
 
-        let surface_str = surface.into();
         let entry = WordEntry {
-            surface: surface_str,
+            surface: surface.into(),
             log_prob,
             is_tech_term,
         };
 
-        // Insert into multi-syllable skeleton index for super-abbreviation (`zgr` -> `中国人`).
         if ids.len() >= 2 {
-            // Also index single-char first letters (`zh` -> `z`) when retroflex differs.
             let compact_initials: String = ids
                 .iter()
                 .filter_map(|id| canonical_syllable(*id).chars().next())
@@ -117,6 +144,22 @@ impl Lexicon {
         let bucket = self.exact_map.entry(ids).or_default();
         Self::upsert_sorted(bucket, &entry);
         true
+    }
+
+    /// Inserts an arbitrary ASCII shortcut (`dz` -> `北京市海淀区`) into the skeleton index.
+    pub fn insert_custom_shortcut(
+        &mut self,
+        shortcut_ascii: &str,
+        surface: impl Into<String>,
+        log_prob: f32,
+    ) {
+        let key = shortcut_ascii.to_ascii_lowercase();
+        let entry = WordEntry {
+            surface: surface.into(),
+            log_prob,
+            is_tech_term: false,
+        };
+        Self::upsert_sorted(self.skeleton_map.entry(key).or_default(), &entry);
     }
 
     /// Inserts a canonical English / code-switching word (`macos` -> `macOS`).
@@ -149,54 +192,107 @@ impl Lexicon {
             .insert((left_word.into(), right_word.into()), bonus);
     }
 
-    /// Looks up entries matching an exact sequence of [`SyllableId`]s.
+    /// Queries both the mutable overlay and all mounted `mmap` `.imedict` layers for `syllables`.
     #[must_use]
-    pub fn lookup_exact(&self, syllables: &[SyllableId]) -> &[WordEntry] {
-        self.exact_map.get(syllables).map_or(&[], Vec::as_slice)
+    pub fn lookup_exact(&self, syllables: &[SyllableId]) -> Vec<WordEntry> {
+        let mut out = Vec::new();
+        if let Some(overlay) = self.exact_map.get(syllables) {
+            out.extend(overlay.iter().take(8).cloned());
+        }
+        for layer in &self.compiled_layers {
+            layer.lookup_exact_into(syllables, 8, &mut out);
+        }
+        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out
     }
 
-    /// Looks up multi-character words matching an initial skeleton (`zgr`, `wsm`, `rgzn`).
+    /// Queries both the mutable overlay and all mounted `mmap` layers for an initial skeleton.
     #[must_use]
-    pub fn lookup_skeleton(&self, skeleton: &str) -> &[WordEntry] {
-        self.skeleton_map.get(skeleton).map_or(&[], Vec::as_slice)
+    pub fn lookup_skeleton(&self, skeleton: &str) -> Vec<WordEntry> {
+        let mut out = Vec::new();
+        if let Some(overlay) = self.skeleton_map.get(skeleton) {
+            out.extend(overlay.iter().take(5).cloned());
+        }
+        for layer in &self.compiled_layers {
+            layer.lookup_skeleton_into(skeleton, 5, &mut out);
+        }
+        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out
     }
 
-    /// Looks up a canonical English term by lowercase ASCII key, or prefix-completes long tokens.
+    /// Looks up a canonical English term across overlay and mounted `mmap` layers.
     #[must_use]
-    pub fn lookup_english(&self, lower_ascii: &str) -> Option<&WordEntry> {
-        self.english_casing.get(lower_ascii)
+    pub fn lookup_english(&self, lower_ascii: &str) -> Option<WordEntry> {
+        if let Some(entry) = self.english_casing.get(lower_ascii) {
+            return Some(entry.clone());
+        }
+        for layer in &self.compiled_layers {
+            if let Some(entry) = layer.lookup_english(lower_ascii) {
+                return Some(entry);
+            }
+        }
+        None
     }
 
     /// Finds top prefix completions for English words of length >= 5 (`kubern` -> `Kubernetes`).
     #[must_use]
-    pub fn complete_english_prefix(&self, lower_prefix: &str, limit: usize) -> Vec<&WordEntry> {
+    pub fn complete_english_prefix(&self, lower_prefix: &str, limit: usize) -> Vec<WordEntry> {
         if lower_prefix.len() < 5 {
             return Vec::new();
         }
-        let mut matches: Vec<&WordEntry> = self
+        let mut out: Vec<WordEntry> = self
             .english_casing
             .iter()
             .filter(|(k, _)| k.len() > lower_prefix.len() && k.starts_with(lower_prefix))
-            .map(|(_, v)| v)
+            .map(|(_, v)| v.clone())
             .collect();
-        matches.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
-        matches.truncate(limit);
-        matches
+        for layer in &self.compiled_layers {
+            layer.complete_english_prefix_into(lower_prefix, limit, &mut out);
+        }
+        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out.truncate(limit);
+        out
     }
 
-    /// Returns any contextual bigram transition bonus for `(prev, next)`.
+    /// Returns the strongest contextual bigram transition bonus across overlay and `mmap` layers.
     #[must_use]
     pub fn bigram_bonus(&self, prev: &str, next: &str) -> f32 {
-        self.bigram_boosts
+        if let Some(&b) = self
+            .bigram_boosts
             .get(&(prev.to_string(), next.to_string()))
-            .copied()
-            .unwrap_or(0.0)
+        {
+            return b;
+        }
+        for layer in &self.compiled_layers {
+            let b = layer.bigram_bonus(prev, next);
+            if b.abs() > f32::EPSILON {
+                return b;
+            }
+        }
+        0.0
     }
 
-    /// Returns the total number of distinct Pinyin reading keys indexed.
+    /// Returns total distinct Pinyin keys across overlay and mounted compiled layers.
     #[must_use]
     pub fn pinyin_key_count(&self) -> usize {
         self.exact_map.len()
+            + self
+                .compiled_layers
+                .iter()
+                .map(CompiledDict::pinyin_group_count)
+                .sum::<usize>()
+    }
+
+    /// Returns total word records across mounted compiled layers plus overlay keys.
+    #[must_use]
+    pub fn total_word_entries(&self) -> usize {
+        let overlay_words: usize = self.exact_map.values().map(Vec::len).sum();
+        let compiled_words: usize = self
+            .compiled_layers
+            .iter()
+            .map(CompiledDict::word_record_count)
+            .sum();
+        overlay_words + compiled_words
     }
 
     fn upsert_sorted(bucket: &mut Vec<WordEntry>, entry: &WordEntry) {
