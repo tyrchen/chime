@@ -446,21 +446,26 @@ def main() -> None:
     w_8b, mb_8b = build_quantized_student_dict(embed_np, student_st, bits=8)
     r_8b = MlxRunner(w_8b, cfg_8b)
 
+    cfg_4b_stage_a = dict(base_6l_cfg)
+    w_4b_stage_a, mb_4b_stage_a = build_quantized_student_dict(embed_np, student_st, bits=4)
+    r_4b_stage_a = MlxRunner(w_4b_stage_a, cfg_4b_stage_a)
+
     r_4b = MlxRunner(mx.load(str(dist / "base_neural" / "model.safetensors")), base_6l_cfg)
     mb_4b = (dist / "base_neural" / "model.safetensors").stat().st_size / (1024 * 1024)
     mb_28l = (dist / "qwen3_28l_neural" / "model.safetensors").stat().st_size / (1024 * 1024)
 
-    # Cosine alignment `cos(u_S, u_T)` across 32 diverse Chinese + bilingual sentences
-    cos_naive, cos_dist4, cos_dist16 = [], [], []
+    # Cosine alignment `cos(u_S, u_T)` across diverse Chinese + bilingual sentences
+    cos_naive, cos_stage_a, cos_dist4, cos_dist16 = [], [], [], []
     for ctx, cands in STRESS_PROBES:
         ids = encode(ctx + cands[0])
         u_t, _, _ = r_28l.forward_hidden_and_lps(ids)
         u_n, _, _ = r_naive4.forward_hidden_and_lps(ids)
+        u_sa, _, _ = r_4b_stage_a.forward_hidden_and_lps(ids)
         u_4, _, _ = r_4b.forward_hidden_and_lps(ids)
         u_16, _, _ = r_fp16.forward_hidden_and_lps(ids)
-        mx.eval(u_t, u_n, u_4, u_16)
+        mx.eval(u_t, u_n, u_sa, u_4, u_16)
         vt = np.array(u_t.astype(mx.float32)).reshape(-1)
-        for vn_arr, bucket in [(u_n, cos_naive), (u_4, cos_dist4), (u_16, cos_dist16)]:
+        for vn_arr, bucket in [(u_n, cos_naive), (u_sa, cos_stage_a), (u_4, cos_dist4), (u_16, cos_dist16)]:
             vn = np.array(vn_arr.astype(mx.float32)).reshape(-1)
             c = float(np.dot(vt, vn) / (np.linalg.norm(vt) * np.linalg.norm(vn) + 1e-8))
             bucket.append(c)
@@ -471,10 +476,12 @@ def main() -> None:
         ("Qwen3-6L-NaiveSkip-4bit", r_naive4, mb_naive4, float(statistics.mean(cos_naive))),
         ("Qwen3-6L-Distilled-FP16", r_fp16, mb_fp16, float(statistics.mean(cos_dist16))),
         ("Qwen3-6L-Distilled-8bit", r_8b, mb_8b, float(statistics.mean(cos_dist16))),
+        ("Qwen3-6L-StageA-4bit", r_4b_stage_a, mb_4b_stage_a, float(statistics.mean(cos_stage_a))),
         ("Qwen3-6L-Distilled-4bit (Chime)", r_4b, mb_4b, float(statistics.mean(cos_dist4))),
     ]:
         w_cnt, tot, marg = eval_probes(runner, encode, STRESS_PROBES, alpha=0.42)
         lat = measure_latency(runner, batched_cands=(label == "Qwen3-6L-Distilled-4bit (Chime)"))
+        seq_lat = measure_latency(runner, batched_cands=False) if label == "Qwen3-6L-Distilled-4bit (Chime)" else lat
         exp1[label] = {
             "size_mb": round(size_mb, 2),
             "cos_with_28l": round(cos_val, 4),
@@ -483,6 +490,7 @@ def main() -> None:
             "stress_acc_pct": round(100.0 * w_cnt / tot, 1),
             "mean_margin_nats": round(marg, 3),
             **lat,
+            **({"rerank6_seq_p50_ms": seq_lat["rerank6_p50_ms"]} if label == "Qwen3-6L-Distilled-4bit (Chime)" else {}),
         }
         print(f"  {label}: {exp1[label]}", flush=True)
 
@@ -657,10 +665,72 @@ def main() -> None:
         check=True,
         capture_output=True,
     )
+    classics_pack_dir = dist / "packs/classics-poetry.imepack"
+    if not classics_pack_dir.exists():
+        classics_pack_dir = packs_root / "classics-poetry.imepack"
+    tech_pack_dir = dist / "packs/tech-developer.imepack"
+
     hits_modern_base = test_cli_queries(["--dict", str(modern_dict), "--neural", str(dist / "base_neural")])
     hits_lora_only = test_cli_queries(["--dict", str(modern_dict), "--neural", str(dist / "base_neural"), "--pack", str(lora_only_pack)])
-    hits_full_pack = test_cli_queries(["--dict", str(modern_dict), "--neural", str(dist / "base_neural"), "--pack", str(packs_root / "classics-poetry.imepack")])
+    hits_full_pack = test_cli_queries(["--dict", str(modern_dict), "--neural", str(dist / "base_neural"), "--pack", str(classics_pack_dir)])
     modern_dict.unlink(missing_ok=True)
+
+    print("[Exp 6] Large-Scale Decontaminated Benchmarks (Dev 1,258 + Blind Holdout 1,010)...", flush=True)
+
+    def run_bench_config(suite_rel: str, extra_args: list[str]) -> dict:
+        tmp_rec = Path("/tmp/chime_paper_bench_rec.jsonl")
+        tmp_rec.unlink(missing_ok=True)
+        env = dict(**__import__("os").environ)
+        env["MLX_RS_METAL_PATH"] = "/tmp/chime-mlx-metallib"
+        subprocess.run(
+            [
+                str(chime_bin),
+                "bench",
+                str(root / suite_rel),
+                "--dict",
+                str(dist / "core.imedict"),
+                *extra_args,
+                "--record",
+                str(tmp_rec),
+                "--tag",
+                "paper-exp",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        row = json.loads(tmp_rec.read_text(encoding="utf-8").strip().splitlines()[-1])
+        tmp_rec.unlink(missing_ok=True)
+        return {
+            "cases": row["cases"],
+            "acc_at_1": row["acc_at_1"],
+            "hit_at_3": row["hit_at_3"],
+            "hit_at_5": row["hit_at_5"],
+            "mrr": row["mrr"],
+            "p50_us": row["p50_us"],
+        }
+
+    exp6_benchmarks = {
+        "dev_1258": {
+            "stage1_lattice_only": run_bench_config("benchmarks/dev_suite.tsv", []),
+            "stage1_plus_chime_6l": run_bench_config("benchmarks/dev_suite.tsv", ["--neural", str(dist / "base_neural")]),
+            "stage1_plus_chime_6l_packs": run_bench_config(
+                "benchmarks/dev_suite.tsv",
+                ["--neural", str(dist / "base_neural"), "--pack", str(classics_pack_dir), "--pack", str(tech_pack_dir)],
+            ),
+        },
+        "blind_holdout_1010": {
+            "stage1_lattice_only": run_bench_config("benchmarks/test_holdout.tsv", []),
+            "stage1_plus_chime_6l": run_bench_config("benchmarks/test_holdout.tsv", ["--neural", str(dist / "base_neural")]),
+            "stage1_plus_chime_6l_packs": run_bench_config(
+                "benchmarks/test_holdout.tsv",
+                ["--neural", str(dist / "base_neural"), "--pack", str(classics_pack_dir), "--pack", str(tech_pack_dir)],
+            ),
+        },
+    }
+    print(f"  Dev (1,258): {exp6_benchmarks['dev_1258']}", flush=True)
+    print(f"  Blind Holdout (1,010): {exp6_benchmarks['blind_holdout_1010']}", flush=True)
 
     summary = {
         "exp1_compression_pareto": exp1,
@@ -683,6 +753,7 @@ def main() -> None:
         "exp3_routing_interference": exp3_routing,
         "exp4_lora_fusion_scaling": exp4_scaling,
         "exp5_alpha_sweep": exp5_alpha,
+        "exp6_large_scale_benchmarks": exp6_benchmarks,
     }
     out_json = root / "paper" / "experiment_results.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
