@@ -16,8 +16,26 @@ VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.package
 CARGO_TARGET_DIR := $(shell cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
 JIEBA_DICT := $(shell ls -1 $(HOME)/.cargo/registry/src/*/jieba-rs-*/src/data/dict.txt 2>/dev/null | tail -n 1)
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+APP_SIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+INSTALLER_SIGN_IDENTITY ?= $(shell security find-identity -v -p basic 2>/dev/null | sed -n 's/.*"\(Developer ID Installer: .*\)"/\1/p' | head -1)
+ASC_KEYCHAIN_SERVICE ?= chime-asc-key
+NOTARY_PROFILE ?=
 
-.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval swift-build macos-bundle build-public-packs release-artifacts install-macos paper clean
+define run-notarytool
+@set -eu; \
+if [ -n "$(NOTARY_PROFILE)" ]; then \
+	xcrun notarytool submit "$(1)" --keychain-profile "$(NOTARY_PROFILE)" --wait; \
+else \
+	item=$$(security find-generic-password -s "$(ASC_KEYCHAIN_SERVICE)" 2>/dev/null) || { echo "Missing notary credentials: set NOTARY_PROFILE or ASC_KEYCHAIN_SERVICE"; exit 1; }; \
+	key_id=$$(echo "$$item" | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p'); \
+	issuer=$$(echo "$$item" | sed -n 's/.*"icmt"<blob>="\(.*\)"/\1/p'); \
+	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; umask 077; \
+	security find-generic-password -s "$(ASC_KEYCHAIN_SERVICE)" -w | base64 -D > "$$dir/AuthKey_$$key_id.p8"; \
+	xcrun notarytool submit "$(1)" --key "$$dir/AuthKey_$$key_id.p8" --key-id "$$key_id" --issuer "$$issuer" --wait; \
+fi
+endef
+
+.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
 
 build:
 	@cargo build --workspace --all-targets
@@ -79,7 +97,16 @@ macos-bundle: build-core-dict build-icons swift-build
 	@cp -R "$(BASE_NEURAL_DIR)" "$(APP_BUNDLE)/Contents/Resources/neural"
 	@cp NOTICE "$(APP_BUNDLE)/Contents/Resources/NOTICE"
 	@chmod -R u+rwX,go+rX "$(APP_BUNDLE)"
-	@codesign --force --deep --sign - "$(APP_BUNDLE)"
+	@xattr -cr "$(APP_BUNDLE)"
+	@if [ -n "$(APP_SIGN_IDENTITY)" ]; then \
+		echo "Signing $(APP_BUNDLE) with $(APP_SIGN_IDENTITY) (Hardened Runtime + Timestamp)..."; \
+		codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/MacOS/Chime"; \
+		codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)"; \
+		codesign --verify --deep --strict --verbose=2 "$(APP_BUNDLE)"; \
+		! codesign -d --entitlements - "$(APP_BUNDLE)" 2>/dev/null | grep -q get-task-allow || { echo "Refusing get-task-allow entitlement in Developer ID bundle"; exit 1; }; \
+	else \
+		codesign --force --deep --sign - "$(APP_BUNDLE)"; \
+	fi
 	@echo "Built $(APP_BUNDLE) v$(VERSION) (core.imedict + Qwen3 6L 4-bit MLX Metal neural base)"
 
 build-public-packs: build-classics-corpus
@@ -118,8 +145,12 @@ release-artifacts: macos-bundle build-public-packs
 		--scripts macos/Scripts/pkg_scripts \
 		--identifier "app.tyrchen.inputmethod.Chime.pkg" \
 		--version "$(VERSION)" \
+		$(if $(INSTALLER_SIGN_IDENTITY),--sign "$(INSTALLER_SIGN_IDENTITY)",) \
 		"$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
-	@/usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@if [ -n "$(INSTALLER_SIGN_IDENTITY)" ]; then \
+		pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"; \
+	fi
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
 	@cd "$(RELEASE_DIR)" && shasum -a 256 \
 		"Chime-v$(VERSION)-macos-arm64.pkg" \
 		"Chime-v$(VERSION)-macos-arm64.zip" \
@@ -127,6 +158,46 @@ release-artifacts: macos-bundle build-public-packs
 		"tech-developer.imepack.zip" > SHA256SUMS.txt
 	@echo "Packaged release artifacts in $(RELEASE_DIR):"
 	@ls -lh "$(RELEASE_DIR)"
+
+release-notarize: macos-bundle build-public-packs
+	@test -n "$(APP_SIGN_IDENTITY)" || { echo "Missing Developer ID Application identity in keychain"; exit 1; }
+	@test -n "$(INSTALLER_SIGN_IDENTITY)" || { echo "Missing Developer ID Installer identity in keychain"; exit 1; }
+	@mkdir -p "$(RELEASE_DIR)"
+	@echo "1/4 Submitting Chime.app to Apple Notary Service..."
+	@rm -f "$(DIST_DIR)/Chime-notarize-app.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(DIST_DIR)/Chime-notarize-app.zip"
+	$(call run-notarytool,$(DIST_DIR)/Chime-notarize-app.zip)
+	@rm -f "$(DIST_DIR)/Chime-notarize-app.zip"
+	@echo "2/4 Stapling notarization ticket to Chime.app and packaging .zip..."
+	@xcrun stapler staple "$(APP_BUNDLE)"
+	@xcrun stapler validate "$(APP_BUNDLE)"
+	@spctl --assess --type exec --verbose=4 "$(APP_BUNDLE)"
+	@rm -f "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@echo "3/4 Building Developer ID signed .pkg installer and submitting to Apple Notary Service..."
+	@chmod +x macos/Scripts/pkg_scripts/postinstall
+	@rm -f "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@/usr/bin/pkgbuild \
+		--component "$(APP_BUNDLE)" \
+		--install-location "/Library/Input Methods" \
+		--scripts macos/Scripts/pkg_scripts \
+		--identifier "app.tyrchen.inputmethod.Chime.pkg" \
+		--version "$(VERSION)" \
+		--sign "$(INSTALLER_SIGN_IDENTITY)" \
+		"$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	$(call run-notarytool,$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg)
+	@echo "4/4 Stapling notarization ticket to .pkg and running Gatekeeper assessment..."
+	@xcrun stapler staple "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@xcrun stapler validate "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@spctl --assess --type install --verbose=4 "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
+	@cd "$(RELEASE_DIR)" && shasum -a 256 \
+		"Chime-v$(VERSION)-macos-arm64.pkg" \
+		"Chime-v$(VERSION)-macos-arm64.zip" \
+		"classics-poetry.imepack.zip" \
+		"tech-developer.imepack.zip" > SHA256SUMS.txt
+	@echo "Successfully signed, notarized, and stapled all Chime v$(VERSION) release artifacts!"
+	@cat "$(RELEASE_DIR)/SHA256SUMS.txt"
 
 install-macos: macos-bundle
 	@mkdir -p "$(HOME)/Library/Input Methods"

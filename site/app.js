@@ -89,7 +89,7 @@ const I18N_EN = {
   "nav.arch": "Base + Multi-LoRA",
   "nav.packs": "LoRA Pack Hub",
   "nav.diy": "Private LoRA",
-  "hero.eyebrow": "macOS 15+ · Apple Silicon Metal · 100% Offline · MIT / Apache-2.0",
+  "hero.eyebrow": "macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0",
   "hero.title": "A 64 MB local neural IME on Unified Memory, with hot-swappable LoRA cartridges.",
   "hero.lead": "Chime is an offline-first Chinese Pinyin input method for Apple Silicon. Written in Rust and Swift 6, it pairs a <0.8 ms zero-copy mmap lattice decoder with a 6-layer 4-bit MLX Qwen3 reranker and 2 MB plug-and-play Multi-LoRA .imepack cartridges.",
   "hero.dlPkg": "Download macOS Installer (.pkg)",

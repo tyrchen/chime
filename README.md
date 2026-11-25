@@ -32,11 +32,7 @@
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + Q4 Rank-8 LoRA |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | 安装包与卡带完整性哈希校验值 |
 
-> **首次安装提示**：开源构建包采用本地 `ad-hoc` 签名（未接入付费 Apple 公证）。若首次打开 `.pkg` 被 macOS Gatekeeper 拦截，可先在终端清除隔离属性再双击安装：
-> ```bash
-> xattr -dr com.apple.quarantine ~/Downloads/Chime-v0.7.0-macos-arm64.pkg
-> ```
-> 安装后前往 **系统设置 -> 键盘 -> 输入法 -> 编辑 -> `+` -> 简体中文**，确认勾选启用 **Chime 拼音**。
+> **Apple 官方签名与公证（Notarized Developer ID）**：`.pkg` 安装器与 `.zip` 应用包均已通过 **Apple Developer ID 正式签名、Hardened Runtime 硬化运行时与 Apple Notary Service 官方公证并离线钉票（Stapled）**，下载后可直接双击安装，不会触发 macOS Gatekeeper 恶意软件拦截弹窗。安装后前往 **系统设置 -> 键盘 -> 输入法 -> 编辑 -> `+` -> 简体中文**，确认勾选启用 **Chime 拼音**。
 
 ### 挂载 `.imepack` 领域扩展卡带（免重启热加载）
 

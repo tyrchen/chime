@@ -32,11 +32,7 @@ Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3
 | **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + Q4 Rank-8 LoRA |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | Release integrity checksums |
 
-> **First-Time Gatekeeper Note**: Prebuilt bundles are ad-hoc signed without paid Apple notarization. If macOS Gatekeeper blocks first launch, clear the quarantine attribute before opening:
-> ```bash
-> xattr -dr com.apple.quarantine ~/Downloads/Chime-v0.7.0-macos-arm64.pkg
-> ```
-> Then open **System Settings -> Keyboard -> Input Sources -> Edit -> `+` -> Simplified Chinese** to confirm **Chime 拼音** is enabled.
+> **Apple Signed & Notarized (`Notarized Developer ID`)**: Both the `.pkg` installer and `.zip` app bundle are signed with **Apple Developer ID (Hardened Runtime + Secure Timestamp), notarized by Apple Notary Service, and offline-stapled**—double-click to install with zero macOS Gatekeeper warnings. After installation, open **System Settings -> Keyboard -> Input Sources -> Edit -> `+` -> Simplified Chinese** to confirm **Chime 拼音** is enabled.
 
 ### Installing `.imepack` Cartridges
 
