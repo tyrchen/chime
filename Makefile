@@ -64,6 +64,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	@cp "$(CORE_DICT)" "$(APP_BUNDLE)/Contents/Resources/core.imedict"
 	@cp -R "$(BASE_NEURAL_DIR)" "$(APP_BUNDLE)/Contents/Resources/neural"
 	@cp NOTICE "$(APP_BUNDLE)/Contents/Resources/NOTICE"
+	@chmod -R u+rwX,go+rX "$(APP_BUNDLE)"
 	@codesign --force --deep --sign - "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE) (core.imedict + Qwen2.5 MLX Metal neural base + localized icons)"
 
@@ -74,7 +75,7 @@ install-macos: macos-bundle
 	@cp -R "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app"
 	@-"$(LSREGISTER)" -f -R -trusted "$(HOME)/Library/Input Methods/Chime.app"
 	@swift macos/Scripts/register_ime.swift "$(HOME)/Library/Input Methods/Chime.app"
-	@-killall TextInputMenuAgent TextInputSwitcher 2>/dev/null || true
+	@-killall TextInputMenuAgent TextInputSwitcher KeyboardSettings imklaunchagent 2>/dev/null || true
 	@echo "Installed and registered Chime 拼音 at ~/Library/Input Methods/Chime.app"
 
 clean:
