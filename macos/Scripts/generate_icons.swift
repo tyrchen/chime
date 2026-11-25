@@ -13,8 +13,8 @@ let pdfPath = URL(fileURLWithPath: args[1])
 let iconsetDir = URL(fileURLWithPath: args[2], isDirectory: true)
 try FileManager.default.createDirectory(at: iconsetDir, withIntermediateDirectories: true)
 
-// 1. Vector monochrome template `menu_icon.pdf` (18x18pt rounded badge with crisp "磬/C" glyph)
-var mediaBox = CGRect(x: 0, y: 0, width: 18, height: 18)
+// 1. Vector monochrome template `menu_icon.pdf` (16x16pt pure CGPath even-odd cutout, zero embedded fonts)
+var mediaBox = CGRect(x: 0, y: 0, width: 16, height: 16)
 guard let pdfConsumer = CGDataConsumer(url: pdfPath as CFURL),
       let pdfCtx = CGContext(consumer: pdfConsumer, mediaBox: &mediaBox, nil)
 else {
@@ -23,33 +23,31 @@ else {
 }
 
 pdfCtx.beginPDFPage(nil)
-NSGraphicsContext.saveGraphicsState()
-NSGraphicsContext.current = NSGraphicsContext(cgContext: pdfCtx, flipped: false)
+pdfCtx.setFillColor(CGColor(srgbRed: 0.0, green: 0.0, blue: 0.0, alpha: 1.0))
 
-let badgeRect = NSRect(x: 1.5, y: 1.5, width: 15.0, height: 15.0)
-let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 3.6, yRadius: 3.6)
-badgePath.lineWidth = 1.4
-NSColor.black.setStroke()
-badgePath.stroke()
+// Outer solid squircle badge (14x14 centered in 16x16) + inner cutout "C" + chime bar using even-odd rule!
+let compound = CGMutablePath()
+compound.addRoundedRect(in: CGRect(x: 1.0, y: 1.0, width: 14.0, height: 14.0), cornerWidth: 3.6, cornerHeight: 3.6)
 
-let paragraph = NSMutableParagraphStyle()
-paragraph.alignment = .center
-let attrs: [NSAttributedString.Key: Any] = [
-    .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
-    .foregroundColor: NSColor.black,
-    .paragraphStyle: paragraph
-]
-let glyph = NSString(string: "拼")
-let glyphSize = glyph.size(withAttributes: attrs)
-let drawRect = NSRect(
-    x: (18.0 - glyphSize.width) / 2.0,
-    y: (18.0 - glyphSize.height) / 2.0 - 0.3,
-    width: glyphSize.width,
-    height: glyphSize.height
-)
-glyph.draw(in: drawRect, withAttributes: attrs)
+// Cutout geometric "C" arc (center (7.4, 8.0), outer r=4.1, inner r=2.5, opening on right)
+let cx: CGFloat = 7.3
+let cy: CGFloat = 8.0
+let rOut: CGFloat = 4.1
+let rIn: CGFloat = 2.45
+let startAngle: CGFloat = 0.62 // ~35.5 deg
+let endAngle: CGFloat = .pi * 2.0 - 0.62
 
-NSGraphicsContext.restoreGraphicsState()
+let cPath = CGMutablePath()
+cPath.addArc(center: CGPoint(x: cx, y: cy), radius: rOut, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+cPath.addArc(center: CGPoint(x: cx, y: cy), radius: rIn, startAngle: endAngle, endAngle: startAngle, clockwise: true)
+cPath.closeSubpath()
+compound.addPath(cPath)
+
+// Cutout vertical chime resonance bar on the right
+compound.addRoundedRect(in: CGRect(x: 11.4, y: 5.4, width: 1.55, height: 5.2), cornerWidth: 0.75, cornerHeight: 0.75)
+
+pdfCtx.addPath(compound)
+pdfCtx.fillPath(using: .evenOdd)
 pdfCtx.endPDFPage()
 pdfCtx.closePDF()
 
@@ -95,6 +93,8 @@ for (filename, px) in sizes {
     )
     gradient?.draw(in: bgPath, angle: -45.0)
 
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = .center
     let textAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: s * 0.48, weight: .bold),
         .foregroundColor: NSColor.white,
