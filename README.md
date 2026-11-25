@@ -16,18 +16,18 @@
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.7.3`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **最新发布版本（`v0.7.4`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.7.3`）
+## 下载与安装（`v0.7.4`）
 
 系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.7.3-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.7.3-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.7.4-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | 双击安装至 `/Library/Input Methods/Chime.app` 并自动注册输入源、打开键盘设置页 |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.7.4-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
 | **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + Q4 Rank-8 LoRA |
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + Q4 Rank-8 LoRA |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | 安装包与卡带完整性哈希校验值 |

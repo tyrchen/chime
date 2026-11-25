@@ -6,61 +6,98 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall v0.7.3 started at $(date) ==="
+    echo "=== Chime postinstall v0.7.4 started at $(date) ==="
     if [ -d "$APP_PATH" ]; then
         chown -R root:wheel "$APP_PATH" 2>&1 || true
         chmod -R u+rwX,go+rX "$APP_PATH" 2>&1 || true
         chmod +x "$APP_BIN" 2>&1 || true
         xattr -dr com.apple.quarantine "$APP_PATH" 2>&1 || true
 
+        # Update directory mtime so HIToolbox TISFileInterrogator sees /Library/Input Methods changed
+        /usr/bin/touch "/Library/Input Methods" 2>&1 || true
+
         "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
 
-        # 1. Stop any old Chime process and refresh background IMK agents first
-        pkill -x Chime 2>&1 || true
-        killall imklaunchagent TextInputMenuAgent 2>&1 || true
-        sleep 1
-
         CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
-        echo "Detected console user: '$CONSOLE_USER'"
+        CONSOLE_UID=""
         if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
             CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
-            echo "Detected console uid: '$CONSOLE_UID'"
-            if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
-                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
+        fi
+        echo "Detected console user='$CONSOLE_USER' uid='$CONSOLE_UID'"
 
-                # 2. Launch Chime.app as a persistent IMKServer daemon in the console user's Aqua session
-                # so TISRegisterInputSource stays permanently bound without requiring logout.
-                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$APP_PATH" --args --activate-on-install 2>&1 || true
+        # 1. If System Settings is open, quit it gracefully FIRST so killing idle KeyboardSettings XPC
+        # never triggers a "Settings Error: Extension process Keyboard exited" popup.
+        WAS_SETTINGS_OPEN=0
+        if [ -n "$CONSOLE_UID" ] && /usr/bin/pgrep -u "$CONSOLE_UID" -x "System Settings" >/dev/null 2>&1; then
+            WAS_SETTINGS_OPEN=1
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/osascript -e 'tell application id "com.apple.systempreferences" to quit' 2>&1 || true
+            for _ in 1 2 3 4 5; do
+                /usr/bin/pgrep -u "$CONSOLE_UID" -x "System Settings" >/dev/null 2>&1 || break
+                sleep 0.2
+            done
+        fi
 
-                for _ in 1 2 3 4 5 6; do
-                    if /usr/bin/pgrep -u "$CONSOLE_UID" -x Chime >/dev/null 2>&1; then
-                        echo "Chime IMKServer daemon is running under uid $CONSOLE_UID"
-                        break
-                    fi
-                    sleep 0.4
-                done
+        # 2. Stop old Chime and idle KeyboardSettings / input method agents BEFORE wiping IntlDataCache
+        pkill -x Chime 2>&1 || true
+        killall KeyboardSettings "Keyboard-Settings.extension" 2>&1 || true
 
-                # Wait 1.5s for Chime's Aqua RunLoop registration pass to complete BEFORE flushing System Settings cache!
-                sleep 1.5
+        # 3. Purge stale HIToolbox TISFileInterrogator caches (`com.apple.IntlDataCache.le*` & `.kbdx`)
+        # across system caches AND all per-user / per-XPC-sandbox (`/private/var/folders/*/*/C/...`) dirs!
+        # HIToolbox sets `updateSystemInputSources = false` whenever an old `.kbdx` file exists on disk;
+        # removing `.kbdx` forces `TISFileInterrogator` to rescan `/Library/Input Methods/` immediately.
+        rm -f /System/Library/Caches/com.apple.IntlDataCache.le* \
+              /Library/Caches/com.apple.IntlDataCache.le* \
+              /private/var/folders/*/*/C/com.apple.IntlDataCache.le* \
+              /private/var/folders/*/*/C/*/com.apple.IntlDataCache.le* 2>&1 || true
 
-                # 3. Flush System Settings -> Keyboard extension (`KeyboardSettings.appex` -> process `KeyboardSettings`)
-                # AFTER Chime has registered with TIS so an already-open System Settings window reloads fresh!
-                killall KeyboardSettings "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>&1 || true
-                pkill -f "KeyboardSettings.appex" 2>&1 || true
-                sleep 0.4
+        # Rebuild system-level IntlDataCache as root if /System/Library/Caches is on writable Data volume
+        if [ -x "$APP_BIN" ]; then
+            "$APP_BIN" --register "$APP_PATH" 2>&1 || true
+            chmod 644 /System/Library/Caches/com.apple.IntlDataCache.le* 2>/dev/null || true
+        fi
 
-                # 4. If Chime is not yet enabled in HIToolbox (fresh install on macOS 15+), open System Settings -> Input Sources
-                # directly (matching Doubao / Sogou UX) so the user can click '+' -> 'Chinese, Simplified' -> 'Chime 拼音' -> 'Add'.
-                USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
-                if [ -n "$USER_HOME" ] && ! /usr/bin/plutil -p "$USER_HOME/Library/Preferences/com.apple.HIToolbox.plist" 2>/dev/null | /usr/bin/grep -q "app.tyrchen.inputmethod.Chime"; then
-                    /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?InputSources" 2>&1 || true
+        # Restart input method menu agents so they rebuild their TIS table with Chime included
+        killall imklaunchagent TextInputMenuAgent TextInputSwitcher CursorUIViewService 2>&1 || true
+        sleep 1
+
+        # 4. Register & launch persistent Chime IMKServer inside the active GUI user's Aqua session
+        if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
+
+            USER_CACHE_DIR="$(/bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
+            if [ -n "$USER_CACHE_DIR" ] && [ -d "$USER_CACHE_DIR" ]; then
+                rm -f "$USER_CACHE_DIR"/com.apple.IntlDataCache.le* \
+                      "$USER_CACHE_DIR"/com.apple.Keyboard-Settings.extension/com.apple.IntlDataCache.le* 2>&1 || true
+            fi
+
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$APP_PATH" --args --activate-on-install 2>&1 || true
+
+            for _ in 1 2 3 4 5 6; do
+                if /usr/bin/pgrep -u "$CONSOLE_UID" -x Chime >/dev/null 2>&1; then
+                    echo "Chime IMKServer daemon is running under uid $CONSOLE_UID"
+                    break
                 fi
+                sleep 0.4
+            done
+            sleep 1.0
+
+            # 5. Reopen System Settings -> Keyboard -> Input Sources cleanly if needed
+            USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+            NEED_OPEN_SETTINGS=0
+            if [ "$WAS_SETTINGS_OPEN" -eq 1 ]; then
+                NEED_OPEN_SETTINGS=1
+            elif [ -n "$USER_HOME" ] && ! /usr/bin/plutil -p "$USER_HOME/Library/Preferences/com.apple.HIToolbox.plist" 2>/dev/null | /usr/bin/grep -q "app.tyrchen.inputmethod.Chime"; then
+                NEED_OPEN_SETTINGS=1
+            fi
+
+            if [ "$NEED_OPEN_SETTINGS" -eq 1 ]; then
+                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?InputSources" 2>&1 || true
             fi
         fi
     else
         echo "ERROR: $APP_PATH not found!"
     fi
-    echo "=== Chime postinstall v0.7.3 finished at $(date) ==="
+    echo "=== Chime postinstall v0.7.4 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true
