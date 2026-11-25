@@ -13,14 +13,15 @@ use std::{
 
 use anyhow::{Context, Result};
 use chime_core::{
-    ChimeEngine, KeyEvent, build_colab_training_jsonl, build_imepack_dir, install_imepack_dir,
+    ChimeEngine, KeyEvent, PackBuildOptions, build_colab_training_jsonl, build_imepack_v2,
+    discover_installed_packs, install_imepack_dir,
 };
 use chime_decoder::{Candidate, DecodeContext, LatticeDecoder, NeuralReranker};
 use chime_lexicon::{
     CompiledDict, CompiledDictBuilder, Lexicon, build_comprehensive_lexicon, parse_bdict_bytes,
     parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, TinyModelBuilder};
+use chime_neural::{AsyncRerankHandle, LoraMountSpec, LoraRouting, TinyModelBuilder};
 use chime_phonetics::ShuangpinScheme;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -54,6 +55,23 @@ impl From<SchemeArg> for ShuangpinScheme {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RoutingArg {
+    Always,
+    Developer,
+    Classical,
+}
+
+impl From<RoutingArg> for LoraRouting {
+    fn from(val: RoutingArg) -> Self {
+        match val {
+            RoutingArg::Always => Self::Always,
+            RoutingArg::Developer => Self::Developer,
+            RoutingArg::Classical => Self::Classical,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Decode a raw keystroke sequence and print ranked candidates.
@@ -72,6 +90,9 @@ enum Commands {
         /// Optional compiled `.imedict` path to mount.
         #[arg(long)]
         dict: Option<PathBuf>,
+        /// Optional `.imepack` cartridge directories to mount (`.imedict` + `lora.safetensors`).
+        #[arg(long)]
+        pack: Vec<PathBuf>,
         /// Optional neural reranker directory (`dist/base_neural`) for Stage-2 Metal GPU scoring.
         #[arg(long)]
         neural: Option<PathBuf>,
@@ -94,6 +115,9 @@ enum Commands {
         /// Optional multi-corpus distilled lexicon TSV (`surface\tpinyin\tlog_prob`).
         #[arg(long)]
         extra_tsv: Option<PathBuf>,
+        /// Optional `Tab` continuations TSV (`trigger\tnext_clause`).
+        #[arg(long)]
+        continuations: Option<PathBuf>,
         /// Minimum frequency filter for multi-character Jieba words.
         #[arg(long, default_value_t = 25)]
         min_freq: u64,
@@ -121,19 +145,46 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Package or install a Colab-trained `.imepack` personal brain bundle.
+    /// Package, install, or list `.imepack` v2 `Multi-LoRA` + `.imedict` cartridges.
     Pack {
-        /// Either `build` or `install`.
+        /// `build`, `install`, or `list`.
         action: String,
-        /// `.imepack` directory path.
-        pack_dir: PathBuf,
-        /// Optional personal TSV path (when `action == "build"`).
+        /// `.imepack` directory or `.imepack.zip` path (optional for `list`).
+        pack_dir: Option<PathBuf>,
+        /// Cartridge ID slug (when `action == "build"`).
+        #[arg(long, default_value = "personal-brain")]
+        id: String,
+        /// Human-readable display name (when `action == "build"`).
+        #[arg(long, default_value = "Personal Brain")]
+        name: String,
+        /// Cartridge description (when `action == "build"`).
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Dynamic `LoRA` routing mode (`always`, `developer`, `classical`).
+        #[arg(long, value_enum, default_value_t = RoutingArg::Always)]
+        routing: RoutingArg,
+        /// Base `LoRA` scaling factor (`alpha / rank`).
+        #[arg(long, default_value_t = 1.0)]
+        lora_scale: f32,
+        /// Optional lexical TSV path (when `action == "build"`).
         #[arg(long)]
         tsv: Option<PathBuf>,
-        /// Optional neural directory containing `model.safetensors` (when `action == "build"`).
+        /// Optional `Tab` continuations TSV path (when `action == "build"`).
+        #[arg(long)]
+        continuations: Option<PathBuf>,
+        /// Optional N-gram boosts TSV path (when `action == "build"`).
+        #[arg(long)]
+        ngrams: Option<PathBuf>,
+        /// Optional `lora.safetensors` low-rank adapter file (when `action == "build"`).
+        #[arg(long)]
+        lora: Option<PathBuf>,
+        /// Optional legacy neural directory (when `action == "build"`).
         #[arg(long)]
         neural_dir: Option<PathBuf>,
-        /// Target Application Support directory (when `action == "install"`).
+        /// Mark cartridge as strictly private to local machine (never share/upload).
+        #[arg(long)]
+        private: bool,
+        /// Target Application Support directory (when `action == "install"` or `"list"`).
         #[arg(long)]
         app_support: Option<PathBuf>,
     },
@@ -142,13 +193,16 @@ enum Commands {
         /// Output neural model directory.
         out_dir: PathBuf,
     },
-    /// Run the comprehensive 20-case accuracy, polyphone, punctuation, neural, and latency
-    /// benchmark suite.
+    /// Run the comprehensive accuracy, classical poetry, polyphone, neural, `Multi-LoRA`, and
+    /// latency benchmark suite.
     Eval {
         /// Optional compiled `core.imedict` to mount during evaluation.
         #[arg(long)]
         dict: Option<PathBuf>,
-        /// Optional neural reranker directory (`dist/base_neural`) to evaluate real Qwen2.5 Metal
+        /// Optional `.imepack` cartridge directories to mount during evaluation.
+        #[arg(long)]
+        pack: Vec<PathBuf>,
+        /// Optional neural reranker directory (`dist/base_neural`) to evaluate real Qwen3 Metal
         /// SLM.
         #[arg(long)]
         neural: Option<PathBuf>,
@@ -164,11 +218,12 @@ impl NeuralReranker for SyncNeuralAdapter {
     fn score_batch(
         &self,
         left_context: &str,
-        _app_bundle_id: &str,
+        app_bundle_id: &str,
         candidates: &[Candidate],
     ) -> Vec<f32> {
         let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
-        self.inner.score_sync(left_context, &texts)
+        self.inner
+            .score_sync_with_app(left_context, app_bundle_id, &texts)
     }
 }
 
@@ -184,17 +239,19 @@ fn main() -> Result<()> {
             context,
             app,
             dict,
+            pack,
             neural,
         } => {
             let mut lex = Lexicon::with_builtin_seed();
             if let Some(d_path) = dict {
                 lex.mount_compiled_mmap(&d_path)?;
             }
+            let lora_specs = mount_cli_packs(&pack, &mut lex)?;
             let mut decoder = LatticeDecoder::new();
             if let Some(np) = neural
                 && np.join("model.safetensors").exists()
             {
-                let slm = AsyncRerankHandle::spawn_from_dir(&np)?;
+                let slm = AsyncRerankHandle::spawn_from_dir_with_loras(&np, lora_specs)?;
                 decoder = decoder.with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
             }
             let user_store = chime_lexicon::UserStore::new();
@@ -229,6 +286,7 @@ fn main() -> Result<()> {
             english_words,
             ngrams,
             extra_tsv,
+            continuations,
             min_freq,
         } => {
             let jieba_text = if let Some(p) = jieba_dict {
@@ -260,6 +318,12 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            if let Some(cont_path) = continuations
+                && cont_path.exists()
+            {
+                let cont_text = fs::read_to_string(&cont_path)?;
+                let _ = lex.load_continuations_tsv(&cont_text);
+            }
             if let Some(ng_path) = ngrams
                 && ng_path.exists()
             {
@@ -275,13 +339,14 @@ fn main() -> Result<()> {
             writeln!(
                 stdout,
                 "Built {} in {} ms: pinyin_groups={}, word_records={}, english_terms={}, \
-                 ngrams={}, size={} KB",
+                 ngrams={}, continuations={}, size={} KB",
                 output.display(),
                 t0.elapsed().as_millis(),
                 mapped.pinyin_group_count(),
                 mapped.word_record_count(),
                 mapped.english_count(),
                 mapped.ngram_count(),
+                mapped.continuation_count(),
                 fs::metadata(&output)?.len() / 1024
             )?;
         }
@@ -306,11 +371,14 @@ fn main() -> Result<()> {
                 let mapped = CompiledDict::open_mmap(&path)?;
                 writeln!(
                     stdout,
-                    "Compiled .imedict {}: pinyin_groups={}, word_records={}, english_terms={}",
+                    "Compiled .imedict {}: pinyin_groups={}, word_records={}, english_terms={}, \
+                     ngrams={}, continuations={}",
                     path.display(),
                     mapped.pinyin_group_count(),
                     mapped.word_record_count(),
-                    mapped.english_count()
+                    mapped.english_count(),
+                    mapped.ngram_count(),
+                    mapped.continuation_count()
                 )?;
             } else {
                 let lex = load_third_party_to_lexicon(&path)?;
@@ -349,25 +417,70 @@ fn main() -> Result<()> {
         Commands::Pack {
             action,
             pack_dir,
+            id,
+            name,
+            description,
+            routing,
+            lora_scale,
             tsv,
+            continuations,
+            ngrams,
+            lora,
             neural_dir,
+            private,
             app_support,
         } => {
-            if action == "build" {
-                let manifest = build_imepack_dir(
-                    "PersonalBrain",
-                    tsv.as_deref(),
-                    neural_dir.as_deref(),
-                    &pack_dir,
+            if action == "list" {
+                let target = app_support.unwrap_or_else(default_app_support_dir);
+                let packs = discover_installed_packs(&target);
+                writeln!(
+                    stdout,
+                    "Installed .imepack cartridges in {} ({}):",
+                    target.display(),
+                    packs.len()
+                )?;
+                for p in packs {
+                    writeln!(
+                        stdout,
+                        "  - {} ({}) [routing={:?}, dict={}, lora={}, private={}]",
+                        p.manifest.effective_id(),
+                        p.manifest.name,
+                        p.manifest.routing,
+                        p.dict_path.is_some(),
+                        p.lora_path.is_some(),
+                        p.manifest.private_pack
+                    )?;
+                }
+            } else if action == "build" {
+                let out_dir =
+                    pack_dir.context("pack_dir argument is required for `chime pack build`")?;
+                let manifest = build_imepack_v2(
+                    &PackBuildOptions {
+                        id: &id,
+                        name: &name,
+                        description: &description,
+                        version: env!("CARGO_PKG_VERSION"),
+                        routing: routing.into(),
+                        lora_scale,
+                        lexicon_tsv: tsv.as_deref(),
+                        continuations_tsv: continuations.as_deref(),
+                        ngrams_tsv: ngrams.as_deref(),
+                        lora_safetensors: lora.as_deref(),
+                        neural_dir: neural_dir.as_deref(),
+                        private_pack: private,
+                    },
+                    &out_dir,
                 )?;
                 writeln!(
                     stdout,
-                    "Built .imepack at {}: {manifest:?}",
-                    pack_dir.display()
+                    "Built .imepack v2 at {}: {manifest:?}",
+                    out_dir.display()
                 )?;
             } else {
+                let src_path =
+                    pack_dir.context("pack_dir argument is required for `chime pack install`")?;
                 let target = app_support.unwrap_or_else(default_app_support_dir);
-                let manifest = install_imepack_dir(&pack_dir, &target)?;
+                let manifest = install_imepack_dir(&src_path, &target)?;
                 writeln!(
                     stdout,
                     "Installed .imepack into {}: {manifest:?}",
@@ -386,8 +499,8 @@ fn main() -> Result<()> {
                 out_dir.display()
             )?;
         }
-        Commands::Eval { dict, neural } => {
-            run_golden_eval(&mut stdout, dict.as_deref(), neural.as_deref())?;
+        Commands::Eval { dict, pack, neural } => {
+            run_golden_eval(&mut stdout, dict.as_deref(), &pack, neural.as_deref())?;
         }
     }
     Ok(())
@@ -422,10 +535,40 @@ fn default_app_support_dir() -> PathBuf {
     )
 }
 
+fn mount_cli_packs(pack_dirs: &[PathBuf], lex: &mut Lexicon) -> Result<Vec<LoraMountSpec>> {
+    let mut specs = Vec::new();
+    for p in pack_dirs {
+        let manifest_path = p.join("manifest.json");
+        let manifest = if manifest_path.exists() {
+            chime_core::ImePackManifest::load_file(&manifest_path)?
+        } else {
+            continue;
+        };
+        for d_name in ["pack.imedict", "personal.imedict"] {
+            let dp = p.join(d_name);
+            if dp.exists() {
+                lex.mount_compiled_mmap(&dp)?;
+                break;
+            }
+        }
+        let lp = p.join("lora.safetensors");
+        if lp.exists() {
+            specs.push(LoraMountSpec {
+                id: manifest.effective_id(),
+                path: lp,
+                scale: manifest.lora_scale,
+                routing: manifest.routing,
+            });
+        }
+    }
+    Ok(specs)
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_golden_eval(
     out: &mut impl Write,
     dict_path: Option<&Path>,
+    pack_dirs: &[PathBuf],
     neural_path: Option<&Path>,
 ) -> Result<()> {
     struct Case {
@@ -718,40 +861,67 @@ fn run_golden_eval(
             keys: "mohuyign",
             expected_top1: "模糊音",
         },
+        Case {
+            category: "poetry-shuidiao",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "mingyuejishiyou",
+            expected_top1: "明月几时有",
+        },
+        Case {
+            category: "ci-merged-typo",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "nianquuqqianliyanbo",
+            expected_top1: "念去去，千里烟波",
+        },
+        Case {
+            category: "poetry-next-verse",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "君不见黄河之水天上来，奔流到海不复回。",
+            app: "com.mitchellh.ghostty",
+            keys: "junbujian",
+            expected_top1: "君不见高堂明镜悲白发",
+        },
     ];
 
-    let base_lex = if let Some(dp) = dict_path {
+    let mut base_lex = if let Some(dp) = dict_path {
         let mut lex = Lexicon::with_builtin_seed();
         lex.mount_compiled_mmap(dp)?;
         lex
     } else {
         build_comprehensive_lexicon("", None, 25)
     };
+    let lora_specs = mount_cli_packs(pack_dirs, &mut base_lex)?;
 
     let slm = if let Some(np) = neural_path
         && np.join("model.safetensors").exists()
     {
-        AsyncRerankHandle::spawn_from_dir(np)?
+        AsyncRerankHandle::spawn_from_dir_with_loras(np, lora_specs)?
     } else {
         let tmp_neural_dir = std::env::temp_dir().join("chime_eval_neural");
         TinyModelBuilder::write_demo_bundle(&tmp_neural_dir, &[("端侧", "量化"), ("这个", "PR")])?;
-        AsyncRerankHandle::spawn_from_dir(&tmp_neural_dir)?
+        AsyncRerankHandle::spawn_from_dir_with_loras(&tmp_neural_dir, lora_specs)?
     };
     let cfg = slm.config().clone();
+    let active_loras = slm.lora_count();
     let decoder = LatticeDecoder::new().with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
     let user_store = chime_lexicon::UserStore::new();
 
     let mut passed = 0usize;
-    let mut latencies_us = Vec::with_capacity(cases.len() + 2);
+    let mut latencies_us = Vec::with_capacity(cases.len() + 3);
 
     writeln!(
         out,
-        "Running Chime Complete Benchmark Suite ({} decode + 2 interactive cases | MLX Metal SLM: \
-         layers={}, hidden={}, vocab={})...",
+        "Running Chime Complete Benchmark Suite ({} decode + interactive cases | MLX Metal SLM: \
+         layers={}, hidden={}, vocab={}, active_loras={})...",
         cases.len(),
         cfg.num_hidden_layers,
         cfg.hidden_size,
-        cfg.vocab_size
+        cfg.vocab_size,
+        active_loras
     )?;
     for c in &cases {
         let ctx = DecodeContext {
@@ -912,7 +1082,55 @@ fn run_golden_eval(
         poem_us
     )?;
 
-    let total_cases = cases.len() + 3;
+    // Interactive Case: Full 《将进酒》 opening multi-`Tab` chain (`junbujianhuanghe` + 4x Tab!)
+    interactive_eng.reset_session(sid);
+    let t_jjj = Instant::now();
+    for b in *b"junbujianhuanghe" {
+        let _ = interactive_eng.process_key(
+            sid,
+            KeyEvent {
+                ascii_char: b,
+                key_code: 0,
+                shift: false,
+                has_command_or_ctrl: false,
+                secure_input: false,
+            },
+            1_000,
+        );
+    }
+    let mut jjj_acc = String::new();
+    for _ in 0..4 {
+        let tab_resp = interactive_eng.process_key(
+            sid,
+            KeyEvent {
+                ascii_char: 0,
+                key_code: 0x30,
+                shift: false,
+                has_command_or_ctrl: false,
+                secure_input: false,
+            },
+            1_000,
+        );
+        jjj_acc.push_str(&tab_resp.committed_text);
+    }
+    let jjj_us = u64::try_from(t_jjj.elapsed().as_micros()).unwrap_or(0);
+    latencies_us.push(jjj_us);
+    let jjj_ok =
+        jjj_acc == "君不见黄河之水天上来，奔流到海不复回。君不见高堂明镜悲白发，朝如青丝暮成雪";
+    if jjj_ok {
+        passed += 1;
+    }
+    writeln!(
+        out,
+        "  [{}] {:<18} {:<26} -> {:<22} ({} us)",
+        if jjj_ok { "PASS" } else { "FAIL" },
+        "jiangjinjiu-chain",
+        "junbujianhuanghe + 4xTab",
+        jjj_acc,
+        jjj_us
+    )?;
+
+    let total_cases = cases.len() + 4;
     latencies_us.sort_unstable();
     let p50 = latencies_us[latencies_us.len() / 2];
     let p99 = latencies_us[(latencies_us.len() * 99) / 100];

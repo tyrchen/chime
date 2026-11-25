@@ -23,7 +23,7 @@ use chime_lexicon::{
     CompiledDictBuilder, Lexicon, TypingSample, UserStore, import_macos_text_replacements,
     parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes, parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, RerankJob};
+use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob};
 use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -31,8 +31,9 @@ use thiserror::Error;
 pub use crate::{
     config::{CandidateLayout, ChimeConfig, ConfigError},
     personalize::{
-        ImePackManifest, PersonalizeError, TrainingRecord, build_colab_training_jsonl,
-        build_imepack_dir, install_imepack_dir,
+        ImePackManifest, InstalledImePack, PackBuildOptions, PersonalizeError, TrainingRecord,
+        build_colab_training_jsonl, build_imepack_dir, build_imepack_v2, discover_installed_packs,
+        install_imepack_dir,
     },
     punctuation::PunctuationState,
     sanitize::{SanitizeReport, sanitize_corpus_text},
@@ -123,6 +124,12 @@ pub struct EngineStatus {
     pub learned_habits: usize,
     /// True if a Stage-2 `Safetensors` neural reranker is active.
     pub neural_loaded: bool,
+    /// Number of installed `.imepack` cartridges mounted from `packs/`.
+    #[serde(default)]
+    pub installed_packs: usize,
+    /// Number of active `Multi-LoRA` sidecar adapters mounted on Metal GPU.
+    #[serde(default)]
+    pub active_loras: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +225,7 @@ pub struct ChimeEngine {
     user_store: UserStore,
     decoder: LatticeDecoder,
     async_reranker: Option<AsyncRerankHandle>,
+    installed_packs_count: usize,
     sessions: VecDeque<InputSession>,
     next_session_id: u64,
 }
@@ -241,13 +249,14 @@ impl ChimeEngine {
             user_store: UserStore::new(),
             decoder: LatticeDecoder::new(),
             async_reranker: None,
+            installed_packs_count: 0,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         }
     }
 
     /// Initializes a full production engine backed by `app_support_dir` (`config.toml`,
-    /// `user_store.db`, `dicts/*.imedict`, `neural/`) and optional
+    /// `user_store.db`, `dicts/*.imedict`, `packs/*.imepack`, `neural/`) and optional
     /// `bundle_resources_dir/core.imedict`.
     ///
     /// # Errors
@@ -260,6 +269,7 @@ impl ChimeEngine {
     ) -> Result<Self, EngineError> {
         std::fs::create_dir_all(app_support_dir)?;
         std::fs::create_dir_all(app_support_dir.join("dicts"))?;
+        std::fs::create_dir_all(app_support_dir.join("packs"))?;
 
         let config =
             ChimeConfig::load_or_init(&app_support_dir.join("config.toml")).unwrap_or_default();
@@ -274,6 +284,7 @@ impl ChimeEngine {
             user_store,
             decoder: LatticeDecoder::new(),
             async_reranker: None,
+            installed_packs_count: 0,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
         };
@@ -281,8 +292,8 @@ impl ChimeEngine {
         Ok(engine)
     }
 
-    /// Hot-reloads `config.toml`, mounted `.imedict` dictionaries, `macOS` text replacements, and
-    /// Stage-2 neural model.
+    /// Hot-reloads `config.toml`, mounted `.imedict` dictionaries, `.imepack` cartridges,
+    /// `macOS` text replacements, and Stage-2 neural model + `Multi-LoRA` sidecar adapters!
     pub fn reload_assets(&mut self) {
         if let Some(dir) = &self.app_support_dir
             && let Ok(cfg) = ChimeConfig::load_or_init(&dir.join("config.toml"))
@@ -297,6 +308,9 @@ impl ChimeEngine {
                 let _ = lex.mount_compiled_mmap(&core_path);
             }
         }
+        let mut lora_specs: Vec<LoraMountSpec> = Vec::new();
+        self.installed_packs_count = 0;
+
         if let Some(dir) = &self.app_support_dir {
             let dicts_dir = dir.join("dicts");
             if let Ok(entries) = std::fs::read_dir(&dicts_dir) {
@@ -311,7 +325,23 @@ impl ChimeEngine {
                 }
             }
 
-            //Opportunistically import macOS System Text Replacements if readable.
+            let packs = discover_installed_packs(dir);
+            self.installed_packs_count = packs.len();
+            for pack in packs {
+                if let Some(dp) = pack.dict_path {
+                    let _ = lex.mount_compiled_mmap(&dp);
+                }
+                if let Some(lp) = pack.lora_path {
+                    lora_specs.push(LoraMountSpec {
+                        id: pack.manifest.effective_id(),
+                        path: lp,
+                        scale: pack.manifest.lora_scale,
+                        routing: pack.manifest.routing,
+                    });
+                }
+            }
+
+            // Opportunistically import macOS System Text Replacements if readable.
             if let Some(home) = std::env::var_os("HOME") {
                 let tr_db =
                     PathBuf::from(home).join("Library/KeyboardServices/TextReplacements.db");
@@ -328,7 +358,7 @@ impl ChimeEngine {
                 bundle_neural_dir.filter(|b| b.join("model.safetensors").exists())
             };
             if let Some(n_dir) = chosen_neural
-                && let Ok(worker) = AsyncRerankHandle::spawn_from_dir(&n_dir)
+                && let Ok(worker) = AsyncRerankHandle::spawn_from_dir_with_loras(&n_dir, lora_specs)
             {
                 self.async_reranker = Some(worker);
             }
@@ -364,12 +394,17 @@ impl ChimeEngine {
             word_entries: self.lexicon.total_word_entries(),
             learned_habits: self.user_store.habit_count(),
             neural_loaded: self.async_reranker.is_some(),
+            installed_packs: self.installed_packs_count,
+            active_loras: self
+                .async_reranker
+                .as_ref()
+                .map_or(0, AsyncRerankHandle::lora_count),
         }
     }
 
-    /// Imports a user-selected file (`.scel`, `.bdict`, `.dict.yaml`, `.tsv`, `.imedict`, or
-    /// `.imepack` dir), compiles it into `app_support_dir/dicts/` when applicable, and hot-mounts
-    /// immediately!
+    /// Imports a user-selected file (`.scel`, `.bdict`, `.dict.yaml`, `.tsv`, `.imedict`,
+    /// `.imepack` dir, or `.imepack.zip` archive), compiles/extracts it into `app_support_dir`, and
+    /// hot-mounts immediately!
     ///
     /// # Errors
     ///
@@ -382,17 +417,19 @@ impl ChimeEngine {
         let dicts_dir = support_dir.join("dicts");
         std::fs::create_dir_all(&dicts_dir)?;
 
-        if path.is_dir() && path.join("manifest.json").exists() {
-            let manifest = install_imepack_dir(path, &support_dir)?;
-            self.reload_assets();
-            return Ok(usize::from(manifest.has_dictionary) + usize::from(manifest.has_safetensors));
-        }
-
         let ext = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+
+        if (path.is_dir() && path.join("manifest.json").exists()) || ext == "zip" {
+            let manifest = install_imepack_dir(path, &support_dir)?;
+            self.reload_assets();
+            return Ok(usize::from(manifest.has_dictionary)
+                + usize::from(manifest.has_lora)
+                + usize::from(manifest.has_safetensors));
+        }
         if ext == "imedict" {
             let stem = path
                 .file_name()
@@ -583,11 +620,15 @@ impl ChimeEngine {
             }
             let displayed = sess.all_candidates.clone();
             let mut rescored = displayed.clone();
-            for (cand, bonus) in rescored.iter_mut().zip(res.bonus_scores) {
-                // Only rescore full-span candidates; keep partial prefix tails in order below.
-                if cand.consumed_bytes == sess.raw_buffer.len() {
-                    cand.score += bonus;
-                }
+            for (cand, bonus) in rescored
+                .iter_mut()
+                .filter(|c| {
+                    c.consumed_bytes == sess.raw_buffer.len() && c.kind != MatchKind::Completion
+                })
+                .take(8)
+                .zip(res.bonus_scores)
+            {
+                cand.score += bonus;
             }
             let (mut full_part, partial_part): (Vec<_>, Vec<_>) = rescored
                 .into_iter()
@@ -1105,7 +1146,7 @@ impl ChimeEngine {
         if let Some(worker) = &self.async_reranker {
             let full_texts: Vec<String> = cands
                 .iter()
-                .filter(|c| c.consumed_bytes == raw_clone.len())
+                .filter(|c| c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion)
                 .take(8)
                 .map(|c| c.text.clone())
                 .collect();
@@ -1113,6 +1154,7 @@ impl ChimeEngine {
                 let job = RerankJob {
                     session_id: self.sessions[idx].id,
                     generation_id: self.sessions[idx].generation_id,
+                    app_bundle_id: app_clone,
                     left_context: effective_left,
                     candidate_texts: full_texts,
                     dispatched_at: Instant::now(),
@@ -1120,7 +1162,9 @@ impl ChimeEngine {
                 if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(10)) {
                     for (cand, bonus) in cands
                         .iter_mut()
-                        .filter(|c| c.consumed_bytes == raw_clone.len())
+                        .filter(|c| {
+                            c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion
+                        })
                         .take(8)
                         .zip(bonuses)
                     {

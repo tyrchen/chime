@@ -17,6 +17,11 @@ pub enum TypoEdit {
         /// Spatial penalty cost based on Euclidean key distance.
         cost: f32,
     },
+    /// An accidental repeated keystroke (`quu` -> `qu`, `niian` -> `nian`).
+    ExtraRepeat {
+        /// Penalty cost for dropping a duplicate adjacent letter.
+        cost: f32,
+    },
 }
 
 impl TypoEdit {
@@ -24,7 +29,9 @@ impl TypoEdit {
     #[must_use]
     pub const fn cost(self) -> f32 {
         match self {
-            Self::AdjacentSwap { cost } | Self::NeighborKey { cost } => cost,
+            Self::AdjacentSwap { cost }
+            | Self::NeighborKey { cost }
+            | Self::ExtraRepeat { cost } => cost,
         }
     }
 }
@@ -80,16 +87,39 @@ pub fn keyboard_substitution_cost(typed: u8, intended: u8) -> Option<f32> {
     }
 }
 
-/// Generates plausible 1-edit typo corrections (transposition or neighbor key) for a token slice.
+/// Generates plausible 1-edit typo corrections (transposition, neighbor key, or repeated key) for a
+/// token slice.
 #[must_use]
 pub fn generate_typo_variants(token: &str) -> SmallVec<[(SyllableId, TypoEdit); 6]> {
     let mut out = SmallVec::new();
     let bytes = token.as_bytes();
-    if bytes.len() < 2 || bytes.len() > 6 || !bytes.iter().all(u8::is_ascii_lowercase) {
+    if bytes.len() < 2 || bytes.len() > 7 || !bytes.iter().all(u8::is_ascii_lowercase) {
         return out;
     }
 
-    // 1. Adjacent character transposition (`shaung` -> `shuang`, `nhiao` -> `nihao`).
+    // 0. Accidental double-letter keystroke (`quu` -> `qu`, `niian` -> `nian`) when `token` itself
+    //    is not already a canonical syllable.
+    if bytes.len() >= 3 && lookup_syllable(token).is_none() {
+        for i in 0..(bytes.len() - 1) {
+            if bytes[i] == bytes[i + 1] {
+                let mut shrunk = Vec::with_capacity(bytes.len() - 1);
+                shrunk.extend_from_slice(&bytes[..i]);
+                shrunk.extend_from_slice(&bytes[i + 1..]);
+                if let Ok(candidate) = std::str::from_utf8(&shrunk)
+                    && let Some(id) = lookup_syllable(candidate)
+                    && !out.iter().any(|(existing, _)| *existing == id)
+                {
+                    out.push((id, TypoEdit::ExtraRepeat { cost: 1.10 }));
+                }
+            }
+        }
+    }
+
+    if bytes.len() > 6 {
+        return out;
+    }
+
+    // 1. Adjacent character transposition (`shaung` -> `shuang`, `uq` -> `qu`).
     let mut buf = bytes.to_vec();
     for i in 0..(bytes.len() - 1) {
         if buf[i] == buf[i + 1] {

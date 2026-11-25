@@ -79,6 +79,8 @@ public struct ChimeStatusDTO: Decodable, Sendable, Equatable {
     public let word_entries: Int
     public let learned_habits: Int
     public let neural_loaded: Bool
+    public let installed_packs: Int?
+    public let active_loras: Int?
 }
 
 /// MainActor-isolated coordinator owning the persistent Rust `ChimeEngineHandle` and lightweight

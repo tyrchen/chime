@@ -4,7 +4,9 @@
 
 #![forbid(unsafe_code)]
 
-use chime_lexicon::{Lexicon, UserStore, WordEntry};
+use std::collections::HashMap;
+
+use chime_lexicon::{Lexicon, UserStore, WordEntry, annotate_chinese_word};
 use chime_phonetics::{
     CodeSwitchSignal, FuzzyConfig, ShuangpinScheme, SyllableId, classify_code_switch,
     expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
@@ -359,7 +361,7 @@ impl LatticeDecoder {
             && exact_syls.len() >= 3
         {
             for (q_syls, fz_pen) in expand_fuzzy_prefix_queries(&exact_syls, &ctx.fuzzy) {
-                for verse in lexicon.complete_pinyin_prefix(&q_syls, 3) {
+                for verse in lexicon.complete_pinyin_prefix(&q_syls, 6) {
                     if !full_candidates.iter().any(|c| c.text == verse.surface) {
                         #[allow(clippy::cast_precision_loss)]
                         let comp_score = verse.log_prob
@@ -376,20 +378,64 @@ impl LatticeDecoder {
             }
         }
 
+        // Context-guided next-verse continuation promotion
+        // (`君不见黄河之水天上来，奔流到海不复回。` + `junbujian` -> `#1 君不见高堂明镜悲白发`) AND
+        // anti-repeat penalty against repeating an already-typed 5+ character verse verbatim!
+        if !ctx.left_context.is_empty() && !is_single_syllable_input {
+            if let Some(next_raw) = lexicon.next_clause_completion(ctx.left_context) {
+                let clean_next = next_raw.trim_start_matches(|c: char| {
+                    matches!(
+                        c,
+                        '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';'
+                    )
+                });
+                if !clean_next.is_empty()
+                    && matches_expected_clause_prefix(&lower_all, clean_next, ctx)
+                {
+                    if let Some(existing) =
+                        full_candidates.iter_mut().find(|c| c.text == clean_next)
+                    {
+                        existing.score += 7.5;
+                    } else {
+                        full_candidates.push(Candidate {
+                            text: clean_next.to_string(),
+                            score: 4.5,
+                            kind: MatchKind::Completion,
+                            consumed_bytes: n,
+                        });
+                    }
+                }
+            }
+
+            for cand in &mut full_candidates {
+                if cand.text.chars().count() >= 5 && ctx.left_context.contains(&cand.text) {
+                    cand.score -= 5.5;
+                }
+            }
+        }
+
         full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
         full_candidates.truncate(15);
 
         if let Some(reranker) = &self.reranker {
-            let rerank_top = full_candidates.len().min(6);
-            let bonuses = reranker.score_batch(
-                ctx.left_context,
-                ctx.app_bundle_id,
-                &full_candidates[..rerank_top],
-            );
-            for (cand, bonus) in full_candidates[..rerank_top].iter_mut().zip(bonuses) {
-                cand.score += bonus;
+            let mut non_comp_indices: Vec<usize> = full_candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.kind != MatchKind::Completion)
+                .map(|(i, _)| i)
+                .take(6)
+                .collect();
+            if non_comp_indices.len() >= 2 {
+                let batch: Vec<Candidate> = non_comp_indices
+                    .iter()
+                    .map(|&i| full_candidates[i].clone())
+                    .collect();
+                let bonuses = reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &batch);
+                for (idx, bonus) in non_comp_indices.drain(..).zip(bonuses) {
+                    full_candidates[idx].score += bonus;
+                }
+                full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
             }
-            full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
         // Guarantee the highest-ranked `Completion` candidate (`… ⇥`) sits in the visible Top-2
@@ -583,7 +629,7 @@ impl LatticeDecoder {
                 continue;
             }
 
-            let max_len = (n - i).min(6);
+            let max_len = (n - i).min(7);
             for len in 1..=max_len {
                 let sub = &lower[i..i + len];
                 if sub.contains('\'') {
@@ -645,7 +691,7 @@ impl LatticeDecoder {
         is_dev_app: bool,
         edges: &mut [Vec<LatticeEdge>],
     ) {
-        type EdgeVisit = (usize, usize, SmallVec<[SyllableId; 8]>, f32, MatchKind);
+        type EdgeVisit = (usize, usize, SmallVec<[SyllableId; 16]>, f32, MatchKind);
         let n = lower.len();
         for start in 0..n {
             let mut stack: Vec<EdgeVisit> = Vec::new();
@@ -731,9 +777,11 @@ impl LatticeDecoder {
                     });
                 }
 
-                // Allow up to 12-syllable exact idioms, poems & tongue twisters (`八百标兵奔北坡`,
-                // `人有旦夕祸福`) gated by $O(\log N)$ prefix check for lengths >= 4!
-                if seq.len() < 4 || (seq.len() < 12 && lexicon.has_longer_pinyin_prefix(&seq)) {
+                // Allow up to 16-syllable exact idioms, poems, merged Song Ci clauses & tongue
+                // twisters (`念去去，千里烟波`, `君不见黄河之水天上来`,
+                // `蓦然回首那人却在灯火阑珊处`), gated at every step by $O(\log N)$ prefix
+                // existence check!
+                if seq.len() < 16 && lexicon.has_longer_pinyin_prefix(&seq) {
                     let has_sep = cur_end < n && lower.as_bytes()[cur_end] == b'\'';
                     let next_pos = if has_sep { cur_end + 1 } else { cur_end };
                     if next_pos < n {
@@ -869,6 +917,48 @@ pub fn promote_top_completion_into_bar(candidates: &mut [Candidate]) {
     {
         candidates[1..=comp_pos].rotate_right(1);
     }
+}
+
+fn matches_expected_clause_prefix(
+    lower_raw: &str,
+    expected_clause: &str,
+    ctx: &DecodeContext<'_>,
+) -> bool {
+    let clean_raw: String = lower_raw
+        .bytes()
+        .filter(u8::is_ascii_lowercase)
+        .map(char::from)
+        .collect();
+    if clean_raw.len() < 4 {
+        return false;
+    }
+    let cjk_only: String = expected_clause
+        .chars()
+        .filter(|c| ('\u{4E00}'..='\u{9FA5}').contains(c))
+        .collect();
+    let Some(py_spaced) = annotate_chinese_word(&cjk_only, &HashMap::new()) else {
+        return false;
+    };
+    let joined_py: String = py_spaced.split_whitespace().collect();
+    if ctx.scheme == ShuangpinScheme::Full && joined_py.starts_with(&clean_raw) {
+        return true;
+    }
+    let Some(typed_syls) = extract_greedy_syllables(lower_raw, ctx.scheme) else {
+        return false;
+    };
+    if typed_syls.len() < 2 {
+        return false;
+    }
+    let expected_syls: Vec<SyllableId> = py_spaced
+        .split_whitespace()
+        .filter_map(lookup_syllable)
+        .collect();
+    if expected_syls.len() < typed_syls.len() {
+        return false;
+    }
+    expand_fuzzy_prefix_queries(&typed_syls, &ctx.fuzzy)
+        .iter()
+        .any(|(q, _)| expected_syls.starts_with(q))
 }
 
 fn expand_fuzzy_prefix_queries(

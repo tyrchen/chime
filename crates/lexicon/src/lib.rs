@@ -246,8 +246,40 @@ impl Lexicon {
             .insert(trigger_clause.into(), next_clause.into());
     }
 
+    /// Loads newline-delimited continuation TSV rows (`trigger_clause\tnext_clause`).
+    pub fn load_continuations_tsv(&mut self, tsv_content: &str) -> usize {
+        let mut added = 0usize;
+        for raw_line in tsv_content.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((trig, next_c)) = line.split_once('\t') {
+                let trig = trig.trim();
+                let next_c = next_c.trim();
+                if !trig.is_empty() && !next_c.is_empty() {
+                    self.insert_continuation(trig, next_c);
+                    added += 1;
+                }
+            }
+        }
+        added
+    }
+
+    fn lookup_continuation_raw(&self, trigger: &str) -> Option<&str> {
+        if let Some(cont) = self.continuations.get(trigger) {
+            return Some(cont.as_str());
+        }
+        for layer in &self.compiled_layers {
+            if let Some(cont) = layer.lookup_continuation(trigger) {
+                return Some(cont);
+            }
+        }
+        None
+    }
+
     /// Looks up a classical couplet or proverb next-clause continuation matching the tail of
-    /// `left_context`.
+    /// `left_context` across the mutable overlay and all mounted `mmap` `.imedict` layers.
     #[must_use]
     pub fn next_clause_completion(&self, left_context: &str) -> Option<String> {
         let trimmed = left_context.trim_end_matches(|c: char| {
@@ -260,25 +292,29 @@ impl Lexicon {
         if trimmed.is_empty() {
             return None;
         }
+        let ended_with_punct = left_context.chars().last().is_some_and(|c| {
+            matches!(
+                c,
+                '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';'
+            )
+        });
+        let format_cont = |cont: &str| -> String {
+            if ended_with_punct {
+                cont.trim_start_matches(|c: char| {
+                    matches!(c, '，' | '。' | '；' | '：' | ',' | '.' | ';')
+                })
+                .to_string()
+            } else {
+                cont.to_string()
+            }
+        };
+
         let chars: Vec<char> = trimmed.chars().collect();
-        let max_tail = chars.len().min(16);
+        let max_tail = chars.len().min(20);
         for span in (3..=max_tail).rev() {
             let suffix: String = chars[chars.len() - span..].iter().collect();
-            if let Some(cont) = self.continuations.get(&suffix) {
-                // Avoid doubling leading punctuation if `left_context` already ended with one!
-                let ended_with_punct = left_context.chars().last().is_some_and(|c| {
-                    matches!(
-                        c,
-                        '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';'
-                    )
-                });
-                if ended_with_punct {
-                    let stripped = cont.trim_start_matches(|c: char| {
-                        matches!(c, '，' | '。' | '；' | '：' | ',' | '.' | ';')
-                    });
-                    return Some(stripped.to_string());
-                }
-                return Some(cont.clone());
+            if let Some(cont) = self.lookup_continuation_raw(&suffix) {
+                return Some(format_cont(cont));
             }
         }
         None
@@ -471,6 +507,17 @@ impl Lexicon {
             .map(CompiledDict::word_record_count)
             .sum();
         overlay_words + compiled_words
+    }
+
+    /// Returns total `Tab` continuation rules across overlay and mounted compiled layers.
+    #[must_use]
+    pub fn continuation_count(&self) -> usize {
+        self.continuations.len()
+            + self
+                .compiled_layers
+                .iter()
+                .map(CompiledDict::continuation_count)
+                .sum::<usize>()
     }
 
     fn upsert_sorted(bucket: &mut Vec<WordEntry>, entry: &WordEntry) {

@@ -1,42 +1,44 @@
 # Chime
 
-A privacy-first, sub-10ms local neural Chinese Pinyin Input Method Engine for **macOS 15+ (Apple Silicon)**, built with a **Rust core** and a **Swift 6 UI**.
+A 100% offline, zero-telemetry, sub-3ms local neural Chinese Pinyin Input Method Engine for **macOS 15+ (Apple Silicon)**, built with a **Rust core**, **Swift 6 UI**, **4-bit MLX Metal `Qwen3-6L` base model (`64.2 MB`)**, and **hot-swappable `.imepack` (`Multi-LoRA` + zero-copy `.imedict`) cartridges**.
 
-## Complete Feature Matrix
+## Highlights (`v0.6.0`)
 
-1. **Pinyin, Shuangpin, Super-Abbreviation & Zero-Bloat Fuzzy Pinyin**:
+1. **Pinyin, Shuangpin, Super-Abbreviation, Typo Recovery & Zero-Bloat Fuzzy Pinyin**:
    - Full Pinyin, initial skeletons (`wsm` -> `为什么`, `rgzn` -> `人工智能`), and **Xiaohe / Ziranma / Microsoft Shuangpin**.
-   - Configurable fuzzy syllable algebra (`z/zh`, `c/ch`, `s/sh`, `n/l`, `f/h`, `r/l`, `an/ang`, `en/eng`, `in/ing`, `ian/iang`, `uan/uang`) evaluated dynamically without inflating dictionary storage.
-   - Full-sentence decoding plus step-by-step prefix word selection (`今天 wo'men`), formatted preedit (`jin'tian'wo'men`), smart Chinese full-width punctuation (paired quotes `“”`/`‘’` & decimal `3.14` exemption), candidate paging (`-`/`=`, `PageUp`/`PageDown`, Arrows), and `Tab` one-key typo rollback.
+   - Dynamic fuzzy Pinyin (`z/zh`, `c/ch`, `s/sh`, `n/l`, `f/h`, `r/l`, `an/ang`, `en/eng`, `in/ing`, `ian/iang`, `uan/uang`) plus QWERTY neighbor, transposition (`shaungpin -> 双拼`, `nianquuqqianliyanbo -> 念去去，千里烟波`), and repeated-keystroke recovery (`mohuyign -> 模糊音`).
+   - Clean single-syllable Top-5 curation (`gen -> 1. 跟 2. 根 3. 根据 4. 根本 5. 更`) with rare Unihan characters tucked into the `5x5` expandable grid (`↓`).
 2. **Modeless Chinese-English Code-Switching**:
-   - Dual-track lattice simultaneously decodes Mandarin syllables and English/code identifiers (`macOS`, `GitHub`, `TypeScript`, `useEffect`, `PR`, `Kubernetes` prefix completion) with per-app Pangu auto-spacing.
-3. **Zero-Copy `mmap` Lexicon (`CHIMED02`), Dense Bigram/Trigram LM, Third-Party Importers & `SQLite` WAL User Store**:
-   - Compiles ~330,000+ permissive Mandarin & English entries (`pinyin` + `jieba` MIT frequencies + polyphone phrase table + `/usr/share/dict/words`) plus ~2,800 teacher-scored Bigram & Trigram transitions into `core.imedict`, memory-mapped in `< 1ms` with particle-transparent Skip-Bigram decoding (`公民的权利` vs `国家的权力`, `如实地反映` vs `化学反应`).
-   - Native pure-Rust importers for **Sogou `.scel`**, **Baidu `.bdict`**, **Rime `.dict.yaml`**, **TSV**, and **macOS System Text Replacements** (`TextReplacements.db`).
-   - Durable `SQLite` (`WAL` mode) `UserStore` tracking exponential time-decayed habits, per-app affinity, custom user phrases (`Cedar` trie), and backspace negative-feedback overrides.
-4. **On-Device Apple Silicon Metal Neural Reranking (`mlx-rs`) & Colab `LoRA` Personalization (`Train Your Own Brain`)**:
-   - Ships an out-of-the-box 4-layer KL-distilled **`Qwen/Qwen2.5-0.5B`** Causal SLM (`FP16` Safetensors, `16,384` Mandarin+English BPE vocabulary, tied embeddings) running natively on Apple Silicon Metal GPU via **`mlx-rs`** with persistent **`MlxPrefixCache`**, single-dispatch lazy continuation batching, actor-isolated background worker (`p50 ~ 3.2ms`), **60ms Anti-Jitter Freeze Window**, plus optional macOS 15 **`CoreML MLState`** ANE runner.
-   - Local high-recall secret/PII sanitizer + noisy reverse-G2P training pair synthesizer (`chime corpus-export`) paired with [colab/train_personal_brain.ipynb](colab/train_personal_brain.ipynb) to fine-tune and hot-load `.imepack` bundles.
-5. **Native macOS 15 Swift 6 Host (`Chime 拼音` / `Chime.app`)**:
-   - Localized input source (`Chime 拼音`) with crisp vector template menu bar & app icons, zero-property `ChimeInputController` (immune to `IMKServer` controller leaks), `< 250ms` clean `Left Shift` inline English toggle, `IsSecureEventInputEnabled()` password bypass, Chromium `CGRectZero` fallback, interactive vibrancy `CandidatePanel` (horizontal/vertical + mouse click), menu bar actions, and native **SwiftUI Preferences Window**.
+   - Simultaneous Mandarin + English/code identifier decoding (`macOS`, `GitHub`, `TypeScript`, `useEffect`, `PR`, `Kubernetes` prefix completion) with automatic Pangu spacing.
+3. **Zero-Copy `mmap` Lexicon (`CHIMED02`) & Full-Poem `Tab` Continuation Chains**:
+   - Compiles 620,000+ Mandarin & English entries, teacher-scored Bigram/Trigram transitions, and $O(\log C)$ `Tab` verse continuation chains into `core.imedict`, memory-mapped in `< 1 ms`.
+   - Supports end-to-end classical poetry & prose `Tab` chaining (e.g., 《将进酒》《水调歌头》《雨霖铃》《滕王阁序》《岳阳楼记》《赤壁赋》) plus context-aware next-verse promotion and anti-repeat scoring (`君不见黄河之水天上来，奔流到海不复回。` + `junbujian` -> `#1 君不见高堂明镜悲白发`).
+   - Native pure-Rust importers for **Sogou `.scel`**, **Baidu `.bdict`**, **Rime `.dict.yaml`**, **TSV**, and **macOS System Text Replacements** (`TextReplacements.db`), backed by a `SQLite` (`WAL`) user habit store.
+4. **Frozen 64 MB 4-bit MLX `Qwen3-6L` Base + Pluggable `Multi-LoRA` `.imepack` Cartridges**:
+   - 6-layer layer-distilled **`Qwen/Qwen3-0.6B-Base`** student (`24,576` compact BPE vocab, `head_dim=128`, QK-Norm, 4-bit affine quantized `64.17 MB`) running natively on Apple Silicon Metal via **`mlx-rs 0.34`** (`0.72 ms` warm 1-step Metal latency, `p50 ~ 2.95 ms` end-to-end).
+   - **Multi-LoRA Sidecar**: Mount multiple `~2.06 MB` Rank-8 FP16 `lora.safetensors` + `pack.imedict` `.imepack` cartridges (`classics-poetry`, `tech-developer`, or strictly private personal style packs) with dynamic per-app and context routing (`< 0.04 ms` overhead) while sharing a single frozen base model in Unified Memory.
+5. **Release Installer & GitHub Pages Hub (`site/`)**:
+   - `make release-artifacts` builds `Chime-v0.6.0-macos-arm64.pkg`, `Chime-v0.6.0-macos-arm64.zip`, `classics-poetry.imepack.zip`, `tech-developer.imepack.zip`, and `SHA256SUMS.txt`.
+   - Static landing page & `.imepack` download hub in [`site/`](site/index.html), paired with `.github/workflows/pages.yml` and `.github/workflows/release.yml`.
 
 ## Quick Start
 
 ```bash
-# Run all unit & doc tests
-make test
+# Run formatting, strict clippy pedantic lints, and all unit/doc tests
+make lint && make test
 
-# Distill Qwen2.5-0.5B base SLM, build ~330k-entry CHIMED02 core.imedict, and run the 25-case benchmark suite
+# Build core.imedict and run the 42-case accuracy + latency benchmark suite on Metal GPU
 make eval
 
-# Build and sign dist/Chime.app (bundles core.imedict + Qwen2.5 Metal neural model + icons)
-make macos-bundle
-
-# Install and register "Chime 拼音" at ~/Library/Input Methods/Chime.app
+# Build, sign, and install ~/Library/Input Methods/Chime.app
 make install-macos
 
-# Export sanitized personal notes into noisy G2P JSONL for Google Colab LoRA training
-cargo run --release -p chime-cli -- corpus-export ~/Notes/*.md -o personal_corpus.jsonl
+# Build macOS .pkg/.zip installer and public .imepack.zip cartridges
+make release-artifacts
+
+# Install or list .imepack cartridges via CLI
+cargo run --release -p chime-cli -- pack install dist/releases/classics-poetry.imepack.zip
+cargo run --release -p chime-cli -- pack list
 ```
 
 ## License

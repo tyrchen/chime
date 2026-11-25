@@ -1,8 +1,12 @@
 //! Apple Silicon Metal GPU Qwen3 / Qwen2.5 Causal Transformer Reranker powered by `mlx-rs`
-//! (`0.34`), supporting both native **4-bit MLX affine quantized** (`quantized_matmul` +
-//! `dequantize`, ~60 MB) and `FP16`/`F32` `SafeTensors` weights!
+//! (`0.34`), supporting native **4-bit MLX affine quantized** (`quantized_matmul` +
+//! `dequantize`, ~64 MB), `FP16`/`F32` `SafeTensors` weights, and **Multi-LoRA Sidecar**
+//! hot-mounted low-rank adapters (`y = Base(x) + sum_k s_k * (x @ A_k^T) @ B_k^T`).
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use mlx_rs::{
     Array, Dtype as MlxDtype,
@@ -14,8 +18,178 @@ use mlx_rs::{
     },
     transforms::eval,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{ModelConfig, NeuralError, QuantizationConfig};
+
+/// Dynamic context and host-application routing policy for a mounted `LoRA` adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LoraRouting {
+    /// Always active at `base_scale` across every app and context (personal habit packs).
+    #[default]
+    Always,
+    /// Full `base_scale` in terminals, IDEs, and bilingual code-switching; gentle `0.25x` in prose.
+    Developer,
+    /// Full `base_scale` when classical poetry/prose cues or multi-char verses appear; `0.30x`
+    /// otherwise.
+    Classical,
+}
+
+impl LoraRouting {
+    /// Computes the raw pre-simplex `LoRA` multiplier given the active host app, left context, and
+    /// candidate pool.
+    #[must_use]
+    pub fn effective_scale(
+        self,
+        base_scale: f32,
+        app_bundle_id: &str,
+        left_context: &str,
+        candidate_texts: &[String],
+    ) -> f32 {
+        let max_cand_chars = candidate_texts
+            .iter()
+            .map(|c| c.chars().count())
+            .max()
+            .unwrap_or(0);
+        match self {
+            Self::Always => {
+                // Keep personal written-essay style gentle on 1-2 char spoken words so colloquial
+                // disambiguation (`究竟有多大`) stays faithful to spoken priors!
+                if max_cand_chars <= 2 && left_context.chars().count() <= 6 {
+                    base_scale * 0.45
+                } else {
+                    base_scale
+                }
+            }
+            Self::Developer => {
+                let has_code_cue = left_context.bytes().any(|b| b.is_ascii_alphabetic())
+                    || candidate_texts
+                        .iter()
+                        .any(|c| c.bytes().any(|b| b.is_ascii_alphabetic()));
+                if has_code_cue {
+                    base_scale
+                } else if is_developer_bundle(app_bundle_id) {
+                    base_scale * 0.25
+                } else {
+                    0.0
+                }
+            }
+            Self::Classical => {
+                // Hard-gate classical Chinese adapter to `0.0` outside classical context so archaic
+                // priors never leak into everyday modern Mandarin!
+                if looks_classical_context(left_context, candidate_texts) {
+                    base_scale
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+fn is_developer_bundle(bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    [
+        "vscode",
+        "zed",
+        "ghostty",
+        "iterm",
+        "terminal",
+        "warp",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "xcode",
+        "jetbrains",
+        "cursor",
+        "sublime",
+        "neovide",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn looks_classical_context(left_context: &str, candidate_texts: &[String]) -> bool {
+    const CLASSICAL_CUES: &[char] = &[
+        '之', '乎', '者', '也', '矣', '焉', '哉', '兮', '夫', '盖', '岂', '莫', '勿', '君', '吾',
+        '汝', '尔', '樽', '阙', '霭', '婵', '娟', '潇', '湘', '沧', '浪', '阑', '珊',
+    ];
+    if left_context.chars().any(|c| CLASSICAL_CUES.contains(&c)) {
+        return true;
+    }
+    candidate_texts.iter().any(|c| {
+        c.chars().count() >= 5
+            && (c.contains('，') || c.chars().any(|ch| CLASSICAL_CUES.contains(&ch)))
+    })
+}
+
+/// Specification for mounting a `.safetensors` `LoRA` adapter onto `MlxTransformer`.
+#[derive(Debug, Clone)]
+pub struct LoraMountSpec {
+    /// Unique cartridge / adapter identifier (`"classics-poetry"`, `"tech-developer"`, …).
+    pub id: String,
+    /// Path to `lora.safetensors` (`FP16`/`F32` low-rank `lora_A` & `lora_B` tensors).
+    pub path: PathBuf,
+    /// Base `LoRA` scaling factor (`alpha / rank`, typically `1.0`..`2.0`).
+    pub scale: f32,
+    /// Dynamic app/context routing policy.
+    pub routing: LoraRouting,
+}
+
+#[derive(Debug, Clone)]
+struct MlxLoraPair {
+    /// Pre-transposed `A^T` with shape `[in_features, rank]` cast to model activation dtype.
+    a_t: Array,
+    /// Pre-transposed `B^T` with shape `[rank, out_features]` cast to model activation dtype.
+    b_t: Array,
+    /// Low-rank dimension `r`.
+    rank: usize,
+}
+
+/// Rank-concatenated fused `Multi-LoRA` projection (`A_cat^T: [d_in, sum_k r_k]`,
+/// `B_cat^T: [sum_k r_k, d_out]`), reducing $K$ sequential adapter passes to 2 Metal GEMMs!
+#[derive(Debug, Clone)]
+struct MlxStackedLoraProj {
+    a_cat_t: Array,
+    b_cat_t: Array,
+    slices: Vec<(usize, usize)>,
+    total_rank: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MlxStackedLoraLayer {
+    q: Option<MlxStackedLoraProj>,
+    k: Option<MlxStackedLoraProj>,
+    v: Option<MlxStackedLoraProj>,
+    o: Option<MlxStackedLoraProj>,
+    gate: Option<MlxStackedLoraProj>,
+    up: Option<MlxStackedLoraProj>,
+    down: Option<MlxStackedLoraProj>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MlxLoraLayer {
+    q: Option<MlxLoraPair>,
+    k: Option<MlxLoraPair>,
+    v: Option<MlxLoraPair>,
+    o: Option<MlxLoraPair>,
+    gate: Option<MlxLoraPair>,
+    up: Option<MlxLoraPair>,
+    down: Option<MlxLoraPair>,
+}
+
+/// Hot-mounted low-rank adapter residing alongside the frozen 4-bit base model in Unified Memory.
+#[derive(Debug, Clone)]
+pub struct MlxLoraAdapter {
+    /// Unique adapter ID.
+    pub id: String,
+    /// Base `alpha / rank` scale.
+    pub base_scale: f32,
+    /// Dynamic routing mode.
+    pub routing: LoraRouting,
+    layers: Vec<MlxLoraLayer>,
+}
 
 #[derive(Debug, Clone)]
 enum MlxLinear {
@@ -79,6 +253,52 @@ impl MlxLinear {
             )
             .map_err(mlx_err),
         }
+    }
+
+    fn forward_with_stacked_lora(
+        &self,
+        x: &Array,
+        stacked: Option<&MlxStackedLoraProj>,
+        lora_scales: &[f32],
+    ) -> Result<Array, NeuralError> {
+        let mut out = self.forward(x)?;
+        let Some(st) = stacked else {
+            return Ok(out);
+        };
+        let mut any_active = false;
+        let mut gate_vec = Vec::with_capacity(st.total_rank);
+        for &(adapter_idx, r) in &st.slices {
+            let s = lora_scales.get(adapter_idx).copied().unwrap_or(0.0);
+            if s.abs() > 1e-4 {
+                any_active = true;
+            }
+            gate_vec.extend(std::iter::repeat_n(s, r));
+        }
+        if !any_active {
+            return Ok(out);
+        }
+
+        let target_dtype = out.dtype();
+        let compute_dtype = st.a_cat_t.dtype();
+        let x_cast = if x.dtype() == compute_dtype {
+            x.clone()
+        } else {
+            x.as_dtype(compute_dtype).map_err(mlx_err)?
+        };
+        let total_r_i32 = i32::try_from(st.total_rank).unwrap_or(0);
+        let gate_arr = Array::from_slice(&gate_vec, &[1, 1, total_r_i32])
+            .as_dtype(compute_dtype)
+            .map_err(mlx_err)?;
+        let low = x_cast.matmul(&st.a_cat_t).map_err(mlx_err)?;
+        let gated_low = low.multiply(&gate_arr).map_err(mlx_err)?;
+        let delta = gated_low.matmul(&st.b_cat_t).map_err(mlx_err)?;
+        let delta_cast = if delta.dtype() == target_dtype {
+            delta
+        } else {
+            delta.as_dtype(target_dtype).map_err(mlx_err)?
+        };
+        out = out.add(&delta_cast).map_err(mlx_err)?;
+        Ok(out)
     }
 }
 
@@ -195,6 +415,7 @@ struct MlxLayer {
 #[derive(Debug, Clone)]
 pub struct MlxPrefixCache {
     cached_tokens: Vec<i32>,
+    lora_sig: Vec<i32>,
     keys: Vec<Array>,
     values: Vec<Array>,
     /// Cached `log P(token | cached_tokens)` (`[vocab_size]`) at the end of the prefix!
@@ -207,6 +428,7 @@ impl MlxPrefixCache {
     pub const fn new() -> Self {
         Self {
             cached_tokens: Vec::new(),
+            lora_sig: Vec::new(),
             keys: Vec::new(),
             values: Vec::new(),
             next_token_log_probs: Vec::new(),
@@ -220,7 +442,8 @@ impl Default for MlxPrefixCache {
     }
 }
 
-/// Metal-accelerated Qwen3 / Qwen2.5 Causal Transformer weights in Apple Silicon Unified Memory.
+/// Metal-accelerated Qwen3 / Qwen2.5 Causal Transformer weights + Multi-LoRA sidecar in Apple
+/// Silicon Unified Memory.
 #[derive(Debug, Clone)]
 pub struct MlxTransformer {
     config: ModelConfig,
@@ -228,6 +451,8 @@ pub struct MlxTransformer {
     layers: Vec<MlxLayer>,
     final_norm: Array,
     lm_head: MlxLinear,
+    loras: Vec<MlxLoraAdapter>,
+    stacked_loras: Vec<MlxStackedLoraLayer>,
 }
 
 impl MlxTransformer {
@@ -295,7 +520,181 @@ impl MlxTransformer {
             layers,
             final_norm,
             lm_head,
+            loras: Vec::new(),
+            stacked_loras: Vec::new(),
         })
+    }
+
+    /// Hot-mounts a `lora.safetensors` low-rank adapter (`model.layers.{i}.{proj}.{lora_A,lora_B}`)
+    /// alongside the shared frozen base model in Unified Memory!
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if loading or transposing any `LoRA` matrix fails.
+    pub fn mount_lora_safetensors(&mut self, spec: &LoraMountSpec) -> Result<(), NeuralError> {
+        let mut raw = Array::load_safetensors(&spec.path).map_err(|e| {
+            NeuralError::Safetensors(format!(
+                "MLX load LoRA safetensors {} failed: {e}",
+                spec.path.display()
+            ))
+        })?;
+
+        let act_dtype = self.final_norm.dtype();
+        let mut lora_layers = Vec::with_capacity(self.config.num_hidden_layers);
+        let mut to_eval: Vec<Array> = Vec::new();
+        let mut loaded_any = false;
+
+        for idx in 0..self.config.num_hidden_layers {
+            let p = format!("model.layers.{idx}");
+            let mut take_pair = |proj: &str| -> Result<Option<MlxLoraPair>, NeuralError> {
+                let ka1 = format!("{p}.{proj}.lora_A");
+                let kb1 = format!("{p}.{proj}.lora_B");
+                let ka2 = format!("{p}.{proj}.lora_A.weight");
+                let kb2 = format!("{p}.{proj}.lora_B.weight");
+                let a_opt = raw.remove(&ka1).or_else(|| raw.remove(&ka2));
+                let b_opt = raw.remove(&kb1).or_else(|| raw.remove(&kb2));
+                if let (Some(a), Some(b)) = (a_opt, b_opt) {
+                    let rank =
+                        usize::try_from(a.shape().first().copied().unwrap_or(0)).unwrap_or(0);
+                    let a_t = transpose_2d(&a)?.as_dtype(act_dtype).map_err(mlx_err)?;
+                    let b_t = transpose_2d(&b)?.as_dtype(act_dtype).map_err(mlx_err)?;
+                    to_eval.push(a_t.clone());
+                    to_eval.push(b_t.clone());
+                    loaded_any = true;
+                    Ok(Some(MlxLoraPair { a_t, b_t, rank }))
+                } else {
+                    Ok(None)
+                }
+            };
+
+            lora_layers.push(MlxLoraLayer {
+                q: take_pair("self_attn.q_proj")?,
+                k: take_pair("self_attn.k_proj")?,
+                v: take_pair("self_attn.v_proj")?,
+                o: take_pair("self_attn.o_proj")?,
+                gate: take_pair("mlp.gate_proj")?,
+                up: take_pair("mlp.up_proj")?,
+                down: take_pair("mlp.down_proj")?,
+            });
+        }
+
+        if !loaded_any {
+            return Err(NeuralError::Safetensors(format!(
+                "no valid model.layers.* lora_A/lora_B tensors found in {}",
+                spec.path.display()
+            )));
+        }
+
+        eval(&to_eval).map_err(mlx_err)?;
+
+        self.loras.retain(|existing| existing.id != spec.id);
+        self.loras.push(MlxLoraAdapter {
+            id: spec.id.clone(),
+            base_scale: spec.scale,
+            routing: spec.routing,
+            layers: lora_layers,
+        });
+        self.rebuild_stacked_loras()?;
+        Ok(())
+    }
+
+    fn rebuild_stacked_loras(&mut self) -> Result<(), NeuralError> {
+        let mut stacked_layers = Vec::with_capacity(self.config.num_hidden_layers);
+        let mut to_eval: Vec<Array> = Vec::new();
+
+        for l_idx in 0..self.config.num_hidden_layers {
+            let mut build_proj = |getter: fn(&MlxLoraLayer) -> Option<&MlxLoraPair>| -> Result<Option<MlxStackedLoraProj>, NeuralError> {
+                let mut a_parts: Vec<&Array> = Vec::new();
+                let mut b_parts: Vec<&Array> = Vec::new();
+                let mut slices: Vec<(usize, usize)> = Vec::new();
+                let mut total_rank = 0usize;
+                for (a_idx, adapter) in self.loras.iter().enumerate() {
+                    if let Some(ll) = adapter.layers.get(l_idx)
+                        && let Some(pair) = getter(ll)
+                        && pair.rank > 0
+                    {
+                        a_parts.push(&pair.a_t);
+                        b_parts.push(&pair.b_t);
+                        slices.push((a_idx, pair.rank));
+                        total_rank += pair.rank;
+                    }
+                }
+                if a_parts.is_empty() {
+                    return Ok(None);
+                }
+                let a_cat_t = if a_parts.len() == 1 {
+                    a_parts[0].clone()
+                } else {
+                    concatenate(&a_parts, 1).map_err(mlx_err)?
+                };
+                let b_cat_t = if b_parts.len() == 1 {
+                    b_parts[0].clone()
+                } else {
+                    concatenate(&b_parts, 0).map_err(mlx_err)?
+                };
+                to_eval.push(a_cat_t.clone());
+                to_eval.push(b_cat_t.clone());
+                Ok(Some(MlxStackedLoraProj {
+                    a_cat_t,
+                    b_cat_t,
+                    slices,
+                    total_rank,
+                }))
+            };
+
+            stacked_layers.push(MlxStackedLoraLayer {
+                q: build_proj(|ll| ll.q.as_ref())?,
+                k: build_proj(|ll| ll.k.as_ref())?,
+                v: build_proj(|ll| ll.v.as_ref())?,
+                o: build_proj(|ll| ll.o.as_ref())?,
+                gate: build_proj(|ll| ll.gate.as_ref())?,
+                up: build_proj(|ll| ll.up.as_ref())?,
+                down: build_proj(|ll| ll.down.as_ref())?,
+            });
+        }
+
+        if !to_eval.is_empty() {
+            eval(&to_eval).map_err(mlx_err)?;
+        }
+        self.stacked_loras = stacked_layers;
+        Ok(())
+    }
+
+    /// Number of active `Multi-LoRA` adapters mounted on this transformer.
+    #[must_use]
+    pub fn lora_count(&self) -> usize {
+        self.loras.len()
+    }
+
+    /// Computes Simplex-bounded (`sum_k gamma_k <= 0.90`) dynamic per-adapter effective scales for
+    /// `(app_bundle_id, left_context, cands)`, preventing multi-adapter register drift!
+    #[must_use]
+    pub fn compute_lora_scales(
+        &self,
+        app_bundle_id: &str,
+        left_context: &str,
+        candidate_texts: &[String],
+    ) -> Vec<f32> {
+        let mut raw: Vec<f32> = self
+            .loras
+            .iter()
+            .map(|a| {
+                a.routing.effective_scale(
+                    a.base_scale,
+                    app_bundle_id,
+                    left_context,
+                    candidate_texts,
+                )
+            })
+            .collect();
+        let total: f32 = raw.iter().map(|s| s.max(0.0)).sum();
+        if total > 0.90 {
+            let norm_factor = 0.90 / total;
+            for s in &mut raw {
+                *s *= norm_factor;
+            }
+        }
+        raw
     }
 
     /// Returns model hyperparameters.
@@ -304,7 +703,8 @@ impl MlxTransformer {
         &self.config
     }
 
-    /// Incrementally prefills `prefix_ids` on Metal GPU, reusing cached KV states when unchanged!
+    /// Incrementally prefills `prefix_ids` on Metal GPU, reusing cached KV states when both tokens
+    /// and `Multi-LoRA` routing weights match!
     ///
     /// # Errors
     ///
@@ -312,6 +712,22 @@ impl MlxTransformer {
     pub fn ensure_prefix_cached(
         &self,
         prefix_ids: &[u32],
+        cache: &mut MlxPrefixCache,
+    ) -> Result<(), NeuralError> {
+        let default_scales: Vec<f32> = self.loras.iter().map(|a| a.base_scale).collect();
+        self.ensure_prefix_cached_with_scales(prefix_ids, &default_scales, cache)
+    }
+
+    /// Incrementally prefills `prefix_ids` under explicit `lora_scales`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if an MLX Metal kernel fails.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn ensure_prefix_cached_with_scales(
+        &self,
+        prefix_ids: &[u32],
+        lora_scales: &[f32],
         cache: &mut MlxPrefixCache,
     ) -> Result<(), NeuralError> {
         let target_i32: Vec<i32> = prefix_ids
@@ -322,14 +738,25 @@ impl MlxTransformer {
             return Ok(());
         }
 
-        let common = cache
-            .cached_tokens
+        let sig: Vec<i32> = lora_scales
             .iter()
-            .zip(target_i32.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
+            .map(|&s| (s * 1000.0).round() as i32)
+            .collect();
+        let same_lora_sig = cache.lora_sig == sig;
 
-        if common == target_i32.len()
+        let common = if same_lora_sig {
+            cache
+                .cached_tokens
+                .iter()
+                .zip(target_i32.iter())
+                .take_while(|(a, b)| a == b)
+                .count()
+        } else {
+            0
+        };
+
+        if same_lora_sig
+            && common == target_i32.len()
             && common == cache.cached_tokens.len()
             && !cache.next_token_log_probs.is_empty()
         {
@@ -363,7 +790,7 @@ impl MlxTransformer {
 
         let delta = &target_i32[keep..];
         let (last_logits, new_keys, new_vals) =
-            self.forward_step(delta, keep, &cache.keys, &cache.values)?;
+            self.forward_step(delta, keep, &cache.keys, &cache.values, lora_scales)?;
         let lp_arr = log_softmax(
             &last_logits.as_dtype(MlxDtype::Float32).map_err(mlx_err)?,
             -1,
@@ -379,6 +806,7 @@ impl MlxTransformer {
 
         cache.keys = new_keys;
         cache.values = new_vals;
+        cache.lora_sig = sig;
         cache.cached_tokens.extend_from_slice(delta);
         cache.next_token_log_probs = lp_arr.as_slice::<f32>().to_vec();
         Ok(())
@@ -395,7 +823,8 @@ impl MlxTransformer {
         cands: &[Vec<u32>],
         include_first_token: bool,
     ) -> Result<Vec<f32>, NeuralError> {
-        let joint = self.score_candidates_joint_lps(cache, cands)?;
+        let default_scales: Vec<f32> = self.loras.iter().map(|a| a.base_scale).collect();
+        let joint = self.score_candidates_joint_lps_with_scales(cache, cands, &default_scales)?;
         Ok(joint
             .into_iter()
             .zip(cands.iter())
@@ -416,8 +845,7 @@ impl MlxTransformer {
     }
 
     /// Computes exact unnormalized joint log-likelihoods (`sum_t log P(tok_t | prefix, tok_<t)`)
-    /// for each tokenized candidate so callers can normalize by character count instead of BPE
-    /// piece count!
+    /// using each mounted `LoRA`'s default `base_scale`.
     ///
     /// # Errors
     ///
@@ -426,6 +854,21 @@ impl MlxTransformer {
         &self,
         cache: &MlxPrefixCache,
         cands: &[Vec<u32>],
+    ) -> Result<Vec<f32>, NeuralError> {
+        let default_scales: Vec<f32> = self.loras.iter().map(|a| a.base_scale).collect();
+        self.score_candidates_joint_lps_with_scales(cache, cands, &default_scales)
+    }
+
+    /// Computes exact unnormalized joint log-likelihoods under explicit `lora_scales`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if an MLX Metal kernel fails during continuation pass.
+    pub fn score_candidates_joint_lps_with_scales(
+        &self,
+        cache: &MlxPrefixCache,
+        cands: &[Vec<u32>],
+        lora_scales: &[f32],
     ) -> Result<Vec<f32>, NeuralError> {
         if cands.is_empty() || cache.next_token_log_probs.is_empty() {
             return Ok(vec![0.0; cands.len()]);
@@ -449,6 +892,7 @@ impl MlxTransformer {
                         cache.cached_tokens.len(),
                         &cache.keys,
                         &cache.values,
+                        lora_scales,
                     )?;
                     let idx = lazy_arrays.len();
                     lazy_arrays.push(lps);
@@ -504,14 +948,21 @@ impl MlxTransformer {
         Ok(scores.first().copied().unwrap_or(0.0))
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )]
     fn forward_layer(
         &self,
+        l_idx: usize,
         layer: &MlxLayer,
         hidden: &Array,
         step_len: i32,
         offset_i32: i32,
         past_kv: Option<(&Array, &Array)>,
+        lora_scales: &[f32],
     ) -> Result<(Array, Array, Array), NeuralError> {
         let n_heads = self.config.num_attention_heads as i32;
         let n_kv = self.config.num_key_value_heads as i32;
@@ -522,15 +973,32 @@ impl MlxTransformer {
 
         let normed =
             rms_norm(hidden, Some(&layer.input_norm), self.config.rms_norm_eps).map_err(mlx_err)?;
-        let mut q_lin = layer.q_proj.forward(&normed)?;
+
+        let st_layer = self.stacked_loras.get(l_idx);
+
+        let mut q_lin = layer.q_proj.forward_with_stacked_lora(
+            &normed,
+            st_layer.and_then(|sl| sl.q.as_ref()),
+            lora_scales,
+        )?;
         if let Some(b) = &layer.q_bias {
             q_lin = q_lin.add(b).map_err(mlx_err)?;
         }
-        let mut k_lin = layer.k_proj.forward(&normed)?;
+
+        let mut k_lin = layer.k_proj.forward_with_stacked_lora(
+            &normed,
+            st_layer.and_then(|sl| sl.k.as_ref()),
+            lora_scales,
+        )?;
         if let Some(b) = &layer.k_bias {
             k_lin = k_lin.add(b).map_err(mlx_err)?;
         }
-        let mut v_lin = layer.v_proj.forward(&normed)?;
+
+        let mut v_lin = layer.v_proj.forward_with_stacked_lora(
+            &normed,
+            st_layer.and_then(|sl| sl.v.as_ref()),
+            lora_scales,
+        )?;
         if let Some(b) = &layer.v_bias {
             v_lin = v_lin.add(b).map_err(mlx_err)?;
         }
@@ -601,7 +1069,11 @@ impl MlxTransformer {
             .map_err(mlx_err)?
             .reshape(&[1, step_len, q_out_dim])
             .map_err(mlx_err)?;
-        let attn_proj = layer.o_proj.forward(&attn_flat)?;
+        let attn_proj = layer.o_proj.forward_with_stacked_lora(
+            &attn_flat,
+            st_layer.and_then(|sl| sl.o.as_ref()),
+            lora_scales,
+        )?;
         let after_attn = hidden.add(&attn_proj).map_err(mlx_err)?;
 
         let post = rms_norm(
@@ -610,10 +1082,23 @@ impl MlxTransformer {
             self.config.rms_norm_eps,
         )
         .map_err(mlx_err)?;
-        let gate = silu(&layer.gate_proj.forward(&post)?).map_err(mlx_err)?;
-        let up = layer.up_proj.forward(&post)?;
+        let gate_raw = layer.gate_proj.forward_with_stacked_lora(
+            &post,
+            st_layer.and_then(|sl| sl.gate.as_ref()),
+            lora_scales,
+        )?;
+        let gate = silu(&gate_raw).map_err(mlx_err)?;
+        let up = layer.up_proj.forward_with_stacked_lora(
+            &post,
+            st_layer.and_then(|sl| sl.up.as_ref()),
+            lora_scales,
+        )?;
         let gated = gate.multiply(&up).map_err(mlx_err)?;
-        let down = layer.down_proj.forward(&gated)?;
+        let down = layer.down_proj.forward_with_stacked_lora(
+            &gated,
+            st_layer.and_then(|sl| sl.down.as_ref()),
+            lora_scales,
+        )?;
         let next_hidden = after_attn.add(&down).map_err(mlx_err)?;
 
         Ok((next_hidden, k_full, v_full))
@@ -626,6 +1111,7 @@ impl MlxTransformer {
         pos_offset: usize,
         past_keys: &[Array],
         past_vals: &[Array],
+        lora_scales: &[f32],
     ) -> Result<(Array, Vec<Array>, Vec<Array>), NeuralError> {
         let step_len = step_tokens.len() as i32;
         let offset_i32 = pos_offset as i32;
@@ -637,8 +1123,15 @@ impl MlxTransformer {
 
         for (l_idx, layer) in self.layers.iter().enumerate() {
             let past_kv = past_keys.get(l_idx).zip(past_vals.get(l_idx));
-            let (h, k_full, v_full) =
-                self.forward_layer(layer, &hidden, step_len, offset_i32, past_kv)?;
+            let (h, k_full, v_full) = self.forward_layer(
+                l_idx,
+                layer,
+                &hidden,
+                step_len,
+                offset_i32,
+                past_kv,
+                lora_scales,
+            )?;
             hidden = h;
             next_keys.push(k_full);
             next_vals.push(v_full);
@@ -669,6 +1162,7 @@ impl MlxTransformer {
         pos_offset: usize,
         past_keys: &[Array],
         past_vals: &[Array],
+        lora_scales: &[f32],
     ) -> Result<Array, NeuralError> {
         let step_len = cont_tokens.len() as i32;
         let offset_i32 = pos_offset as i32;
@@ -677,7 +1171,15 @@ impl MlxTransformer {
 
         for (l_idx, layer) in self.layers.iter().enumerate() {
             let past_kv = past_keys.get(l_idx).zip(past_vals.get(l_idx));
-            let (h, _, _) = self.forward_layer(layer, &hidden, step_len, offset_i32, past_kv)?;
+            let (h, _, _) = self.forward_layer(
+                l_idx,
+                layer,
+                &hidden,
+                step_len,
+                offset_i32,
+                past_kv,
+                lora_scales,
+            )?;
             hidden = h;
         }
 

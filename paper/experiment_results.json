@@ -1,0 +1,273 @@
+{
+  "exp1_compression_pareto": {
+    "Qwen3-28L-4bit (Teacher-24k)": {
+      "size_mb": 249.95,
+      "cos_with_28l": 1.0,
+      "stress_wins": 14,
+      "stress_total": 16,
+      "stress_acc_pct": 87.5,
+      "mean_margin_nats": 5.428,
+      "prefill_p50_ms": 2.964,
+      "step1_p50_ms": 2.344,
+      "rerank6_p50_ms": 5.344,
+      "rerank6_p95_ms": 5.529
+    },
+    "Qwen3-6L-NaiveSkip-4bit": {
+      "size_mb": 64.15,
+      "cos_with_28l": 0.0191,
+      "stress_wins": 7,
+      "stress_total": 16,
+      "stress_acc_pct": 43.8,
+      "mean_margin_nats": 0.098,
+      "prefill_p50_ms": 0.922,
+      "step1_p50_ms": 0.79,
+      "rerank6_p50_ms": 1.49,
+      "rerank6_p95_ms": 1.975
+    },
+    "Qwen3-6L-Distilled-FP16": {
+      "size_mb": 228.03,
+      "cos_with_28l": 0.8287,
+      "stress_wins": 14,
+      "stress_total": 16,
+      "stress_acc_pct": 87.5,
+      "mean_margin_nats": 5.991,
+      "prefill_p50_ms": 1.493,
+      "step1_p50_ms": 1.325,
+      "rerank6_p50_ms": 2.653,
+      "rerank6_p95_ms": 2.825
+    },
+    "Qwen3-6L-Distilled-8bit": {
+      "size_mb": 121.15,
+      "cos_with_28l": 0.8287,
+      "stress_wins": 14,
+      "stress_total": 16,
+      "stress_acc_pct": 87.5,
+      "mean_margin_nats": 5.993,
+      "prefill_p50_ms": 1.082,
+      "step1_p50_ms": 0.966,
+      "rerank6_p50_ms": 1.64,
+      "rerank6_p95_ms": 1.732
+    },
+    "Qwen3-6L-Distilled-4bit (Chime)": {
+      "size_mb": 64.17,
+      "cos_with_28l": 0.8613,
+      "stress_wins": 14,
+      "stress_total": 16,
+      "stress_acc_pct": 87.5,
+      "mean_margin_nats": 6.108,
+      "prefill_p50_ms": 0.907,
+      "step1_p50_ms": 0.773,
+      "rerank6_p50_ms": 1.366,
+      "rerank6_p95_ms": 1.597
+    }
+  },
+  "exp2_cartridge_decoupling": {
+    "classical_queries_total": 20,
+    "c0_modern_base_hits": 17,
+    "c1_lora_only_hits": 17,
+    "c3_full_imepack_hits": 19,
+    "classics_nll_base": 5.978,
+    "classics_nll_lora": 6.0707,
+    "classics_ppl_base": 394.65,
+    "classics_ppl_lora": 432.97,
+    "tech_nll_base": 6.2852,
+    "tech_nll_lora": 6.3482,
+    "private_val_nll_base": 5.6279,
+    "private_val_nll_lora": 5.2267,
+    "heldout30_modern_base": 3,
+    "heldout30_lora_only": 3,
+    "heldout30_full_imepack": 27,
+    "fp16_to_4bit_lora_scale_nll": {
+      "0.0": 5.978,
+      "0.2": 5.8416,
+      "0.35": 5.8178,
+      "0.5": 5.8174,
+      "0.65": 5.8407,
+      "0.8": 5.9042,
+      "1.0": 6.0707
+    }
+  },
+  "exp3_routing_interference": {
+    "R0: Base Only (0, 0, 0)": {
+      "colloquial_acc": "8/8",
+      "colloquial_margin": 8.412,
+      "classical_acc": "8/8",
+      "classical_margin": 4.29,
+      "dev_acc": "8/8",
+      "dev_margin": 9.279,
+      "classical_nll": 5.978
+    },
+    "R1: Uncalibrated Sum (1.0, 1.0, 0.85)": {
+      "colloquial_acc": "6/8",
+      "colloquial_margin": 3.807,
+      "classical_acc": "5/8",
+      "classical_margin": 1.919,
+      "dev_acc": "8/8",
+      "dev_margin": 6.683,
+      "classical_nll": 7.5981
+    },
+    "R2: Uniform 1/K Average (0.33, 0.33, 0.28)": {
+      "colloquial_acc": "8/8",
+      "colloquial_margin": 7.512,
+      "classical_acc": "8/8",
+      "classical_margin": 4.322,
+      "dev_acc": "8/8",
+      "dev_margin": 9.158,
+      "classical_nll": 5.9823
+    },
+    "R3: Simplex-Gated Routing (Ours)": {
+      "colloquial_acc": "8/8",
+      "colloquial_margin": 8.833,
+      "classical_acc": "8/8",
+      "classical_margin": 4.317,
+      "dev_acc": "8/8",
+      "dev_margin": 9.4,
+      "classical_nll": 5.9368
+    }
+  },
+  "exp4_lora_fusion_scaling": [
+    {
+      "K": 0,
+      "unfused": {
+        "prefill_p50_ms": 0.885,
+        "step1_p50_ms": 0.754,
+        "rerank6_p50_ms": 1.424,
+        "rerank6_p95_ms": 1.549
+      },
+      "fused": {
+        "prefill_p50_ms": 0.893,
+        "step1_p50_ms": 0.763,
+        "rerank6_p50_ms": 1.428,
+        "rerank6_p95_ms": 1.667
+      }
+    },
+    {
+      "K": 1,
+      "unfused": {
+        "prefill_p50_ms": 1.577,
+        "step1_p50_ms": 0.981,
+        "rerank6_p50_ms": 2.928,
+        "rerank6_p95_ms": 3.23
+      },
+      "fused": {
+        "prefill_p50_ms": 1.465,
+        "step1_p50_ms": 1.021,
+        "rerank6_p50_ms": 2.948,
+        "rerank6_p95_ms": 3.067
+      }
+    },
+    {
+      "K": 2,
+      "unfused": {
+        "prefill_p50_ms": 2.411,
+        "step1_p50_ms": 1.345,
+        "rerank6_p50_ms": 4.504,
+        "rerank6_p95_ms": 4.648
+      },
+      "fused": {
+        "prefill_p50_ms": 1.538,
+        "step1_p50_ms": 1.156,
+        "rerank6_p50_ms": 3.008,
+        "rerank6_p95_ms": 3.12
+      }
+    },
+    {
+      "K": 3,
+      "unfused": {
+        "prefill_p50_ms": 2.461,
+        "step1_p50_ms": 1.673,
+        "rerank6_p50_ms": 6.002,
+        "rerank6_p95_ms": 6.426
+      },
+      "fused": {
+        "prefill_p50_ms": 1.541,
+        "step1_p50_ms": 1.176,
+        "rerank6_p50_ms": 3.014,
+        "rerank6_p95_ms": 3.111
+      }
+    },
+    {
+      "K": 4,
+      "unfused": {
+        "prefill_p50_ms": 2.951,
+        "step1_p50_ms": 2.036,
+        "rerank6_p50_ms": 7.55,
+        "rerank6_p95_ms": 7.819
+      },
+      "fused": {
+        "prefill_p50_ms": 1.449,
+        "step1_p50_ms": 1.134,
+        "rerank6_p50_ms": 3.03,
+        "rerank6_p95_ms": 3.149
+      }
+    },
+    {
+      "K": 5,
+      "unfused": {
+        "prefill_p50_ms": 3.513,
+        "step1_p50_ms": 2.427,
+        "rerank6_p50_ms": 8.986,
+        "rerank6_p95_ms": 9.82
+      },
+      "fused": {
+        "prefill_p50_ms": 1.59,
+        "step1_p50_ms": 1.219,
+        "rerank6_p50_ms": 3.094,
+        "rerank6_p95_ms": 3.337
+      }
+    },
+    {
+      "K": 6,
+      "unfused": {
+        "prefill_p50_ms": 4.057,
+        "step1_p50_ms": 2.78,
+        "rerank6_p50_ms": 10.468,
+        "rerank6_p95_ms": 11.005
+      },
+      "fused": {
+        "prefill_p50_ms": 1.593,
+        "step1_p50_ms": 1.229,
+        "rerank6_p50_ms": 3.101,
+        "rerank6_p95_ms": 3.202
+      }
+    }
+  ],
+  "exp5_alpha_sweep": [
+    {
+      "alpha": 0.0,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 8.172
+    },
+    {
+      "alpha": 0.25,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 6.872
+    },
+    {
+      "alpha": 0.42,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 6.108
+    },
+    {
+      "alpha": 0.65,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 5.208
+    },
+    {
+      "alpha": 0.85,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 4.534
+    },
+    {
+      "alpha": 1.0,
+      "wins": 14,
+      "total": 16,
+      "mean_margin": 4.086
+    }
+  ]
+}

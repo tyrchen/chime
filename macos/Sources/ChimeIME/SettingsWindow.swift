@@ -36,7 +36,7 @@ public final class ChimeSettingsWindowController {
 
     public func presentImportOpenPanel() {
         let panel = NSOpenPanel()
-        panel.title = "导入第三方词库 (.scel / .bdict / .dict.yaml / .tsv) 或个人模型包 (.imepack)"
+        panel.title = "导入词库 (.scel / .bdict / .dict.yaml / .tsv) 或扩展卡带 (.imepack / .imepack.zip)"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -127,10 +127,13 @@ struct ChimeSettingsView: View {
                 if let status {
                     LabeledContent("已挂载词条总数", value: "\(status.word_entries)")
                     LabeledContent("拼音索引组数", value: "\(status.pinyin_keys)")
+                    LabeledContent("已挂载扩展卡带 (.imepack)", value: "\(status.installed_packs ?? 0) 个")
                     LabeledContent("已学习个人习惯", value: "\(status.learned_habits)")
                     LabeledContent(
                         "Stage-2 端侧神经重排",
-                        value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded) ? "MLX Metal / ANE 已就绪" : "统计双轨模式"
+                        value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded)
+                            ? "MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
+                            : "统计双轨模式"
                     )
                 }
 

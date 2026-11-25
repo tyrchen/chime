@@ -1,5 +1,5 @@
-//! Dedicated actor thread owning the non-`Send` `mlx_rs::Array` Metal GPU reranker and
-//! communicating strictly via `flume` channels.
+//! Dedicated actor thread owning the non-`Send` `mlx_rs::Array` Metal GPU reranker + `Multi-LoRA`
+//! sidecar adapters, communicating strictly via `flume` channels.
 
 use std::{
     path::Path,
@@ -8,7 +8,7 @@ use std::{
 
 use flume::{Receiver, Sender, TrySendError};
 
-use crate::{ModelConfig, NeuralError, SafetensorsReranker};
+use crate::{LoraMountSpec, ModelConfig, NeuralError, SafetensorsReranker};
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
 #[derive(Debug, Clone)]
@@ -17,6 +17,8 @@ pub struct RerankJob {
     pub session_id: u64,
     /// Monotonic keystroke generation ID.
     pub generation_id: u64,
+    /// Active `macOS` host application bundle identifier (for `Multi-LoRA` dynamic routing).
+    pub app_bundle_id: String,
     /// Left context string before the cursor.
     pub left_context: String,
     /// Candidate surface strings from Stage 1.
@@ -46,6 +48,7 @@ enum ActorCmd {
     },
     Sync {
         left_context: String,
+        app_bundle_id: String,
         candidate_texts: Vec<String>,
         reply_tx: Sender<Vec<f32>>,
     },
@@ -57,6 +60,7 @@ pub struct AsyncRerankHandle {
     cmd_tx: Sender<ActorCmd>,
     result_rx: Receiver<RerankResult>,
     config: ModelConfig,
+    lora_count: usize,
 }
 
 impl AsyncRerankHandle {
@@ -67,15 +71,28 @@ impl AsyncRerankHandle {
     ///
     /// Returns [`NeuralError`] if loading or validating the model inside the worker thread fails.
     pub fn spawn_from_dir(model_dir: &Path) -> Result<Self, NeuralError> {
+        Self::spawn_from_dir_with_loras(model_dir, Vec::new())
+    }
+
+    /// Spawns a dedicated actor thread loading `model_dir` plus zero or more `Multi-LoRA` sidecar
+    /// adapters onto Metal GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError`] if loading the base model fails.
+    pub fn spawn_from_dir_with_loras(
+        model_dir: &Path,
+        loras: Vec<LoraMountSpec>,
+    ) -> Result<Self, NeuralError> {
         let dir_owned = model_dir.to_path_buf();
-        let (init_tx, init_rx) = flume::bounded::<Result<ModelConfig, NeuralError>>(1);
+        let (init_tx, init_rx) = flume::bounded::<Result<(ModelConfig, usize), NeuralError>>(1);
         let (cmd_tx, cmd_rx) = flume::bounded::<ActorCmd>(16);
         let (result_tx, result_rx) = flume::bounded::<RerankResult>(16);
 
         std::thread::spawn(move || {
-            let mut reranker = match SafetensorsReranker::load_dir(&dir_owned) {
+            let mut reranker = match SafetensorsReranker::load_dir_with_loras(&dir_owned, &loras) {
                 Ok(r) => {
-                    let _ = init_tx.send(Ok(r.config().clone()));
+                    let _ = init_tx.send(Ok((r.config().clone(), r.lora_count())));
                     r
                 }
                 Err(e) => {
@@ -91,8 +108,11 @@ impl AsyncRerankHandle {
                         while let Ok(ActorCmd::Async(newer)) = cmd_rx.try_recv() {
                             job = newer;
                         }
-                        let bonuses =
-                            reranker.score_candidates(&job.left_context, &job.candidate_texts);
+                        let bonuses = reranker.score_candidates_with_app(
+                            &job.left_context,
+                            &job.app_bundle_id,
+                            &job.candidate_texts,
+                        );
                         let elapsed_ms = u64::try_from(job.dispatched_at.elapsed().as_millis())
                             .unwrap_or(u64::MAX);
                         let _ = result_tx.try_send(RerankResult {
@@ -103,8 +123,11 @@ impl AsyncRerankHandle {
                         });
                     }
                     ActorCmd::TimedOrAsync { job, sync_reply_tx } => {
-                        let bonuses =
-                            reranker.score_candidates(&job.left_context, &job.candidate_texts);
+                        let bonuses = reranker.score_candidates_with_app(
+                            &job.left_context,
+                            &job.app_bundle_id,
+                            &job.candidate_texts,
+                        );
                         // Deliver synchronously if caller is still within its frame budget;
                         // otherwise seamlessly fall back to async `result_tx`!
                         if sync_reply_tx.send(bonuses.clone()).is_err() {
@@ -120,17 +143,22 @@ impl AsyncRerankHandle {
                     }
                     ActorCmd::Sync {
                         left_context,
+                        app_bundle_id,
                         candidate_texts,
                         reply_tx,
                     } => {
-                        let bonuses = reranker.score_candidates(&left_context, &candidate_texts);
+                        let bonuses = reranker.score_candidates_with_app(
+                            &left_context,
+                            &app_bundle_id,
+                            &candidate_texts,
+                        );
                         let _ = reply_tx.send(bonuses);
                     }
                 }
             }
         });
 
-        let config = init_rx
+        let (config, lora_count) = init_rx
             .recv()
             .map_err(|e| NeuralError::Safetensors(format!("worker init channel closed: {e}")))??;
 
@@ -138,6 +166,7 @@ impl AsyncRerankHandle {
             cmd_tx,
             result_rx,
             config,
+            lora_count,
         })
     }
 
@@ -145,6 +174,12 @@ impl AsyncRerankHandle {
     #[must_use]
     pub const fn config(&self) -> &ModelConfig {
         &self.config
+    }
+
+    /// Returns the number of mounted `Multi-LoRA` sidecar adapters.
+    #[must_use]
+    pub const fn lora_count(&self) -> usize {
+        self.lora_count
     }
 
     /// Enqueues a Stage-2 rerank job without ever blocking the UI thread.
@@ -177,11 +212,23 @@ impl AsyncRerankHandle {
     /// `eval`).
     #[must_use]
     pub fn score_sync(&self, left_context: &str, candidate_texts: &[String]) -> Vec<f32> {
+        self.score_sync_with_app(left_context, "", candidate_texts)
+    }
+
+    /// Synchronously scores a candidate batch with `app_bundle_id` `Multi-LoRA` routing.
+    #[must_use]
+    pub fn score_sync_with_app(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+    ) -> Vec<f32> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         if self
             .cmd_tx
             .send(ActorCmd::Sync {
                 left_context: left_context.to_string(),
+                app_bundle_id: app_bundle_id.to_string(),
                 candidate_texts: candidate_texts.to_vec(),
                 reply_tx,
             })

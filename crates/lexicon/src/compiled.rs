@@ -37,12 +37,14 @@ pub struct CompiledDict {
     word_record_count: usize,
     bigram_count: usize,
     trigram_count: usize,
+    continuation_count: usize,
     pinyin_groups_off: usize,
     skeleton_groups_off: usize,
     english_off: usize,
     word_records_off: usize,
     bigrams_off: usize,
     trigrams_off: usize,
+    continuations_off: usize,
     syl_arena_off: usize,
     str_arena_off: usize,
     str_arena_len: usize,
@@ -91,6 +93,7 @@ impl CompiledDict {
         let syl_arena_bytes = read_u32(buf, 28) as usize;
         let str_arena_len = read_u32(buf, 32) as usize;
         let trigram_count = if is_v2 { read_u32(buf, 36) as usize } else { 0 };
+        let continuation_count = if is_v2 { read_u32(buf, 40) as usize } else { 0 };
 
         let pinyin_groups_off = HEADER_LEN;
         let skeleton_groups_off = pinyin_groups_off
@@ -108,8 +111,11 @@ impl CompiledDict {
         let trigrams_off = bigrams_off
             .checked_add(bigram_count.saturating_mul(16))
             .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
-        let syl_arena_off = trigrams_off
+        let continuations_off = trigrams_off
             .checked_add(trigram_count.saturating_mul(16))
+            .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
+        let syl_arena_off = continuations_off
+            .checked_add(continuation_count.saturating_mul(16))
             .ok_or(LexiconError::InvalidCompiledDict("section overflow"))?;
         let str_arena_off = syl_arena_off
             .checked_add(syl_arena_bytes)
@@ -134,12 +140,14 @@ impl CompiledDict {
             word_record_count,
             bigram_count,
             trigram_count,
+            continuation_count,
             pinyin_groups_off,
             skeleton_groups_off,
             english_off,
             word_records_off,
             bigrams_off,
             trigrams_off,
+            continuations_off,
             syl_arena_off,
             str_arena_off,
             str_arena_len,
@@ -168,6 +176,41 @@ impl CompiledDict {
     #[must_use]
     pub const fn ngram_count(&self) -> usize {
         self.bigram_count + self.trigram_count
+    }
+
+    /// Total verse/clause `Tab` continuations stored in this compiled dictionary.
+    #[must_use]
+    pub const fn continuation_count(&self) -> usize {
+        self.continuation_count
+    }
+
+    /// Looks up a zero-copy `Tab` continuation string (`trigger_clause -> next_clause`) in
+    /// $O(\log C)$ via deterministic 64-bit FNV-1a hash.
+    #[must_use]
+    pub fn lookup_continuation(&self, trigger: &str) -> Option<&str> {
+        if self.continuation_count == 0 || trigger.is_empty() {
+            return None;
+        }
+        let target_hash = hash_str_fnv1a(trigger);
+        let buf = self.backing.as_ref();
+        let mut lo = 0usize;
+        let mut hi = self.continuation_count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let off = self.continuations_off + mid * 16;
+            let h = read_u64(buf, off);
+            match h.cmp(&target_hash) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => {
+                    let str_off = read_u32(buf, off + 8) as usize;
+                    let str_len = usize::from(read_u16(buf, off + 12));
+                    let s = self.get_str(str_off, str_len);
+                    return (!s.is_empty()).then_some(s);
+                }
+            }
+        }
+        None
     }
 
     /// Appends up to `limit` matching [`WordEntry`] items for an exact `SyllableId` sequence.
@@ -554,6 +597,7 @@ pub struct CompiledDictBuilder {
     english: BTreeMap<String, WordEntry>,
     bigrams: BTreeMap<u64, f32>,
     trigrams: BTreeMap<u64, f32>,
+    continuations: BTreeMap<u64, String>,
 }
 
 impl CompiledDictBuilder {
@@ -582,6 +626,13 @@ impl CompiledDictBuilder {
             builder
                 .trigrams
                 .insert(hash_trigram_triple(w1, w2, w3), bonus);
+        }
+        for (trig, cont) in &lexicon.continuations {
+            if !trig.is_empty() && !cont.is_empty() {
+                builder
+                    .continuations
+                    .insert(hash_str_fnv1a(trig), cont.clone());
+            }
         }
         builder
     }
@@ -676,6 +727,15 @@ impl CompiledDictBuilder {
 
         let bigram_records = encode_hash_bonus_table(&self.bigrams);
         let trigram_records = encode_hash_bonus_table(&self.trigrams);
+        let mut continuation_records: Vec<[u8; 16]> = Vec::with_capacity(self.continuations.len());
+        for (&trig_hash, cont_str) in &self.continuations {
+            let (c_off, c_len) = intern_str(cont_str, &mut str_arena);
+            let mut rec = [0u8; 16];
+            rec[0..8].copy_from_slice(&trig_hash.to_le_bytes());
+            rec[8..12].copy_from_slice(&c_off.to_le_bytes());
+            rec[12..14].copy_from_slice(&c_len.to_le_bytes());
+            continuation_records.push(rec);
+        }
 
         let mut out = Vec::with_capacity(
             HEADER_LEN
@@ -685,6 +745,7 @@ impl CompiledDictBuilder {
                 + word_records.len() * 12
                 + bigram_records.len() * 16
                 + trigram_records.len() * 16
+                + continuation_records.len() * 16
                 + syl_arena.len()
                 + str_arena.len(),
         );
@@ -717,7 +778,12 @@ impl CompiledDictBuilder {
                 .unwrap_or(0)
                 .to_le_bytes(),
         );
-        out.extend_from_slice(&[0u8; 8]);
+        out.extend_from_slice(
+            &u32::try_from(continuation_records.len())
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&[0u8; 4]);
 
         for g in &pinyin_groups {
             out.extend_from_slice(g);
@@ -735,6 +801,9 @@ impl CompiledDictBuilder {
             out.extend_from_slice(r);
         }
         for r in &trigram_records {
+            out.extend_from_slice(r);
+        }
+        for r in &continuation_records {
             out.extend_from_slice(r);
         }
         out.extend_from_slice(&syl_arena);
@@ -765,6 +834,17 @@ fn encode_hash_bonus_table(map: &BTreeMap<u64, f32>) -> Vec<[u8; 16]> {
         records.push(rec);
     }
     records
+}
+
+fn hash_str_fnv1a(text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for &b in text.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
 }
 
 fn hash_bigram_pair(prev: &str, next: &str) -> u64 {

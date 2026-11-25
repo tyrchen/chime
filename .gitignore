@@ -1,8 +1,14 @@
 /target
 /dist
 /macos/.build
+__pycache__/
+*.pyc
 .DS_Store
 .vscode
 *.imedict
 *.imepack
+*.imepack.zip
+*.safetensors
 *.scel
+private-*
+personal-*

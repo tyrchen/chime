@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chime 拼音 — macOS Apple Silicon 端侧神经输入法与 LoRA 卡带中心</title>
+  <meta name="description" content="100% 离线、零遥测的 macOS 15+ Apple Silicon 中文拼音输入法。64 MB 4-bit MLX Qwen3 基础模型 + 热插拔 Multi-LoRA 与零拷贝 .imepack 词库卡带。" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="#">
+        <span class="brand-badge">中</span>
+        <span class="brand-text">Chime <span class="brand-sub">拼音</span></span>
+        <span class="version-pill">v0.6.0</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#demo" data-i18n="nav.demo">交互演示</a>
+        <a href="#architecture" data-i18n="nav.arch">基础模型 + LoRA</a>
+        <a href="#packs" data-i18n="nav.packs">预构建 LoRA 下载</a>
+        <a href="#diy" data-i18n="nav.diy">私有卡带训练</a>
+        <a href="chime-paper.pdf" target="_blank" rel="noopener">Paper (PDF) ↗</a>
+        <a class="gh-link" id="repo-link" href="https://github.com/tyrchen/chime" target="_blank" rel="noopener">GitHub ↗</a>
+        <button id="lang-toggle" class="lang-btn" type="button" aria-label="Switch language">EN</button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow" data-i18n="hero.eyebrow">macOS 15+ · Apple Silicon Metal · 100% Offline · MIT / Apache-2.0</p>
+          <h1 data-i18n="hero.title">把大模型塞进 64 MB 统一内存，按键零联网，卡带随插随用。</h1>
+          <p class="lead" data-i18n="hero.lead">
+            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器，二阶段在本地 Metal GPU 上运行 6 层 4-bit 蒸馏版 Qwen3（单步 0.72 ms），并支持像游戏卡带一样按需挂载 <strong>2 MB 级别的领域 LoRA 与百万词条 .imepack 扩展包</strong>。
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.6.0-macos-arm64.pkg">
+              <span class="btn-main" data-i18n="hero.dlPkg">下载 macOS 安装包 (.pkg)</span>
+              <span class="btn-meta">Chime v0.6.0 · Apple Silicon · ~84 MB</span>
+            </a>
+            <a class="btn btn-secondary" id="dl-zip" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-v0.6.0-macos-arm64.zip">
+              <span class="btn-main" data-i18n="hero.dlZip">便携版 Chime.app (.zip)</span>
+              <span class="btn-meta" data-i18n="hero.dlZipSub">解压拖入 ~/Library/Input Methods</span>
+            </a>
+          </div>
+          <div class="metrics-strip">
+            <div class="metric">
+              <span class="metric-val">64.2 MB</span>
+              <span class="metric-lbl" data-i18n="m.base">4-bit MLX 基础模型</span>
+            </div>
+            <div class="metric">
+              <span class="metric-val">2.06 MB</span>
+              <span class="metric-lbl" data-i18n="m.lora">单个 LoRA 卡带体积</span>
+            </div>
+            <div class="metric">
+              <span class="metric-val">2.95 ms</span>
+              <span class="metric-lbl" data-i18n="m.lat">端到端 p50 重排延迟</span>
+            </div>
+            <div class="metric">
+              <span class="metric-val">0 Bytes</span>
+              <span class="metric-lbl" data-i18n="m.net">云端请求与遥测上传</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-demo-card" id="demo">
+          <div class="window-bar">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-amber"></span>
+            <span class="dot dot-green"></span>
+            <span class="window-title" data-i18n="demo.winTitle">Chime 实时候选栏与「一路 Tab」诗词续写体验</span>
+          </div>
+          <div class="preset-row">
+            <button class="preset-chip active" data-preset="shuidiao" type="button">水调歌头 · Tab 全篇</button>
+            <button class="preset-chip" data-preset="jiangjinjiu" type="button">将进酒 · 重首句消歧</button>
+            <button class="preset-chip" data-preset="yulinling" type="button">雨霖铃 · 错键纠错</button>
+            <button class="preset-chip" data-preset="codeswitch" type="button">免切换中英混输</button>
+            <button class="preset-chip" data-preset="singlegen" type="button">单音节零生僻字</button>
+          </div>
+          <div class="editor-surface">
+            <div class="committed-line">
+              <span id="demo-committed"></span><span id="demo-preedit" class="inline-preedit"></span><span class="caret"></span>
+              <span id="demo-ghost-inline" class="inline-ghost"></span>
+            </div>
+            <div class="ime-panel" id="ime-panel">
+              <div class="ime-candidates" id="ime-candidates"></div>
+              <div class="ime-footer">
+                <span id="ime-lora-badge" class="lora-active-pill">LoRA: classics-poetry (1.0x)</span>
+                <span class="ime-hint" id="ime-hint">按 Space 上屏首项 · 按 Tab 触发诗词整句续写</span>
+              </div>
+            </div>
+          </div>
+          <div class="demo-actions">
+            <button class="action-key" id="btn-tab" type="button">⇥ Tab 续写下一句</button>
+            <button class="action-key" id="btn-space" type="button">␣ Space 上屏 #1</button>
+            <button class="action-key subtle" id="btn-reset" type="button" data-i18n="demo.reset">重置当前演示</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="container">
+        <div class="section-header">
+          <p class="eyebrow" data-i18n="arch.eyebrow">Base Model + Multi-LoRA Sidecar</p>
+          <h2 data-i18n="arch.title">为什么是「一个冻结基础模型 + 一组热插拔卡带」？</h2>
+          <p data-i18n="arch.desc">
+            纯统计词库不懂语境同音词（如「保障公民的权利」与「滥用国家的权力」），而只挂 LoRA 却缺词条时，一阶段束搜索又无法召回《水调歌头》或《雨霖铃》的词牌领字。Chime 用 <code>.imepack</code> 卡带把<strong>零拷贝词典召回</strong>与<strong>低秩神经重排</strong>合二为一。
+          </p>
+        </div>
+
+        <div class="arch-grid">
+          <article class="arch-card">
+            <div class="arch-step">01 · Stage-1 Recall (&lt; 0.8 ms)</div>
+            <h3 data-i18n="arch.c1Title">CHIMED02 零拷贝多层词典栈</h3>
+            <p data-i18n="arch.c1Body">
+              基于 <code>mmap</code> 直接映射 48 字节对齐的二进制词图，无需冷启动反序列化。支持 16 音节长诗整句解码、词牌短逗合并（<code>念去去，千里烟波</code>）、QWERTY 邻键与乱序纠错，以及 <code>O(log C)</code> 哈希续写链。
+            </p>
+          </article>
+          <article class="arch-card">
+            <div class="arch-step">02 · Frozen 4-bit Base (64.2 MB)</div>
+            <h3 data-i18n="arch.c2Title">6 层蒸馏版 Qwen3 常驻统一内存</h3>
+            <p data-i18n="arch.c2Body">
+              从 28 层 <code>Qwen3-0.6B-Base</code> 经层间隐状态对齐与双温度 KL 蒸馏压缩至 6 层，词表裁剪至 24,576 个高频中英子词。全系统无论挂载多少个扩展包，基础权重只占一份内存。
+            </p>
+          </article>
+          <article class="arch-card">
+            <div class="arch-step">03 · Multi-LoRA Sidecar (+0.04 ms)</div>
+            <h3 data-i18n="arch.c3Title">按宿主 App 与上文动态路由权重</h3>
+            <p data-i18n="arch.c3Body">
+              前向推理实时叠加 <code>Δy = ∑ γₖ (x · Aₖᵀ) · Bₖᵀ</code>。在 Ghostty / VS Code 中自动放大 <code>tech-developer</code> 权重；检测到古文虚词或诗词韵律时自动唤醒 <code>classics-poetry</code>。
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="packs">
+      <div class="container">
+        <div class="section-header">
+          <p class="eyebrow" data-i18n="packs.eyebrow">Prebuilt .imepack Hub</p>
+          <h2 data-i18n="packs.title">官方预构建卡带下载（LoRA + 零拷贝词库）</h2>
+          <p data-i18n="packs.desc">
+            下载后在菜单栏打开「Chime → 导入词库或扩展卡带…」，直接选择下载好的 <code>.imepack.zip</code> 即可一键挂载并立即生效，无需重启输入法。
+          </p>
+        </div>
+
+        <div class="pack-grid">
+          <article class="pack-card">
+            <div class="pack-top">
+              <div>
+                <span class="routing-tag routing-classical">Routing: Classical Context</span>
+                <h3>classics-poetry.imepack</h3>
+                <p class="pack-subtitle" data-i18n="p1.sub">古典诗词曲赋、四书古文与成语歇后语全库</p>
+              </div>
+              <span class="pack-version">v0.6.0</span>
+            </div>
+            <p class="pack-body" data-i18n="p1.body">
+              完整收录《唐诗三百首》《宋词三百首》、苏辛柳李词集、《诗经》《楚辞》《论语》《孟子》《庄子·逍遥游》《滕王阁序》《岳阳楼记》《赤壁赋》《将进酒》《琵琶行》《长恨歌》《春江花月夜》及 3 万条新华成语、1.4 万条歇后语。支持全篇逐句「一路 Tab」背诵续写与重首句上下文消歧。
+            </p>
+            <ul class="pack-specs">
+              <li><strong>pack.imedict</strong>: 266,816 词条 + 231,593 条续写链</li>
+              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (2.06 MB · 6L Qwen3)</li>
+              <li><strong>SHA-256</strong>: <code id="sha-classics">见发布页 SHA256SUMS.txt</code></li>
+            </ul>
+            <div class="pack-footer">
+              <a class="btn btn-primary btn-sm" href="https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip" data-i18n="packs.dlClassics">
+                下载 classics-poetry.imepack.zip
+              </a>
+              <button class="copy-cmd-btn" data-cmd="chime pack install ~/Downloads/classics-poetry.imepack.zip" type="button">复制 CLI 安装命令</button>
+            </div>
+          </article>
+
+          <article class="pack-card">
+            <div class="pack-top">
+              <div>
+                <span class="routing-tag routing-dev">Routing: Developer Apps</span>
+                <h3>tech-developer.imepack</h3>
+                <p class="pack-subtitle" data-i18n="p2.sub">系统编程、AI 推理与云原生中英双语增强包</p>
+              </div>
+              <span class="pack-version">v0.6.0</span>
+            </div>
+            <p class="pack-body" data-i18n="p2.body">
+              针对程序员日常输入调优：涵盖 Rust、Swift 6、Apple Silicon、MLX、CoreML、Kubernetes、分布式存储与大模型工程中英术语，强化精确驼峰大小写（<code>macOS</code>、<code>GitHub</code>、<code>ChatGPT</code>、<code>PostgreSQL</code>）与中英混输连贯度。在终端与 IDE 中自动满权激活，在微信等聊天软件中自动收敛至 0.25x。
+            </p>
+            <ul class="pack-specs">
+              <li><strong>pack.imedict</strong>: 双语技术词条 + 精确大小写词典</li>
+              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (2.06 MB · 6L Qwen3)</li>
+              <li><strong>SHA-256</strong>: <code id="sha-tech">见发布页 SHA256SUMS.txt</code></li>
+            </ul>
+            <div class="pack-footer">
+              <a class="btn btn-primary btn-sm" href="https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip" data-i18n="packs.dlTech">
+                下载 tech-developer.imepack.zip
+              </a>
+              <button class="copy-cmd-btn" data-cmd="chime pack install ~/Downloads/tech-developer.imepack.zip" type="button">复制 CLI 安装命令</button>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="diy">
+      <div class="container">
+        <div class="diy-box">
+          <div class="diy-copy">
+            <p class="eyebrow" data-i18n="diy.eyebrow">Bring Your Own Private LoRA</p>
+            <h2 data-i18n="diy.title">用你过去的博客与笔记，训练只属于本机的私有文风卡带</h2>
+            <p data-i18n="diy.desc">
+              每个人的书面表达都有独特的用词习惯。Chime 内置本地隐私清洗器（自动剔除 API Key、邮箱、手机号与私密链接），只需三步即可把你自己的历史文章微调成 <code>private_pack: true</code> 的私有卡带，仅挂载于本机 <code>~/Library/Application Support/Chime/packs/</code>。
+            </p>
+          </div>
+          <pre class="code-block"><code># 1. 在本地扫描并脱敏你的历史 Markdown 笔记，生成训练语料
+chime corpus-export ~/Notes/**/*.md -o /tmp/my_clean_corpus.jsonl
+
+# 2. 使用 tools/colab_train_loras.py 训练 2 MB Rank-8 LoRA 后打包私有卡带
+chime pack build /tmp/personal-style.imepack \
+  --id personal-style \
+  --name "个人文风私有包" \
+  --routing always \
+  --tsv /tmp/personal_words.tsv \
+  --lora /tmp/personal_lora.safetensors \
+  --private
+
+# 3. 安装至本机 Chime 扩展目录并热重载生效
+chime pack install /tmp/personal-style.imepack</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <p>Chime 拼音 v0.6.0 · Dual-licensed under MIT OR Apache-2.0 · Built with Rust, Swift 6 &amp; MLX Metal.</p>
+      <p class="footer-links">
+        <a href="https://github.com/tyrchen/chime/releases" target="_blank" rel="noopener">GitHub Releases</a>
+        <span>·</span>
+        <a href="https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt" target="_blank" rel="noopener">SHA256SUMS.txt</a>
+      </p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
