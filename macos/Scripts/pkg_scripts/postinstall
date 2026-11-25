@@ -1,28 +1,55 @@
 #!/bin/sh
-set -e
 
 APP_PATH="/Library/Input Methods/Chime.app"
 APP_BIN="$APP_PATH/Contents/MacOS/Chime"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+LOG_FILE="/tmp/chime-install.log"
 
-if [ -d "$APP_PATH" ]; then
-    chmod -R u+rwX,go+rX "$APP_PATH" || true
-    "$LSREGISTER" -f -R -trusted "$APP_PATH" >/dev/null 2>&1 || true
+{
+    echo "=== Chime postinstall started at $(date) ==="
+    if [ -d "$APP_PATH" ]; then
+        chown -R root:wheel "$APP_PATH" 2>&1 || true
+        chmod -R u+rwX,go+rX "$APP_PATH" 2>&1 || true
+        chmod +x "$APP_BIN" 2>&1 || true
+        xattr -dr com.apple.quarantine "$APP_PATH" 2>&1 || true
 
-    pkill -x Chime >/dev/null 2>&1 || true
+        "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
 
-    # Register & enable Chime inside the active GUI user's Aqua session so it appears immediately
-    # in the menu bar and System Settings -> Keyboard -> Input Sources without requiring logout!
-    CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
-    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
-        CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
-        if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
-            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$APP_BIN" --register "$APP_PATH" >/dev/null 2>&1 || true
+        # Stop any old Chime daemon and refresh macOS input source & Keyboard Settings agents FIRST,
+        # BEFORE launching the new long-lived Chime IMKServer daemon in the user's Aqua session.
+        pkill -x Chime 2>&1 || true
+        killall imklaunchagent TextInputMenuAgent 2>&1 || true
+        killall -9 "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>&1 || true
+        sleep 1
+
+        CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
+        echo "Detected console user: '$CONSOLE_USER'"
+        if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
+            CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+            echo "Detected console uid: '$CONSOLE_UID'"
+            if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
+                # Also register in LaunchServices inside the console user's domain
+                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
+
+                # Launch Chime.app as a persistent background IMKServer inside the user's Aqua GUI session.
+                # Keeping Chime alive in the user's session ensures TISRegisterInputSource + TISEnableInputSource
+                # remain permanently bound without requiring logout!
+                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$APP_PATH" --args --activate-on-install 2>&1 || true
+
+                for _ in 1 2 3 4 5 6; do
+                    if /usr/bin/pgrep -u "$CONSOLE_UID" -x Chime >/dev/null 2>&1; then
+                        echo "Chime IMKServer daemon is running under uid $CONSOLE_UID"
+                        break
+                    fi
+                    sleep 0.5
+                done
+            fi
         fi
+    else
+        echo "ERROR: $APP_PATH not found!"
     fi
+    echo "=== Chime postinstall finished at $(date) ==="
+} >> "$LOG_FILE" 2>&1 || true
 
-    killall TextInputMenuAgent imklaunchagent >/dev/null 2>&1 || true
-    killall -9 TextInputSwitcher CursorUIViewService >/dev/null 2>&1 || true
-fi
-
+chmod 644 "$LOG_FILE" 2>/dev/null || true
 exit 0

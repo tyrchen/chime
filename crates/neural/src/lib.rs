@@ -128,6 +128,21 @@ impl SafetensorsReranker {
         model_dir: &Path,
         loras: &[LoraMountSpec],
     ) -> Result<Self, NeuralError> {
+        for candidate in [
+            Some(model_dir.join("mlx.metallib")),
+            model_dir.parent().map(|p| p.join("mlx.metallib")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.is_file()
+                && let Some(path_str) = candidate.to_str()
+            {
+                let _ = mlx_rs::metal::set_metallib_path(path_str);
+                break;
+            }
+        }
+
         let cfg_bytes = std::fs::read(model_dir.join("config.json"))?;
         let config: ModelConfig = serde_json::from_slice(&cfg_bytes)?;
 

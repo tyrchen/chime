@@ -9,9 +9,14 @@ CLASSICS_CORE_LEX := $(DIST_DIR)/classics_core_lexicon.tsv
 CLASSICS_CORE_CONT := $(DIST_DIR)/classics_core_continuations.tsv
 MERGED_CORE_LEX := $(DIST_DIR)/merged_core_lexicon.tsv
 BASE_NEURAL_DIR := $(DIST_DIR)/base_neural
+MLX_METAL_OUT_DIR := /tmp/chime-mlx-metallib
 ICONSET_DIR := $(DIST_DIR)/AppIcon.iconset
 MENU_ICON_PDF := $(DIST_DIR)/menu_icon.pdf
 APP_ICON_ICNS := $(DIST_DIR)/AppIcon.icns
+MACOSX_DEPLOYMENT_TARGET := 14.0
+export MACOSX_DEPLOYMENT_TARGET
+CMAKE_OSX_DEPLOYMENT_TARGET := 14.0
+export CMAKE_OSX_DEPLOYMENT_TARGET
 VERSION := $(shell cargo metadata --format-version 1 --no-deps | jq -r '.packages[0].version')
 CARGO_TARGET_DIR := $(shell cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
 JIEBA_DICT := $(shell ls -1 $(HOME)/.cargo/registry/src/*/jieba-rs-*/src/data/dict.txt 2>/dev/null | tail -n 1)
@@ -27,8 +32,8 @@ if [ -n "$(NOTARY_PROFILE)" ]; then \
 	xcrun notarytool submit "$(1)" --keychain-profile "$(NOTARY_PROFILE)" --wait; \
 else \
 	item=$$(security find-generic-password -s "$(ASC_KEYCHAIN_SERVICE)" 2>/dev/null) || { echo "Missing notary credentials: set NOTARY_PROFILE or ASC_KEYCHAIN_SERVICE"; exit 1; }; \
-	key_id=$$(echo "$$item" | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p'); \
-	issuer=$$(echo "$$item" | sed -n 's/.*"icmt"<blob>="\(.*\)"/\1/p'); \
+	key_id=$$(printf '%s\n' "$$item" | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p'); \
+	issuer=$$(printf '%s\n' "$$item" | sed -n 's/.*"icmt"<blob>="\(.*\)"/\1/p'); \
 	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; umask 077; \
 	security find-generic-password -s "$(ASC_KEYCHAIN_SERVICE)" -w | base64 -D > "$$dir/AuthKey_$$key_id.p8"; \
 	xcrun notarytool submit "$(1)" --key "$$dir/AuthKey_$$key_id.p8" --key-id "$$key_id" --issuer "$$issuer" --wait; \
@@ -38,14 +43,14 @@ endef
 .PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
 
 build:
-	@cargo build --workspace --all-targets
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo build --workspace --all-targets
 
 test:
-	@cargo test --workspace --all-features
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo test --workspace --all-features
 
 lint:
 	@cargo +nightly fmt --all -- --check
-	@cargo clippy --workspace --all-targets --all-features -- -D warnings
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 fmt:
 	@cargo +nightly fmt --all
@@ -66,9 +71,9 @@ build-core-dict: build-models build-classics-corpus
 	@mkdir -p "$(DIST_DIR)"
 	@cat "$(MULTI_LEX_TSV)" "$(CLASSICS_CORE_LEX)" > "$(MERGED_CORE_LEX)"
 	@if [ -n "$(JIEBA_DICT)" ] && [ -f "$(JIEBA_DICT)" ]; then \
-		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
+		MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
 	else \
-		cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)"; \
+		MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)"; \
 	fi
 
 build-icons:
@@ -77,16 +82,19 @@ build-icons:
 	@iconutil -c icns "$(ICONSET_DIR)" -o "$(APP_ICON_ICNS)"
 
 eval: build-core-dict
-	@cargo run --release -p chime-cli -- eval --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)"
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- eval --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)"
 
 swift-build:
-	@cargo build --release -p chime-ffi
-	@cd macos && swift build -c release -Xlinker -L$(CARGO_TARGET_DIR)/release -Xlinker -w
+	@mkdir -p "$(MLX_METAL_OUT_DIR)"
+	@MACOSX_DEPLOYMENT_TARGET=14.0 CMAKE_OSX_DEPLOYMENT_TARGET=14.0 MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" RUSTFLAGS="--remap-path-prefix=$(HOME)=~" cargo build --release -p chime-ffi
+	@test -f "$(MLX_METAL_OUT_DIR)/mlx.metallib" || { echo "Missing $(MLX_METAL_OUT_DIR)/mlx.metallib after chime-ffi build"; exit 1; }
+	@cd macos && MACOSX_DEPLOYMENT_TARGET=14.0 swift build -c release -Xlinker -L$(CARGO_TARGET_DIR)/release -Xlinker -w
 
 macos-bundle: build-core-dict build-icons swift-build
 	@rm -rf "$(APP_BUNDLE)"
 	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
 	@cp macos/.build/release/ChimeIME "$(APP_BUNDLE)/Contents/MacOS/Chime"
+	@cp "$(MLX_METAL_OUT_DIR)/mlx.metallib" "$(APP_BUNDLE)/Contents/Resources/mlx.metallib"
 	@cp macos/Resources/Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	@cp -R macos/Resources/en.lproj "$(APP_BUNDLE)/Contents/Resources/en.lproj"
 	@cp -R macos/Resources/zh-Hans.lproj "$(APP_BUNDLE)/Contents/Resources/zh-Hans.lproj"
@@ -98,6 +106,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	@cp NOTICE "$(APP_BUNDLE)/Contents/Resources/NOTICE"
 	@chmod -R u+rwX,go+rX "$(APP_BUNDLE)"
 	@xattr -cr "$(APP_BUNDLE)"
+	@! otool -L "$(APP_BUNDLE)/Contents/MacOS/Chime" | grep -q "libswift_stdio" || { echo "FATAL: Chime still links macOS 26+/15.4+ only libswift_stdio.dylib"; exit 1; }
 	@if [ -n "$(APP_SIGN_IDENTITY)" ]; then \
 		echo "Signing $(APP_BUNDLE) with $(APP_SIGN_IDENTITY) (Hardened Runtime + Timestamp)..."; \
 		codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/MacOS/Chime"; \
@@ -107,7 +116,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	else \
 		codesign --force --deep --sign - "$(APP_BUNDLE)"; \
 	fi
-	@echo "Built $(APP_BUNDLE) v$(VERSION) (core.imedict + Qwen3 6L 4-bit MLX Metal neural base)"
+	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 6L 4-bit MLX Metal)"
 
 build-public-packs: build-classics-corpus
 	@mkdir -p "$(PACKS_BUILD_DIR)" "$(RELEASE_DIR)"
@@ -116,7 +125,7 @@ build-public-packs: build-classics-corpus
 			python -I tools/prepare_pack_corpora.py --dist-dir "$(DIST_DIR)"; \
 	fi
 	@rm -rf "$(PACKS_BUILD_DIR)/classics-poetry.imepack" "$(PACKS_BUILD_DIR)/tech-developer.imepack"
-	@cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/classics-poetry.imepack" \
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/classics-poetry.imepack" \
 		--id classics-poetry \
 		--name "古典诗词曲赋与成语全库" \
 		--description "收录唐诗、宋词、元曲、诗经、楚辞、四书、古文名篇及新华成语歇后语共 26.6 万词条与 23.1 万条全篇 Tab 续写链，含 Rank-8 古汉语 LoRA" \
@@ -125,7 +134,7 @@ build-public-packs: build-classics-corpus
 		--tsv "$(DIST_DIR)/classics_pack_lexicon.tsv" \
 		--continuations "$(DIST_DIR)/classics_pack_continuations.tsv" \
 		$(if $(wildcard $(DIST_DIR)/classics_lora.safetensors),--lora "$(DIST_DIR)/classics_lora.safetensors",)
-	@cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/tech-developer.imepack" \
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/tech-developer.imepack" \
 		--id tech-developer \
 		--name "开发者中英技术双语包" \
 		--description "面向系统编程、Rust/Swift、端侧 AI 与云原生的中英双语术语库及 Rank-8 技术语境 LoRA，在终端与 IDE 中自动满权激活" \
@@ -133,13 +142,13 @@ build-public-packs: build-classics-corpus
 		--lora-scale 1.0 \
 		--tsv "$(DIST_DIR)/tech_pack_lexicon.tsv" \
 		$(if $(wildcard $(DIST_DIR)/tech_lora.safetensors),--lora "$(DIST_DIR)/tech_lora.safetensors",)
-	@/usr/bin/ditto -c -k --keepParent "$(PACKS_BUILD_DIR)/classics-poetry.imepack" "$(RELEASE_DIR)/classics-poetry.imepack.zip"
-	@/usr/bin/ditto -c -k --keepParent "$(PACKS_BUILD_DIR)/tech-developer.imepack" "$(RELEASE_DIR)/tech-developer.imepack.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(PACKS_BUILD_DIR)/classics-poetry.imepack" "$(RELEASE_DIR)/classics-poetry.imepack.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(PACKS_BUILD_DIR)/tech-developer.imepack" "$(RELEASE_DIR)/tech-developer.imepack.zip"
 
 define build-installer-pkg
 @rm -rf "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
 @mkdir -p "$(DIST_DIR)/pkg-root/Library/Input Methods" "$(RELEASE_DIR)"
-@COPYFILE_DISABLE=1 /usr/bin/ditto "$(APP_BUNDLE)" "$(DIST_DIR)/pkg-root/Library/Input Methods/Chime.app"
+@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(DIST_DIR)/pkg-root/Library/Input Methods/Chime.app"
 @chmod +x macos/Scripts/pkg_scripts/postinstall
 @COPYFILE_DISABLE=1 /usr/bin/pkgbuild --analyze --root "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist"
 @/usr/bin/plutil -replace 0.BundleIsRelocatable -bool NO "$(DIST_DIR)/component.plist"
@@ -161,7 +170,7 @@ release-artifacts: macos-bundle build-public-packs
 	@if [ -n "$(INSTALLER_SIGN_IDENTITY)" ]; then \
 		pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"; \
 	fi
-	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
 	@cd "$(RELEASE_DIR)" && shasum -a 256 \
 		"Chime-v$(VERSION)-macos-arm64.pkg" \
 		"Chime-v$(VERSION)-macos-arm64.zip" \
@@ -176,7 +185,7 @@ release-notarize: macos-bundle build-public-packs
 	@mkdir -p "$(RELEASE_DIR)"
 	@echo "1/4 Submitting Chime.app to Apple Notary Service..."
 	@rm -f "$(DIST_DIR)/Chime-notarize-app.zip"
-	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(DIST_DIR)/Chime-notarize-app.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(APP_BUNDLE)" "$(DIST_DIR)/Chime-notarize-app.zip"
 	$(call run-notarytool,$(DIST_DIR)/Chime-notarize-app.zip)
 	@rm -f "$(DIST_DIR)/Chime-notarize-app.zip"
 	@echo "2/4 Stapling notarization ticket to Chime.app and packaging .zip..."
@@ -184,7 +193,7 @@ release-notarize: macos-bundle build-public-packs
 	@xcrun stapler validate "$(APP_BUNDLE)"
 	@spctl --assess --type exec --verbose=4 "$(APP_BUNDLE)"
 	@rm -f "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
-	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$(APP_BUNDLE)" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.zip"
 	@echo "3/4 Building non-relocatable Developer ID signed .pkg installer and submitting to Apple Notary Service..."
 	$(call build-installer-pkg,--sign "$(INSTALLER_SIGN_IDENTITY)")
 	@pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
@@ -205,13 +214,13 @@ install-macos: macos-bundle
 	@mkdir -p "$(HOME)/Library/Input Methods"
 	@-pkill -x Chime 2>/dev/null || true
 	@rm -rf "$(HOME)/Library/Input Methods/Chime.app"
-	@cp -R "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app"
 	@-"$(LSREGISTER)" -f -R -trusted "$(HOME)/Library/Input Methods/Chime.app"
 	@-killall TextInputMenuAgent imklaunchagent 2>/dev/null || true
-	@-killall -9 TextInputSwitcher CursorUIViewService 2>/dev/null || true
+	@-killall -9 "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>/dev/null || true
 	@sleep 1
-	@swift macos/Scripts/register_ime.swift "$(HOME)/Library/Input Methods/Chime.app"
-	@echo "Installed and registered Chime 拼音 v$(VERSION) at ~/Library/Input Methods/Chime.app"
+	@/usr/bin/open -n -g -a "$(HOME)/Library/Input Methods/Chime.app" --args --activate-on-install
+	@echo "Installed and activated Chime 拼音 v$(VERSION) at ~/Library/Input Methods/Chime.app"
 
 paper:
 	@typst compile paper/chime-paper.typ paper/chime-paper.pdf

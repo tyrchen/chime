@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ChimeIME",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "ChimeIME", targets: ["ChimeIME"])
