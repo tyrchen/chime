@@ -1,8 +1,10 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 
-// Generates vector template `menu_icon.pdf` (18x18pt) and full-res `AppIcon.iconset` PNGs.
+// Generates vector template `menu_icon.pdf` (16x16pt pure CoreText glyph outline, zero embedded fonts)
+// and full-res `AppIcon.iconset` PNGs.
 let args = CommandLine.arguments
 guard args.count >= 3 else {
     fputs("Usage: swift generate_icons.swift <menu_icon.pdf> <AppIcon.iconset_dir>\n", stderr)
@@ -13,7 +15,8 @@ let pdfPath = URL(fileURLWithPath: args[1])
 let iconsetDir = URL(fileURLWithPath: args[2], isDirectory: true)
 try FileManager.default.createDirectory(at: iconsetDir, withIntermediateDirectories: true)
 
-// 1. Vector monochrome template `menu_icon.pdf` (16x16pt pure CGPath even-odd cutout, zero embedded fonts)
+// 1. Vector monochrome template `menu_icon.pdf` (16x16pt rounded frame + outlined "中" glyph path)
+// Works crisply in Menu Bar, System Settings, AND macOS Sequoia's blue inline cursor capsule!
 var mediaBox = CGRect(x: 0, y: 0, width: 16, height: 16)
 guard let pdfConsumer = CGDataConsumer(url: pdfPath as CFURL),
       let pdfCtx = CGContext(consumer: pdfConsumer, mediaBox: &mediaBox, nil)
@@ -23,31 +26,38 @@ else {
 }
 
 pdfCtx.beginPDFPage(nil)
-pdfCtx.setFillColor(CGColor(srgbRed: 0.0, green: 0.0, blue: 0.0, alpha: 1.0))
+let black = CGColor(srgbRed: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
+pdfCtx.setStrokeColor(black)
+pdfCtx.setFillColor(black)
 
-// Outer solid squircle badge (14x14 centered in 16x16) + inner cutout "C" + chime bar using even-odd rule!
-let compound = CGMutablePath()
-compound.addRoundedRect(in: CGRect(x: 1.0, y: 1.0, width: 14.0, height: 14.0), cornerWidth: 3.6, cornerHeight: 3.6)
+// Crisp rounded-squircle outline (13.6 x 13.6 centered in 16x16) so it never turns into a solid
+// white blob inside macOS's blue inline cursor capsule!
+let framePath = CGPath(
+    roundedRect: CGRect(x: 1.2, y: 1.2, width: 13.6, height: 13.6),
+    cornerWidth: 3.4,
+    cornerHeight: 3.4,
+    transform: nil
+)
+pdfCtx.addPath(framePath)
+pdfCtx.setLineWidth(1.3)
+pdfCtx.strokePath()
 
-// Cutout geometric "C" arc (center (7.4, 8.0), outer r=4.1, inner r=2.5, opening on right)
-let cx: CGFloat = 7.3
-let cy: CGFloat = 8.0
-let rOut: CGFloat = 4.1
-let rIn: CGFloat = 2.45
-let startAngle: CGFloat = 0.62 // ~35.5 deg
-let endAngle: CGFloat = .pi * 2.0 - 0.62
+// Convert "中" into a pure vector CGPath via CoreText (zero embedded font dependency in PDF!)
+let ctFont = CTFontCreateWithName("PingFangSC-Semibold" as CFString, 10.2, nil)
+let chars: [UniChar] = Array("中".utf16)
+var glyphs = [CGGlyph](repeating: 0, count: chars.count)
+CTFontGetGlyphsForCharacters(ctFont, chars, &glyphs, chars.count)
+if let glyphPath = CTFontCreatePathForGlyph(ctFont, glyphs[0], nil) {
+    let bounds = glyphPath.boundingBoxOfPath
+    let tx = (16.0 - bounds.width) / 2.0 - bounds.minX
+    let ty = (16.0 - bounds.height) / 2.0 - bounds.minY
+    var transform = CGAffineTransform(translationX: tx, y: ty)
+    if let centered = glyphPath.copy(using: &transform) {
+        pdfCtx.addPath(centered)
+        pdfCtx.fillPath()
+    }
+}
 
-let cPath = CGMutablePath()
-cPath.addArc(center: CGPoint(x: cx, y: cy), radius: rOut, startAngle: startAngle, endAngle: endAngle, clockwise: false)
-cPath.addArc(center: CGPoint(x: cx, y: cy), radius: rIn, startAngle: endAngle, endAngle: startAngle, clockwise: true)
-cPath.closeSubpath()
-compound.addPath(cPath)
-
-// Cutout vertical chime resonance bar on the right
-compound.addRoundedRect(in: CGRect(x: 11.4, y: 5.4, width: 1.55, height: 5.2), cornerWidth: 0.75, cornerHeight: 0.75)
-
-pdfCtx.addPath(compound)
-pdfCtx.fillPath(using: .evenOdd)
 pdfCtx.endPDFPage()
 pdfCtx.closePDF()
 
