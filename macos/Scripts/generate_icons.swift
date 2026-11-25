@@ -30,20 +30,20 @@ let black = CGColor(srgbRed: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
 pdfCtx.setStrokeColor(black)
 pdfCtx.setFillColor(black)
 
-// Crisp rounded-squircle outline (13.6 x 13.6 centered in 16x16) so it never turns into a solid
-// white blob inside macOS's blue inline cursor capsule!
+// Crisp rounded-squircle outline (14.0 x 14.0 centered in 16x16) so it never turns into a solid
+// white blob inside macOS's blue inline cursor capsule or fn switcher!
 let framePath = CGPath(
-    roundedRect: CGRect(x: 1.2, y: 1.2, width: 13.6, height: 13.6),
-    cornerWidth: 3.4,
-    cornerHeight: 3.4,
+    roundedRect: CGRect(x: 1.0, y: 1.0, width: 14.0, height: 14.0),
+    cornerWidth: 3.5,
+    cornerHeight: 3.5,
     transform: nil
 )
 pdfCtx.addPath(framePath)
-pdfCtx.setLineWidth(1.3)
+pdfCtx.setLineWidth(1.25)
 pdfCtx.strokePath()
 
 // Convert "中" into a pure vector CGPath via CoreText (zero embedded font dependency in PDF!)
-let ctFont = CTFontCreateWithName("PingFangSC-Semibold" as CFString, 10.2, nil)
+let ctFont = CTFontCreateWithName("PingFangSC-Semibold" as CFString, 9.4, nil)
 let chars: [UniChar] = Array("中".utf16)
 var glyphs = [CGGlyph](repeating: 0, count: chars.count)
 CTFontGetGlyphsForCharacters(ctFont, chars, &glyphs, chars.count)

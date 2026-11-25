@@ -74,7 +74,8 @@ install-macos: macos-bundle
 	@rm -rf "$(HOME)/Library/Input Methods/Chime.app"
 	@cp -R "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app"
 	@-"$(LSREGISTER)" -f -R -trusted "$(HOME)/Library/Input Methods/Chime.app"
-	@-killall TextInputMenuAgent TextInputSwitcher CursorUIViewService imklaunchagent 2>/dev/null || true
+	@-killall TextInputMenuAgent imklaunchagent 2>/dev/null || true
+	@-killall -9 TextInputSwitcher CursorUIViewService 2>/dev/null || true
 	@sleep 1
 	@swift macos/Scripts/register_ime.swift "$(HOME)/Library/Input Methods/Chime.app"
 	@echo "Installed and registered Chime 拼音 at ~/Library/Input Methods/Chime.app"

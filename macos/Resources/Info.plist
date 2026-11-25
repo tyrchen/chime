@@ -23,7 +23,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>6</string>
+    <string>7</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
@@ -42,6 +42,8 @@
     <string>ChimeInputController</string>
     <key>tsInputMethodIconFileKey</key>
     <string>menu_icon.pdf</string>
+    <key>TISIconIsTemplate</key>
+    <true/>
     <key>tsInputMethodCharacterRepertoireKey</key>
     <array>
         <string>Hans</string>
@@ -53,6 +55,8 @@
         <dict>
             <key>app.tyrchen.inputmethod.Chime.Pinyin</key>
             <dict>
+                <key>TISIconIsTemplate</key>
+                <true/>
                 <key>TISIconLabels</key>
                 <dict>
                     <key>Primary</key>
