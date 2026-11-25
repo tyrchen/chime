@@ -79,11 +79,24 @@ struct ChimeSettingsView: View {
                     Text("竖排列表").tag("vertical")
                 }
                 Stepper("每页候选个数：\(config.page_size)", value: $config.page_size, in: 3...9)
-                Toggle("中英文与数字边界自动空格（代码编辑器自动豁免）", isOn: $config.pangu_spacing)
-                Toggle("中文全角智能标点（成对引号与小数点智能识别）", isOn: $config.chinese_punctuation)
+                Toggle("中英文与数字边界自动添加空格", isOn: $config.pangu_spacing)
+                Toggle("中文全角智能标点（快捷键 Ctrl+. 或候选栏点击切换）", isOn: $config.chinese_punctuation)
             }
 
             Section("模糊音（零词库体积膨胀）") {
+                HStack {
+                    Button("一键开启全部常用模糊音") {
+                        config.fuzzy.z_zh = true
+                        config.fuzzy.c_ch = true
+                        config.fuzzy.s_sh = true
+                        config.fuzzy.an_ang = true
+                        config.fuzzy.en_eng = true
+                        config.fuzzy.in_ing = true
+                        config.fuzzy.ian_iang = true
+                        config.fuzzy.uan_uang = true
+                    }
+                    Spacer()
+                }
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     GridRow {
                         Toggle("z ↔ zh", isOn: $config.fuzzy.z_zh)

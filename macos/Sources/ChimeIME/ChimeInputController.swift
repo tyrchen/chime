@@ -9,9 +9,15 @@ public final class ChimeInputController: IMKInputController {
     override public func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         let key = ObjectIdentifier(self)
+        let clientObj = sender as AnyObject?
         let bundleId = (sender as? IMKTextInput)?.bundleIdentifier() ?? ""
+        nonisolated(unsafe) let unsafeClient = clientObj
         MainActor.assumeIsolated {
-            ChimeEngineBridge.shared.activate(controllerKey: key, appBundleId: bundleId)
+            ChimeEngineBridge.shared.activate(
+                controllerKey: key,
+                appBundleId: bundleId,
+                client: unsafeClient
+            )
         }
     }
 
@@ -29,7 +35,22 @@ public final class ChimeInputController: IMKInputController {
     }
 
     override public func menu() -> NSMenu! {
+        let isCnPunct: Bool = MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.getConfig()?.chinese_punctuation ?? true
+        }
+
         let menu = NSMenu(title: "Chime")
+
+        let punctTitle = isCnPunct ? "切换至英文半角标点 (.,)   ⌃." : "切换至中文全角标点 (。，)   ⌃."
+        let punctItem = NSMenuItem(
+            title: punctTitle,
+            action: #selector(togglePunctuationMode(_:)),
+            keyEquivalent: ""
+        )
+        punctItem.target = self
+        menu.addItem(punctItem)
+        menu.addItem(NSMenuItem.separator())
+
         let prefsItem = NSMenuItem(
             title: "偏好设置…",
             action: #selector(openPreferences(_:)),
@@ -57,6 +78,14 @@ public final class ChimeInputController: IMKInputController {
         return menu
     }
 
+    @objc public func togglePunctuationMode(_ sender: Any?) {
+        let key = ObjectIdentifier(self)
+        MainActor.assumeIsolated {
+            let resp = ChimeEngineBridge.shared.togglePunctuation(controllerKey: key)
+            ChimeEngineBridge.shared.applyResponseToStoredClient(controllerKey: key, resp: resp)
+        }
+    }
+
     @objc public func openPreferences(_ sender: Any?) {
         MainActor.assumeIsolated {
             ChimeSettingsWindowController.shared.showWindow()
@@ -81,12 +110,13 @@ public final class ChimeInputController: IMKInputController {
             return false
         }
         let key = ObjectIdentifier(self)
+        nonisolated(unsafe) let unsafeClientObj = sender as AnyObject
         let type = event.type
         let keyCode = event.keyCode
-        let shiftDown = event.modifierFlags.contains(.shift)
-        let hasCmdOrCtrl = event.modifierFlags.contains(.command)
-            || event.modifierFlags.contains(.control)
-            || event.modifierFlags.contains(.option)
+        let flags = event.modifierFlags
+        let shiftDown = flags.contains(.shift)
+        let ctrlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
+        let hasCmdOrCtrl = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
         let timestamp = event.timestamp
         let ascii: UInt8 = {
             guard let chars = event.characters, let scalar = chars.unicodeScalars.first, scalar.isASCII else {
@@ -94,9 +124,12 @@ public final class ChimeInputController: IMKInputController {
             }
             return UInt8(scalar.value)
         }()
+        let isCtrlPeriod = ctrlOnly && (keyCode == 0x2F || event.charactersIgnoringModifiers == ".")
         let secure = IsSecureEventInputEnabled()
 
         let response: ChimeResponse? = MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.registerClient(controllerKey: key, client: unsafeClientObj)
+
             if type == .flagsChanged {
                 return ChimeEngineBridge.shared.pollLeftShiftTap(
                     controllerKey: key,
@@ -107,6 +140,9 @@ public final class ChimeInputController: IMKInputController {
             }
             guard type == .keyDown else {
                 return nil
+            }
+            if isCtrlPeriod {
+                return ChimeEngineBridge.shared.togglePunctuation(controllerKey: key)
             }
             return ChimeEngineBridge.shared.processKey(
                 controllerKey: key,
@@ -144,6 +180,10 @@ public final class ChimeInputController: IMKInputController {
             )
         }
 
+        var lineRect = NSRect.zero
+        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
+        let validRect = (lineRect.origin.x != 0 || lineRect.origin.y != 0) ? lineRect : nil
+
         if resp.preedit_text.isEmpty {
             client.setMarkedText(
                 "",
@@ -151,7 +191,15 @@ public final class ChimeInputController: IMKInputController {
                 replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
             )
             MainActor.assumeIsolated {
-                CandidatePanel.shared.hide()
+                if resp.ghost_text.isEmpty {
+                    CandidatePanel.shared.hide()
+                } else {
+                    ChimeEngineBridge.shared.updateCandidatePanel(
+                        controllerKey: controllerKey,
+                        response: resp,
+                        observedCaretRect: validRect
+                    )
+                }
             }
             return
         }
@@ -162,10 +210,6 @@ public final class ChimeInputController: IMKInputController {
             selectionRange: NSRange(location: nsPreedit.length, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
         )
-
-        var lineRect = NSRect.zero
-        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
-        let validRect = (lineRect.origin.x != 0 || lineRect.origin.y != 0) ? lineRect : nil
 
         MainActor.assumeIsolated {
             ChimeEngineBridge.shared.updateCandidatePanel(

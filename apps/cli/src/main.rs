@@ -515,7 +515,31 @@ fn run_golden_eval(
             left_ctx: "",
             app: "com.mitchellh.ghostty",
             keys: "bangworeviewzhegepr",
-            expected_top1: "帮我review这个PR",
+            expected_top1: "帮我 review 这个 PR",
+        },
+        Case {
+            category: "proper-case-ai",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "com.mitchellh.ghostty",
+            keys: "tiaozhengchatgptyinggai",
+            expected_top1: "调整 ChatGPT 应该",
+        },
+        Case {
+            category: "fuzzy-yinwen",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "使用",
+            app: "md.obsidian",
+            keys: "yinwen",
+            expected_top1: "英文",
+        },
+        Case {
+            category: "polyphone-sihu",
+            scheme: ShuangpinScheme::Full,
+            left_ctx: "",
+            app: "md.obsidian",
+            keys: "sihu",
+            expected_top1: "似乎",
         },
         Case {
             category: "code-switch-camel",
@@ -735,7 +759,55 @@ fn run_golden_eval(
         dot_resp.committed_text
     )?;
 
-    let total_cases = cases.len() + 2;
+    // Interactive Case: `一路 Tab` Classical Poetry Auto-Completion (`tianshengwocai` -> 4x Tab!)
+    interactive_eng.reset_session(sid);
+    let t_poem = Instant::now();
+    for b in *b"tianshengwocai" {
+        let _ = interactive_eng.process_key(
+            sid,
+            KeyEvent {
+                ascii_char: b,
+                key_code: 0,
+                shift: false,
+                has_command_or_ctrl: false,
+                secure_input: false,
+            },
+            1_000,
+        );
+    }
+    let mut poem_acc = String::new();
+    for _ in 0..4 {
+        let tab_resp = interactive_eng.process_key(
+            sid,
+            KeyEvent {
+                ascii_char: 0,
+                key_code: 0x30,
+                shift: false,
+                has_command_or_ctrl: false,
+                secure_input: false,
+            },
+            1_000,
+        );
+        poem_acc.push_str(&tab_resp.committed_text);
+    }
+    let poem_us = u64::try_from(t_poem.elapsed().as_micros()).unwrap_or(0);
+    latencies_us.push(poem_us);
+    let poem_ok = poem_acc.starts_with("天生我")
+        && poem_acc.contains("必有用，千金散尽还复来。烹羊宰牛且为乐，会须一饮三百杯");
+    if poem_ok {
+        passed += 1;
+    }
+    writeln!(
+        out,
+        "  [{}] {:<18} {:<26} -> {:<22} ({} us)",
+        if poem_ok { "PASS" } else { "FAIL" },
+        "poetry-tab-chain",
+        "tianshengwocai + 4xTab",
+        poem_acc,
+        poem_us
+    )?;
+
+    let total_cases = cases.len() + 3;
     latencies_us.sort_unstable();
     let p50 = latencies_us[latencies_us.len() / 2];
     let p99 = latencies_us[(latencies_us.len() * 99) / 100];

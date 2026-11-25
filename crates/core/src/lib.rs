@@ -79,6 +79,7 @@ pub struct KeyEvent {
 
 /// Snapshot returned synchronously (<2ms) to the Swift UI on every keystroke or navigation action.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct EngineResponse {
     /// True if the IME consumed the keystroke; false if `macOS` should pass it to the client app.
     pub handled: bool,
@@ -96,6 +97,12 @@ pub struct EngineResponse {
     pub total_pages: usize,
     /// True when inline English pass-through mode is toggled on.
     pub inline_english_mode: bool,
+    /// True when Chinese full-width smart punctuation (`。，`) is active (`false` = ASCII `.,`).
+    pub chinese_punctuation: bool,
+    /// True when the candidate panel is expanded into the `5x5` 2D grid (`↓` key).
+    pub grid_expanded: bool,
+    /// Next-clause contextual auto-completion preview (`⇥ ，千金散尽还复来`) ready for `Tab`.
+    pub ghost_text: String,
     /// Candidate window layout orientation (`horizontal` or `vertical`).
     pub candidate_layout: CandidateLayout,
     /// Monotonic keystroke generation ID for anti-jitter async rerank validation.
@@ -133,6 +140,9 @@ struct InputSession {
     punctuation: PunctuationState,
     all_candidates: Vec<Candidate>,
     selected_global_idx: usize,
+    grid_expanded: bool,
+    ghost_suggestion: Option<String>,
+    last_committed_word: String,
     typo_rollback_prev_idx: Option<usize>,
     last_auto_committed: Option<(String, String)>,
     generation_id: u64,
@@ -152,6 +162,9 @@ impl InputSession {
             punctuation: PunctuationState::default(),
             all_candidates: Vec::new(),
             selected_global_idx: 0,
+            grid_expanded: false,
+            ghost_suggestion: None,
+            last_committed_word: String::new(),
             typo_rollback_prev_idx: None,
             last_auto_committed: None,
             generation_id: 0,
@@ -168,6 +181,7 @@ impl InputSession {
         self.raw_buffer.clear();
         self.all_candidates.clear();
         self.selected_global_idx = 0;
+        self.grid_expanded = false;
         self.typo_rollback_prev_idx = None;
     }
 
@@ -456,7 +470,37 @@ impl ChimeEngine {
     pub fn reset_session(&mut self, session_id: u64) {
         if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id) {
             sess.clear_composing();
+            sess.ghost_suggestion = None;
         }
+    }
+
+    /// Toggles Chinese full-width (`。，`) vs ASCII (`.,`) punctuation, persisting to
+    /// `config.toml`.
+    pub fn toggle_punctuation(&mut self, session_id: u64) -> EngineResponse {
+        self.config.chinese_punctuation = !self.config.chinese_punctuation;
+        if let Some(dir) = &self.app_support_dir {
+            let _ = self.config.save(&dir.join("config.toml"));
+        }
+        let Some(idx) = self.touch_session(session_id) else {
+            return EngineResponse {
+                handled: true,
+                chinese_punctuation: self.config.chinese_punctuation,
+                candidate_layout: self.config.candidate_layout,
+                ..EngineResponse::default()
+            };
+        };
+        self.build_snapshot(idx, true, String::new())
+    }
+
+    /// Toggles the Doubao-style `5x5` expanded candidate grid (`grid_expanded`).
+    pub fn toggle_grid_expanded(&mut self, session_id: u64) -> EngineResponse {
+        let Some(idx) = self.touch_session(session_id) else {
+            return EngineResponse::default();
+        };
+        if !self.sessions[idx].all_candidates.is_empty() {
+            self.sessions[idx].grid_expanded = !self.sessions[idx].grid_expanded;
+        }
+        self.build_snapshot(idx, true, String::new())
     }
 
     /// Toggles inline English mode on clean `< 250ms` single Left-Shift tap, committing any raw
@@ -465,11 +509,14 @@ impl ChimeEngine {
         let Some(idx) = self.touch_session(session_id) else {
             return EngineResponse::default();
         };
+        let pangu = self.config.pangu_spacing;
         let sess = &mut self.sessions[idx];
         sess.inline_english_mode = !sess.inline_english_mode;
-        let mut committed = std::mem::take(&mut sess.partial_prefix);
-        committed.push_str(&std::mem::take(&mut sess.raw_buffer));
+        sess.ghost_suggestion = None;
+        let mut raw_commit = std::mem::take(&mut sess.partial_prefix);
+        raw_commit.push_str(&std::mem::take(&mut sess.raw_buffer));
         sess.clear_composing();
+        let committed = apply_boundary_pangu_spacing(&sess.left_context, &raw_commit, pangu);
         if !committed.is_empty() {
             sess.record_emitted_text(&committed);
         }
@@ -477,6 +524,7 @@ impl ChimeEngine {
             handled: true,
             committed_text: committed,
             inline_english_mode: sess.inline_english_mode,
+            chinese_punctuation: self.config.chinese_punctuation,
             candidate_layout: self.config.candidate_layout,
             generation_id: sess.generation_id,
             ..EngineResponse::default()
@@ -552,9 +600,14 @@ impl ChimeEngine {
         };
 
         if self.sessions[idx].inline_english_mode {
+            if event.ascii_char.is_ascii_graphic() || event.ascii_char == b' ' {
+                let s = char::from(event.ascii_char).to_string();
+                self.sessions[idx].record_emitted_text(&s);
+            }
             return EngineResponse {
                 handled: false,
                 inline_english_mode: true,
+                chinese_punctuation: self.config.chinese_punctuation,
                 candidate_layout: self.config.candidate_layout,
                 ..EngineResponse::default()
             };
@@ -562,6 +615,33 @@ impl ChimeEngine {
 
         let ch = event.ascii_char;
         let is_composing = self.sessions[idx].is_composing();
+
+        // Handle Copilot-style `一路 Tab` contextual ghost completion when idle!
+        if !is_composing && self.sessions[idx].ghost_suggestion.is_some() {
+            if event.key_code == 0x30 && !event.shift {
+                // Accept ghost suggestion on Tab and immediately compute the next chained clause!
+                let ghost = self.sessions[idx]
+                    .ghost_suggestion
+                    .take()
+                    .unwrap_or_default();
+                let prev_w = self.sessions[idx].last_committed_word.clone();
+                if !prev_w.is_empty() {
+                    self.user_store
+                        .record_bigram(&prev_w, &ghost, now_epoch_secs);
+                }
+                self.sessions[idx].last_committed_word.clone_from(&ghost);
+                self.sessions[idx].record_emitted_text(&ghost);
+                self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
+                return self.build_snapshot(idx, true, ghost);
+            }
+            if event.key_code == 0x35 {
+                // Dismiss ghost suggestion on Escape without passing Esc to host app!
+                self.sessions[idx].ghost_suggestion = None;
+                return self.build_snapshot(idx, true, String::new());
+            }
+            // Any other key dismisses the ghost suggestion and proceeds normally!
+            self.sessions[idx].ghost_suggestion = None;
+        }
 
         if is_composing
             && let Some(nav_resp) = self.handle_composing_control_key(idx, event, now_epoch_secs)
@@ -602,6 +682,11 @@ impl ChimeEngine {
                 if let Some(mapped) = self.sessions[idx].punctuation.map_punctuation(ch, prev_ch) {
                     resp.committed_text.push_str(mapped);
                     self.sessions[idx].record_emitted_text(mapped);
+                    self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
+                    resp.ghost_text = self.sessions[idx]
+                        .ghost_suggestion
+                        .clone()
+                        .unwrap_or_default();
                 }
                 resp.preedit_text.clear();
                 resp.candidates.clear();
@@ -610,9 +695,13 @@ impl ChimeEngine {
                 let prev_ch = self.sessions[idx].last_committed_char;
                 if let Some(mapped) = self.sessions[idx].punctuation.map_punctuation(ch, prev_ch) {
                     self.sessions[idx].record_emitted_text(mapped);
+                    let next_ghost = self.compute_ghost_for_session(idx);
+                    self.sessions[idx].ghost_suggestion.clone_from(&next_ghost);
                     return EngineResponse {
                         handled: true,
                         committed_text: mapped.to_string(),
+                        chinese_punctuation: self.config.chinese_punctuation,
+                        ghost_text: next_ghost.unwrap_or_default(),
                         candidate_layout: self.config.candidate_layout,
                         ..EngineResponse::default()
                     };
@@ -620,14 +709,19 @@ impl ChimeEngine {
             }
         }
 
-        if !is_composing && ch.is_ascii_graphic() {
-            self.sessions[idx].last_committed_char = Some(char::from(ch));
+        if !is_composing && (ch.is_ascii_graphic() || ch == b' ') {
+            let s = char::from(ch).to_string();
+            self.sessions[idx].record_emitted_text(&s);
         }
 
-        EngineResponse::default()
+        EngineResponse {
+            chinese_punctuation: self.config.chinese_punctuation,
+            candidate_layout: self.config.candidate_layout,
+            ..EngineResponse::default()
+        }
     }
 
-    /// Selects candidate `page_relative_index` (`0..page_size`) on the active page (e.g. mouse
+    /// Selects candidate `page_relative_index` (`0..eff_page_size`) on the active page (e.g. mouse
     /// click).
     pub fn select_candidate(
         &mut self,
@@ -638,7 +732,14 @@ impl ChimeEngine {
         let Some(idx) = self.touch_session(session_id) else {
             return EngineResponse::default();
         };
-        let page_size = self.config.page_size.max(1);
+        if !self.sessions[idx].is_composing()
+            && let Some(ghost) = self.sessions[idx].ghost_suggestion.take()
+        {
+            self.sessions[idx].record_emitted_text(&ghost);
+            self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
+            return self.build_snapshot(idx, true, ghost);
+        }
+        let page_size = self.effective_page_size(idx);
         let page_start = (self.sessions[idx].selected_global_idx / page_size) * page_size;
         let global_idx = page_start + page_relative_index;
         self.commit_candidate_global(idx, global_idx, now_epoch_secs)
@@ -673,7 +774,8 @@ impl ChimeEngine {
     ) -> Option<EngineResponse> {
         let ch = event.ascii_char;
         let total = self.sessions[idx].all_candidates.len();
-        let page_size = self.config.page_size.max(1);
+        let page_size = self.effective_page_size(idx);
+        let grid = self.sessions[idx].grid_expanded;
 
         match event.key_code {
             // Space -> commit highlighted candidate
@@ -681,15 +783,21 @@ impl ChimeEngine {
                 let sel = self.sessions[idx].selected_global_idx;
                 return Some(self.commit_candidate_global(idx, sel, now_epoch_secs));
             }
-            // Return -> commit raw ASCII directly
+            // Return -> commit raw ASCII directly (with boundary Pangu spacing if applicable)
             0x24 => {
-                let mut out = std::mem::take(&mut self.sessions[idx].partial_prefix);
-                out.push_str(&std::mem::take(&mut self.sessions[idx].raw_buffer));
+                let mut raw_out = std::mem::take(&mut self.sessions[idx].partial_prefix);
+                raw_out.push_str(&std::mem::take(&mut self.sessions[idx].raw_buffer));
                 self.sessions[idx].clear_composing();
+                let out = apply_boundary_pangu_spacing(
+                    &self.sessions[idx].left_context,
+                    &raw_out,
+                    self.config.pangu_spacing,
+                );
                 self.sessions[idx].record_emitted_text(&out);
                 return Some(EngineResponse {
                     handled: true,
                     committed_text: out,
+                    chinese_punctuation: self.config.chinese_punctuation,
                     candidate_layout: self.config.candidate_layout,
                     ..EngineResponse::default()
                 });
@@ -704,44 +812,95 @@ impl ChimeEngine {
                 }
                 return Some(self.recompute_session(idx, now_epoch_secs));
             }
-            // Escape -> cancel composition
+            // Escape -> collapse 5x5 grid first if expanded, otherwise cancel composition
             0x35 => {
+                if grid {
+                    self.sessions[idx].grid_expanded = false;
+                    return Some(self.build_snapshot(idx, true, String::new()));
+                }
                 self.sessions[idx].clear_composing();
                 return Some(EngineResponse {
                     handled: true,
+                    chinese_punctuation: self.config.chinese_punctuation,
                     candidate_layout: self.config.candidate_layout,
                     ..EngineResponse::default()
                 });
             }
-            // Tab -> Typo Rollback toggle (or cycle candidate)
-            0x30 if total > 1 => {
-                let cur = self.sessions[idx].selected_global_idx;
-                if let Some(prev) = self.sessions[idx].typo_rollback_prev_idx.take() {
-                    self.sessions[idx].selected_global_idx = prev.min(total - 1);
-                } else if self.sessions[idx].all_candidates[cur].kind == MatchKind::TypoCorrected {
-                    if let Some(exact_idx) = self.sessions[idx]
+            // Tab -> 1) Accept prefix verse/idiom/English Completion (`tianshengwocai` ->
+            // `天生我材必有用`) immediately; 2) otherwise Typo Rollback toggle or cycle candidate!
+            0x30 if total >= 1 => {
+                if !event.shift
+                    && let Some(comp_idx) = self.sessions[idx]
                         .all_candidates
                         .iter()
-                        .position(|c| matches!(c.kind, MatchKind::Exact | MatchKind::CodeSwitch))
+                        .position(|c| c.kind == MatchKind::Completion)
+                {
+                    return Some(self.commit_candidate_global(idx, comp_idx, now_epoch_secs));
+                }
+                if total > 1 {
+                    let cur = self.sessions[idx].selected_global_idx;
+                    if let Some(prev) = self.sessions[idx].typo_rollback_prev_idx.take() {
+                        self.sessions[idx].selected_global_idx = prev.min(total - 1);
+                    } else if self.sessions[idx].all_candidates[cur].kind
+                        == MatchKind::TypoCorrected
                     {
-                        self.sessions[idx].typo_rollback_prev_idx = Some(cur);
-                        self.sessions[idx].selected_global_idx = exact_idx;
+                        if let Some(exact_idx) =
+                            self.sessions[idx].all_candidates.iter().position(|c| {
+                                matches!(c.kind, MatchKind::Exact | MatchKind::CodeSwitch)
+                            })
+                        {
+                            self.sessions[idx].typo_rollback_prev_idx = Some(cur);
+                            self.sessions[idx].selected_global_idx = exact_idx;
+                        } else {
+                            self.sessions[idx].selected_global_idx = (cur + 1) % total;
+                        }
                     } else {
                         self.sessions[idx].selected_global_idx = (cur + 1) % total;
                     }
+                    return Some(self.build_snapshot(idx, true, String::new()));
+                }
+            }
+            // Down Arrow (0x7D):
+            // - In compact 1x5 bar: expands into Doubao-style 5x5 Grid when > page_size candidates!
+            // - In 5x5 Grid: moves down one row (+5)!
+            0x7D if total > 0 => {
+                if !grid && total > page_size {
+                    self.sessions[idx].grid_expanded = true;
+                } else if grid {
+                    let next = self.sessions[idx].selected_global_idx + 5;
+                    self.sessions[idx].selected_global_idx =
+                        if next < total { next } else { total - 1 };
                 } else {
-                    self.sessions[idx].selected_global_idx = (cur + 1) % total;
+                    self.sessions[idx].selected_global_idx =
+                        (self.sessions[idx].selected_global_idx + 1) % total;
                 }
                 return Some(self.build_snapshot(idx, true, String::new()));
             }
-            // Down (0x7D) or Right (0x7C) -> next candidate
-            0x7D | 0x7C if total > 0 => {
+            // Up Arrow (0x7E):
+            // - In 5x5 Grid: moves up one row (-5), or collapses back to 1x5 bar from row 0!
+            // - In compact 1x5 bar: previous candidate.
+            0x7E if total > 0 => {
+                let cur = self.sessions[idx].selected_global_idx;
+                if grid {
+                    if cur < 5 {
+                        self.sessions[idx].grid_expanded = false;
+                    } else {
+                        self.sessions[idx].selected_global_idx = cur - 5;
+                    }
+                } else {
+                    self.sessions[idx].selected_global_idx =
+                        if cur == 0 { total - 1 } else { cur - 1 };
+                }
+                return Some(self.build_snapshot(idx, true, String::new()));
+            }
+            // Right Arrow (0x7C) -> next candidate
+            0x7C if total > 0 => {
                 self.sessions[idx].selected_global_idx =
                     (self.sessions[idx].selected_global_idx + 1) % total;
                 return Some(self.build_snapshot(idx, true, String::new()));
             }
-            // Up (0x7E) or Left (0x7B) -> previous candidate
-            0x7E | 0x7B if total > 0 => {
+            // Left Arrow (0x7B) -> previous candidate
+            0x7B if total > 0 => {
                 let cur = self.sessions[idx].selected_global_idx;
                 self.sessions[idx].selected_global_idx = if cur == 0 { total - 1 } else { cur - 1 };
                 return Some(self.build_snapshot(idx, true, String::new()));
@@ -775,10 +934,20 @@ impl ChimeEngine {
             return Some(self.build_snapshot(idx, true, String::new()));
         }
 
-        // Digit 1..=page_size -> select candidate on the current page!
+        // Digit selection:
+        // - In 5x5 grid: `1..=5` selects column `0..5` on the currently highlighted row!
+        // - In compact bar: `1..=bar_size` selects on the current bar page!
         if (b'1'..=b'9').contains(&ch) {
             let rel = usize::from(ch - b'1');
-            if rel < page_size {
+            if grid {
+                if rel < 5 {
+                    let row_start = (self.sessions[idx].selected_global_idx / 5) * 5;
+                    let global_idx = row_start + rel;
+                    if global_idx < total {
+                        return Some(self.commit_candidate_global(idx, global_idx, now_epoch_secs));
+                    }
+                }
+            } else if rel < page_size {
                 let page_start = (self.sessions[idx].selected_global_idx / page_size) * page_size;
                 let global_idx = page_start + rel;
                 if global_idx < total {
@@ -816,13 +985,21 @@ impl ChimeEngine {
     fn recompute_session(&mut self, idx: usize, now_epoch_secs: u64) -> EngineResponse {
         self.sessions[idx].generation_id = self.sessions[idx].generation_id.saturating_add(1);
         self.sessions[idx].selected_global_idx = 0;
+        self.sessions[idx].grid_expanded = false;
+        self.sessions[idx].ghost_suggestion = None;
         self.sessions[idx].typo_rollback_prev_idx = None;
 
         if self.sessions[idx].raw_buffer.is_empty() {
             if !self.sessions[idx].partial_prefix.is_empty() {
-                let committed = std::mem::take(&mut self.sessions[idx].partial_prefix);
+                let raw_committed = std::mem::take(&mut self.sessions[idx].partial_prefix);
                 self.sessions[idx].clear_composing();
+                let committed = apply_boundary_pangu_spacing(
+                    &self.sessions[idx].left_context,
+                    &raw_committed,
+                    self.config.pangu_spacing,
+                );
                 self.sessions[idx].record_emitted_text(&committed);
+                self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
                 return self.build_snapshot(idx, true, committed);
             }
             self.sessions[idx].all_candidates.clear();
@@ -924,6 +1101,16 @@ impl ChimeEngine {
         self.user_store
             .record_commit(learn_key, &final_text, &app_id, now_epoch_secs);
 
+        // Online contextual bigram learning (`prev_word -> final_text`)!
+        let prev_word = self.sessions[idx].last_committed_word.clone();
+        if !prev_word.is_empty() {
+            self.user_store
+                .record_bigram(&prev_word, &final_text, now_epoch_secs);
+        }
+        self.sessions[idx]
+            .last_committed_word
+            .clone_from(&final_text);
+
         if self.config.record_training_samples {
             self.user_store.record_typing_sample(
                 &TypingSample {
@@ -936,16 +1123,38 @@ impl ChimeEngine {
             );
         }
 
-        self.sessions[idx].last_auto_committed = Some((learn_key.clone(), final_text.clone()));
-        self.sessions[idx].record_emitted_text(&final_text);
+        let spaced_output = apply_boundary_pangu_spacing(
+            &self.sessions[idx].left_context,
+            &final_text,
+            self.config.pangu_spacing,
+        );
+        self.sessions[idx].last_auto_committed = Some((learn_key.clone(), final_text));
+        self.sessions[idx].record_emitted_text(&spaced_output);
         self.sessions[idx].clear_composing();
+        self.sessions[idx].ghost_suggestion = self.compute_ghost_for_session(idx);
 
-        self.build_snapshot(idx, true, final_text)
+        self.build_snapshot(idx, true, spaced_output)
+    }
+
+    fn effective_page_size(&self, idx: usize) -> usize {
+        if self.sessions[idx].grid_expanded {
+            25
+        } else {
+            self.config.page_size.max(1)
+        }
+    }
+
+    fn compute_ghost_for_session(&self, idx: usize) -> Option<String> {
+        let left = &self.sessions[idx].left_context;
+        if let Some(couplet_next) = self.lexicon.next_clause_completion(left) {
+            return Some(couplet_next);
+        }
+        self.user_store.predict_next_phrase(left)
     }
 
     fn build_snapshot(&self, idx: usize, handled: bool, committed_text: String) -> EngineResponse {
         let sess = &self.sessions[idx];
-        let page_size = self.config.page_size.max(1);
+        let page_size = self.effective_page_size(idx);
         let total = sess.all_candidates.len();
         let total_pages = if total == 0 {
             0
@@ -981,6 +1190,9 @@ impl ChimeEngine {
             page_index,
             total_pages,
             inline_english_mode: sess.inline_english_mode,
+            chinese_punctuation: self.config.chinese_punctuation,
+            grid_expanded: sess.grid_expanded,
+            ghost_text: sess.ghost_suggestion.clone().unwrap_or_default(),
             candidate_layout: self.config.candidate_layout,
             generation_id: sess.generation_id,
         }
@@ -995,6 +1207,32 @@ impl ChimeEngine {
             return Some(self.sessions.len() - 1);
         }
         Some(pos)
+    }
+}
+
+fn is_cjk_hanzi(c: char) -> bool {
+    ('\u{4E00}'..='\u{9FA5}').contains(&c)
+}
+
+fn apply_boundary_pangu_spacing(left_context: &str, committed: &str, enabled: bool) -> String {
+    if !enabled || left_context.is_empty() || committed.is_empty() {
+        return committed.to_string();
+    }
+    let Some(prev_ch) = left_context.chars().last() else {
+        return committed.to_string();
+    };
+    let Some(first_ch) = committed.chars().next() else {
+        return committed.to_string();
+    };
+    let needs_space = (is_cjk_hanzi(prev_ch) && first_ch.is_ascii_alphanumeric())
+        || (prev_ch.is_ascii_alphanumeric() && is_cjk_hanzi(first_ch));
+    if needs_space {
+        let mut out = String::with_capacity(committed.len() + 1);
+        out.push(' ');
+        out.push_str(committed);
+        out
+    } else {
+        committed.to_string()
     }
 }
 
@@ -1054,5 +1292,53 @@ mod tests {
             let step2 = engine.process_key(sid, key(b' ', 0x31), 100);
             assert_eq!(step2.committed_text, "今天我们");
         }
+    }
+
+    #[test]
+    fn test_should_expand_5x5_grid_pick_single_chars_and_learn_online_habits() {
+        let mut engine = ChimeEngine::default();
+        let sid = engine.create_session("com.mitchellh.ghostty");
+
+        // 1. Cross-commit Pangu spacing (`调整` + `chatgpt` -> `调整 ChatGPT`)
+        for b in *b"tiaozheng" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let c1 = engine.process_key(sid, key(b' ', 0x31), 200);
+        assert_eq!(c1.committed_text, "调整");
+
+        for b in *b"chatgpt" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let c2 = engine.process_key(sid, key(b' ', 0x31), 200);
+        assert_eq!(c2.committed_text, " ChatGPT");
+
+        // 2. Press Down Arrow (`0x7D`) on `shi` to expand `5x5` grid (`candidates.len() > 5`)
+        for b in *b"shi" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let expanded = engine.process_key(sid, key(0, 0x7D), 200);
+        assert!(expanded.grid_expanded);
+        assert!(expanded.candidates.len() > 5);
+        let _ = engine.process_key(sid, key(0, 0x35), 200); // collapse grid
+        let _ = engine.process_key(sid, key(0, 0x35), 200); // cancel composition
+
+        // 3. Punctuation toggle (`chinese_punctuation = true -> false -> true`)
+        let p_off = engine.toggle_punctuation(sid);
+        assert!(!p_off.chinese_punctuation);
+        let p_on = engine.toggle_punctuation(sid);
+        assert!(p_on.chinese_punctuation);
+
+        // 4. `一路 Tab` poetry completion (`tianshengwocai` -> `天生我材必有用` ->
+        //    `，千金散尽还复来`)
+        engine.reset_session(sid);
+        for b in *b"tianshengwocai" {
+            let _ = engine.process_key(sid, key(b, 0), 200);
+        }
+        let t1 = engine.process_key(sid, key(0, 0x30), 200);
+        assert!(t1.committed_text.contains("必有用"));
+        assert_eq!(t1.ghost_text, "，千金散尽还复来");
+        let t2 = engine.process_key(sid, key(0, 0x30), 200);
+        assert_eq!(t2.committed_text, "，千金散尽还复来");
+        assert_eq!(t2.ghost_text, "。烹羊宰牛且为乐");
     }
 }

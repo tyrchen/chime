@@ -159,6 +159,44 @@ pub unsafe extern "C" fn chime_toggle_english(
     encode_json(&resp)
 }
 
+/// Toggles Chinese full-width (`。，`) vs ASCII (`.,`) punctuation, persisting to `config.toml`.
+///
+/// # Safety
+///
+/// `engine` must be valid. Returned string must be freed via [`chime_string_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_toggle_punctuation(
+    engine: *mut ChimeEngineHandle,
+    session_id: u64,
+) -> *mut c_char {
+    if engine.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    let resp: EngineResponse = eng.inner.toggle_punctuation(session_id);
+    encode_json(&resp)
+}
+
+/// Toggles the Doubao-style `5x5` expanded candidate grid (`grid_expanded`).
+///
+/// # Safety
+///
+/// `engine` must be valid. Returned string must be freed via [`chime_string_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_toggle_grid(
+    engine: *mut ChimeEngineHandle,
+    session_id: u64,
+) -> *mut c_char {
+    if engine.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `engine` is valid and non-null.
+    let eng = unsafe { &mut *engine };
+    let resp: EngineResponse = eng.inner.toggle_grid_expanded(session_id);
+    encode_json(&resp)
+}
+
 /// Processes a single key event synchronously and returns a newly allocated JSON snapshot string.
 ///
 /// # Safety

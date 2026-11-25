@@ -5,6 +5,7 @@ pub mod base_builder;
 pub mod builtin;
 pub mod compiled;
 pub mod importers;
+pub mod poetry;
 pub mod user_store;
 
 use std::{collections::HashMap, path::Path};
@@ -64,6 +65,7 @@ pub struct Lexicon {
     pub(crate) english_casing: HashMap<String, WordEntry>,
     pub(crate) bigram_boosts: HashMap<(String, String), f32>,
     pub(crate) trigram_boosts: HashMap<(String, String, String), f32>,
+    pub(crate) continuations: HashMap<String, String>,
 }
 
 impl Lexicon {
@@ -233,17 +235,98 @@ impl Lexicon {
         added
     }
 
+    /// Inserts a next-clause continuation (`天生我材必有用` -> `，千金散尽还复来`) for `Tab`
+    /// auto-completion.
+    pub fn insert_continuation(
+        &mut self,
+        trigger_clause: impl Into<String>,
+        next_clause: impl Into<String>,
+    ) {
+        self.continuations
+            .insert(trigger_clause.into(), next_clause.into());
+    }
+
+    /// Looks up a classical couplet or proverb next-clause continuation matching the tail of
+    /// `left_context`.
+    #[must_use]
+    pub fn next_clause_completion(&self, left_context: &str) -> Option<String> {
+        let trimmed = left_context.trim_end_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';'
+                )
+        });
+        if trimmed.is_empty() {
+            return None;
+        }
+        let chars: Vec<char> = trimmed.chars().collect();
+        let max_tail = chars.len().min(16);
+        for span in (3..=max_tail).rev() {
+            let suffix: String = chars[chars.len() - span..].iter().collect();
+            if let Some(cont) = self.continuations.get(&suffix) {
+                // Avoid doubling leading punctuation if `left_context` already ended with one!
+                let ended_with_punct = left_context.chars().last().is_some_and(|c| {
+                    matches!(
+                        c,
+                        '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';'
+                    )
+                });
+                if ended_with_punct {
+                    let stripped = cont.trim_start_matches(|c: char| {
+                        matches!(c, '，' | '。' | '；' | '：' | ',' | '.' | ';')
+                    });
+                    return Some(stripped.to_string());
+                }
+                return Some(cont.clone());
+            }
+        }
+        None
+    }
+
     /// Queries both the mutable overlay and all mounted `mmap` `.imedict` layers for `syllables`.
     #[must_use]
     pub fn lookup_exact(&self, syllables: &[SyllableId]) -> Vec<WordEntry> {
+        let limit = if syllables.len() == 1 { 36 } else { 10 };
+        self.lookup_exact_with_limit(syllables, limit)
+    }
+
+    /// Queries exact `syllables` returning up to `limit` entries per layer.
+    #[must_use]
+    pub fn lookup_exact_with_limit(
+        &self,
+        syllables: &[SyllableId],
+        limit: usize,
+    ) -> Vec<WordEntry> {
         let mut out = Vec::new();
         if let Some(overlay) = self.exact_map.get(syllables) {
-            out.extend(overlay.iter().take(8).cloned());
+            out.extend(overlay.iter().take(limit).cloned());
         }
         for layer in &self.compiled_layers {
-            layer.lookup_exact_into(syllables, 8, &mut out);
+            layer.lookup_exact_into(syllables, limit, &mut out);
         }
         out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out
+    }
+
+    /// Finds top Pinyin prefix completions (`query.len() >= 3`, e.g. `tianshengwocai` ->
+    /// `天生我材必有用`).
+    #[must_use]
+    pub fn complete_pinyin_prefix(&self, query: &[SyllableId], limit: usize) -> Vec<WordEntry> {
+        if query.len() < 3 {
+            return Vec::new();
+        }
+        let mut out: Vec<WordEntry> = self
+            .exact_map
+            .iter()
+            .filter(|(k, _)| k.len() > query.len() && k.starts_with(query))
+            .flat_map(|(_, v)| v.iter().take(2).cloned())
+            .collect();
+        for layer in &self.compiled_layers {
+            layer.complete_pinyin_prefix_into(query, limit, &mut out);
+        }
+        out.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        out.truncate(limit);
         out
     }
 
@@ -275,10 +358,10 @@ impl Lexicon {
         None
     }
 
-    /// Finds top prefix completions for English words of length >= 5 (`kubern` -> `Kubernetes`).
+    /// Finds top prefix completions for English words of length >= 4 (`chatg` -> `ChatGPT`).
     #[must_use]
     pub fn complete_english_prefix(&self, lower_prefix: &str, limit: usize) -> Vec<WordEntry> {
-        if lower_prefix.len() < 5 {
+        if lower_prefix.len() < 4 {
             return Vec::new();
         }
         let mut out: Vec<WordEntry> = self

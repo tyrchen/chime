@@ -181,6 +181,71 @@ const POLYPHONE_WORD_OVERRIDES: &[(&str, &str)] = &[
     ("省略", "sheng lve"),
     ("反省", "fan xing"),
     ("深省", "shen xing"),
+    // `似` (`si` vs `shi`) and everyday high-frequency heteronym compounds
+    ("似乎", "si hu"),
+    ("相似", "xiang si"),
+    ("类似", "lei si"),
+    ("好似", "hao si"),
+    ("近似", "jin si"),
+    ("形似", "xing si"),
+    ("神似", "shen si"),
+    ("胜似", "sheng si"),
+    ("恰似", "qia si"),
+    ("似的", "shi de"),
+    ("英文", "ying wen"),
+    ("英语", "ying yu"),
+    ("因为", "yin wei"),
+    ("应该", "ying gai"),
+    ("应当", "ying dang"),
+    ("应用", "ying yong"),
+    ("答应", "da ying"),
+    ("反应", "fan ying"),
+    ("反映", "fan ying"),
+    ("角色", "jue se"),
+    ("主角", "zhu jue"),
+    ("配角", "pei jue"),
+    ("角度", "jiao du"),
+    ("角落", "jiao luo"),
+    ("结束", "jie shu"),
+    ("结果", "jie guo"),
+    ("结合", "jie he"),
+    ("结构", "jie gou"),
+    ("结实", "jie shi"),
+    ("漂亮", "piao liang"),
+    ("漂浮", "piao fu"),
+    ("钥匙", "yao shi"),
+    ("汤匙", "tang chi"),
+    ("薄弱", "bo ruo"),
+    ("单薄", "dan bo"),
+    ("薄荷", "bo he"),
+    ("折腾", "zhe teng"),
+    ("打折", "da zhe"),
+    ("曝光", "bao guang"),
+    ("暴露", "bao lu"),
+    ("勉强", "mian qiang"),
+    ("倔强", "jue jiang"),
+    ("强大", "qiang da"),
+    ("强迫", "qiang po"),
+    ("屏幕", "ping mu"),
+    ("屏蔽", "ping bi"),
+    ("屏息", "bing xi"),
+    ("提供", "ti gong"),
+    ("提醒", "ti xing"),
+    ("提防", "di fang"),
+    ("埋怨", "man yuan"),
+    ("埋伏", "mai fu"),
+    ("山脉", "shan mai"),
+    ("脉搏", "mai bo"),
+    ("脉脉", "mo mo"),
+    ("滑稽", "hua ji"),
+    ("呼吁", "hu yu"),
+    ("着迷", "zhao mi"),
+    ("着火", "zhao huo"),
+    ("着凉", "zhao liang"),
+    ("大夫", "dai fu"),
+    ("的确", "di que"),
+    ("目的", "mu di"),
+    ("标的", "biao di"),
 ];
 
 /// Annotates a pure-CJK word into space-separated toneless Pinyin using overrides + `pinyin` crate.
@@ -265,7 +330,7 @@ pub fn build_comprehensive_lexicon(
             continue;
         };
         let char_len = word.chars().count();
-        if !(1..=6).contains(&char_len) {
+        if !(1..=12).contains(&char_len) {
             continue;
         }
         if char_len >= 2 && freq < min_word_freq {
@@ -292,6 +357,18 @@ pub fn build_comprehensive_lexicon(
         let raw_ln = ((freq.max(1) as f64).ln() - denom) as f32;
         let scaled_lp = (-2.1 + (raw_ln + 4.5) * 0.31).clamp(-6.3, -2.2);
         lex.insert_pinyin_word(word, &py, scaled_lp, false);
+
+        // For single characters, also propagate corpus rank (slightly discounted) to secondary
+        // heteronym readings so common heteronym characters (`似` si/shi, `长` chang/zhang, `行`
+        // xing/hang) appear near the top when picking single characters!
+        let mut ch_iter = word.chars();
+        if let (Some(only_ch), None) = (ch_iter.next(), ch_iter.next())
+            && let Some(multi) = only_ch.to_pinyin_multi()
+        {
+            for alt_py in multi.into_iter().skip(1).take(2) {
+                lex.insert_pinyin_word(word, alt_py.plain(), (scaled_lp - 0.75).max(-6.8), false);
+            }
+        }
     }
 
     // 4. Optional English dictionary words (common lowercase words length 4..=14).

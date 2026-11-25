@@ -46,6 +46,9 @@ pub struct UserStore {
     negative_overrides: HashMap<(String, String, String), u32>,
     /// Per-App word affinity: `(app_bundle_id, surface) -> count`.
     app_affinity: HashMap<(String, String), u32>,
+    /// Online user contextual transitions: `prev_surface -> Vec<(next_surface, count,
+    /// last_used_secs)>`.
+    user_bigrams: HashMap<String, Vec<(String, u32, u64)>>,
     /// Optional durable `SQLite` WAL connection.
     conn: Option<Connection>,
 }
@@ -77,6 +80,7 @@ impl UserStore {
             reading_trie: Cedar::new(),
             negative_overrides: HashMap::new(),
             app_affinity: HashMap::new(),
+            user_bigrams: HashMap::new(),
             conn: None,
         }
     }
@@ -87,6 +91,7 @@ impl UserStore {
     /// # Errors
     ///
     /// Returns [`LexiconError::Sqlite`] if initialization or schema migration fails.
+    #[allow(clippy::too_many_lines)]
     pub fn open_sqlite(db_path: &Path) -> Result<Self, LexiconError> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -115,6 +120,13 @@ impl UserStore {
                  surface TEXT NOT NULL,
                  count INTEGER NOT NULL,
                  PRIMARY KEY (app_bundle_id, surface)
+             );
+             CREATE TABLE IF NOT EXISTS user_bigrams (
+                 prev_surface TEXT NOT NULL,
+                 next_surface TEXT NOT NULL,
+                 count INTEGER NOT NULL DEFAULT 1,
+                 last_used_secs INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (prev_surface, next_surface)
              );
              CREATE TABLE IF NOT EXISTS typing_samples (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +181,21 @@ impl UserStore {
                 let surf: String = row.get(1)?;
                 let c: u32 = row.get(2)?;
                 store.app_affinity.insert((app, surf), c);
+            }
+        }
+        {
+            let mut stmt = conn.prepare(
+                "SELECT prev_surface, next_surface, count, last_used_secs FROM user_bigrams",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let prev: String = row.get(0)?;
+                let next: String = row.get(1)?;
+                let c: u32 = row.get(2)?;
+                let ts: i64 = row.get(3)?;
+                let list = store.user_bigrams.entry(prev).or_default();
+                list.push((next, c, u64::try_from(ts).unwrap_or(0)));
+                list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
             }
         }
 
@@ -323,6 +350,80 @@ impl UserStore {
         &[]
     }
 
+    /// Records an online user transition `(prev_surface -> next_surface)` into RAM and `SQLite`
+    /// WAL so personal collocations boost future decoding AND trigger `Tab` ghost completions!
+    pub fn record_bigram(&mut self, prev_surface: &str, next_surface: &str, now_secs: u64) {
+        let prev = prev_surface.trim();
+        let next = next_surface.trim();
+        if prev.is_empty() || next.is_empty() || prev.chars().count() > 16 {
+            return;
+        }
+        let list = self.user_bigrams.entry(prev.to_string()).or_default();
+        let updated_count = if let Some(existing) = list.iter_mut().find(|(n, _, _)| n == next) {
+            existing.1 = existing.1.saturating_add(1);
+            existing.2 = now_secs;
+            existing.1
+        } else {
+            list.push((next.to_string(), 1, now_secs));
+            1
+        };
+        list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+
+        if let Some(conn) = &self.conn {
+            let _ = conn.execute(
+                "INSERT INTO user_bigrams (prev_surface, next_surface, count, last_used_secs)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(prev_surface, next_surface) DO UPDATE SET
+                   count = excluded.count,
+                   last_used_secs = excluded.last_used_secs",
+                params![
+                    prev,
+                    next,
+                    updated_count,
+                    i64::try_from(now_secs).unwrap_or(0)
+                ],
+            );
+        }
+    }
+
+    /// Returns a contextual transition score boost learned from the user's own typing history.
+    #[must_use]
+    pub fn bigram_boost(&self, prev_surface: &str, next_surface: &str) -> f32 {
+        let Some(list) = self.user_bigrams.get(prev_surface) else {
+            return 0.0;
+        };
+        if let Some(&(_, count, _)) = list.iter().find(|(n, _, _)| n == next_surface) {
+            #[allow(clippy::cast_precision_loss)]
+            return 1.15 + (count as f32).ln() * 0.95;
+        }
+        0.0
+    }
+
+    /// Predicts a habitual next phrase for `Tab` ghost auto-completion once the user has typed
+    /// `(prev -> next)` at least twice!
+    #[must_use]
+    pub fn predict_next_phrase(&self, left_context: &str) -> Option<String> {
+        let trimmed = left_context.trim_end_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.')
+        });
+        if trimmed.is_empty() {
+            return None;
+        }
+        let chars: Vec<char> = trimmed.chars().collect();
+        let max_tail = chars.len().min(8);
+        for span in (2..=max_tail).rev() {
+            let suffix: String = chars[chars.len() - span..].iter().collect();
+            if let Some(list) = self.user_bigrams.get(&suffix)
+                && let Some((next, count, _)) = list.first()
+                && *count >= 2
+                && next.chars().count() >= 2
+            {
+                return Some(next.clone());
+            }
+        }
+        None
+    }
+
     /// Computes the dynamic score delta for `(reading, surface)` in `app_bundle_id` at `now_secs`.
     #[must_use]
     pub fn score_boost(
@@ -335,7 +436,11 @@ impl UserStore {
         let mut delta = 0.0;
         if let Some(habit) = self.habits.get(&(reading.to_string(), surface.to_string())) {
             let w = Self::decay_weight(habit.weight, habit.last_used_epoch_secs, now_secs);
-            delta += (1.0 + w).ln() * 0.9;
+            if w > 0.05 {
+                // Strong immediate promotion so picking a word once lifts it straight to #1 next
+                // time!
+                delta += 1.75 + (1.0 + w).ln() * 1.35;
+            }
         }
 
         if !app_bundle_id.is_empty()
@@ -344,14 +449,14 @@ impl UserStore {
                 .get(&(app_bundle_id.to_string(), surface.to_string()))
         {
             #[allow(clippy::cast_precision_loss)]
-            let app_bonus = (1.0 + app_cnt as f32).ln() * 0.35;
+            let app_bonus = (1.0 + app_cnt as f32).ln() * 0.45;
             delta += app_bonus;
         }
 
         for ((r, rej, pref), &count) in &self.negative_overrides {
             if r == reading {
                 #[allow(clippy::cast_precision_loss)]
-                let strength = (count.min(5) as f32) * 0.95;
+                let strength = 1.45 + (count.min(5) as f32) * 0.95;
                 if surface == pref {
                     delta += strength;
                 } else if surface == rej {

@@ -25,6 +25,9 @@ pub enum MatchKind {
     TypoCorrected,
     /// Modeless English / raw code pass-through.
     CodeSwitch,
+    /// Prefix verse, idiom, proverb, or English auto-completion (`tianshengwocai` ->
+    /// `天生我材必有用`).
+    Completion,
 }
 
 /// Decoded candidate returned to the UI layer.
@@ -178,7 +181,6 @@ impl LatticeDecoder {
                     let mut composed = st.text.clone();
                     if !composed.is_empty()
                         && ctx.pangu_spacing
-                        && !is_dev_app
                         && (st.last_is_english != edge.is_english)
                     {
                         composed.push(' ');
@@ -190,12 +192,14 @@ impl LatticeDecoder {
                     } else {
                         combine_beam_kind(st.kind, edge.kind)
                     };
-                    // Combine immediate Bigram, Trigram `(prev_content, last, edge)`, and
-                    // particle-transparent Skip-Bigram `(prev_content -> edge)` across
-                    // `的/了/在/地`!
-                    let direct_bg = lexicon.bigram_bonus(&st.last_word, &edge.surface);
+                    // Combine immediate Bigram (static + online user habit!), Trigram, and
+                    // particle-transparent Skip-Bigram across `的/了/在/地`!
+                    let direct_bg = lexicon.bigram_bonus(&st.last_word, &edge.surface)
+                        + user_store.bigram_boost(&st.last_word, &edge.surface);
                     let skip_bg = if is_transparent_particle(&st.last_word) {
-                        lexicon.bigram_bonus(&st.prev_content_word, &edge.surface) * 0.9
+                        (lexicon.bigram_bonus(&st.prev_content_word, &edge.surface)
+                            + user_store.bigram_boost(&st.prev_content_word, &edge.surface))
+                            * 0.9
                     } else {
                         0.0
                     };
@@ -236,6 +240,7 @@ impl LatticeDecoder {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn finalize_candidates(
         &self,
         raw_input: &str,
@@ -276,22 +281,41 @@ impl LatticeDecoder {
             }
         }
 
-        // Append English prefix completions for long pure-English inputs (`kubern` ->
-        // `Kubernetes`).
+        // Append English prefix completions (`chatg` -> `ChatGPT`, `kubern` -> `Kubernetes`).
         let lower_all = raw_input.to_ascii_lowercase();
-        for comp in lexicon.complete_english_prefix(&lower_all, 2) {
+        for comp in lexicon.complete_english_prefix(&lower_all, 3) {
             if !full_candidates.iter().any(|c| c.text == comp.surface) {
                 full_candidates.push(Candidate {
                     text: comp.surface,
-                    score: comp.log_prob - 1.2,
-                    kind: MatchKind::CodeSwitch,
+                    score: comp.log_prob - 0.8,
+                    kind: MatchKind::Completion,
                     consumed_bytes: n,
                 });
             }
         }
 
+        // Append classical poetry, idiom & proverb prefix completions (`tianshengwocai` ->
+        // `天生我材必有用`) when 3+ syllables are typed!
+        if let Some(exact_syls) = extract_greedy_syllables(&lower_all, ctx.scheme)
+            && exact_syls.len() >= 3
+        {
+            for verse in lexicon.complete_pinyin_prefix(&exact_syls, 3) {
+                if !full_candidates.iter().any(|c| c.text == verse.surface) {
+                    #[allow(clippy::cast_precision_loss)]
+                    let comp_score =
+                        verse.log_prob + ((exact_syls.len().saturating_sub(2)) as f32) * 0.65;
+                    full_candidates.push(Candidate {
+                        text: verse.surface,
+                        score: comp_score,
+                        kind: MatchKind::Completion,
+                        consumed_bytes: n,
+                    });
+                }
+            }
+        }
+
         full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
-        full_candidates.truncate(12);
+        full_candidates.truncate(15);
 
         if let Some(reranker) = &self.reranker {
             let rerank_top = full_candidates.len().min(6);
@@ -306,16 +330,17 @@ impl LatticeDecoder {
             full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
-        // Append top partial prefix word candidates (`consumed_bytes < n`) for step-by-step phrase
-        // selection!
-        let mut prefix_edges: Vec<&LatticeEdge> =
-            leading_edges.iter().filter(|e| e.end < n).collect();
-        prefix_edges.sort_by(|a, b| b.end.cmp(&a.end).then_with(|| b.score.total_cmp(&a.score)));
+        // 1) Append multi-character partial prefix word candidates (`consumed_bytes < n`, `chars >=
+        //    2`)
+        // for step-by-step phrase composition!
+        let mut multi_prefix_edges: Vec<&LatticeEdge> = leading_edges
+            .iter()
+            .filter(|e| e.end < n && !e.is_english && e.surface.chars().count() >= 2)
+            .collect();
+        multi_prefix_edges
+            .sort_by(|a, b| b.end.cmp(&a.end).then_with(|| b.score.total_cmp(&a.score)));
 
-        for pe in prefix_edges {
-            if full_candidates.len() >= 18 {
-                break;
-            }
+        for pe in multi_prefix_edges.into_iter().take(10) {
             if !full_candidates.iter().any(|c| c.text == pe.surface) {
                 full_candidates.push(Candidate {
                     text: pe.surface.clone(),
@@ -326,11 +351,38 @@ impl LatticeDecoder {
             }
         }
 
-        // Always keep raw input fallback so user is never trapped (and reachable via Tab
-        // rollback!).
+        // 2) Always append rich single-character candidates (`chars == 1`, up to 35 chars) for the
+        // leading syllable so users can expand the `5x5` grid and pick characters one-by-one!
+        let mut single_char_edges: Vec<&LatticeEdge> = leading_edges
+            .iter()
+            .filter(|e| !e.is_english && e.surface.chars().count() == 1)
+            .collect();
+        single_char_edges.sort_by(|a, b| {
+            let a_exact = u8::from(a.kind == MatchKind::Exact);
+            let b_exact = u8::from(b.kind == MatchKind::Exact);
+            b_exact
+                .cmp(&a_exact)
+                .then_with(|| b.score.total_cmp(&a.score))
+        });
+
+        for sc in single_char_edges {
+            if full_candidates.len() >= 55 {
+                break;
+            }
+            if !full_candidates.iter().any(|c| c.text == sc.surface) {
+                full_candidates.push(Candidate {
+                    text: sc.surface.clone(),
+                    score: sc.score - 9.0,
+                    kind: sc.kind,
+                    consumed_bytes: sc.end,
+                });
+            }
+        }
+
+        // Always keep raw input fallback so user is never trapped.
         if !full_candidates.iter().any(|c| c.text == raw_input) {
             #[allow(clippy::cast_precision_loss)]
-            let fallback_score = -10.0 - 2.5 * (n as f32);
+            let fallback_score = -15.0 - 2.5 * (n as f32);
             full_candidates.push(Candidate {
                 text: raw_input.to_string(),
                 score: fallback_score,
@@ -414,7 +466,10 @@ impl LatticeDecoder {
                         kind: MatchKind::CodeSwitch,
                         is_english: true,
                     });
-                } else if classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii {
+                } else if start == 0
+                    && end == n
+                    && classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii
+                {
                     #[allow(clippy::cast_precision_loss)]
                     let per_char_cost = -1.95 * (raw_sub.len() as f32);
                     edges[start].push(LatticeEdge {
@@ -511,7 +566,8 @@ impl LatticeDecoder {
             while let Some((cur_end, seq, acc_cost, acc_kind)) = stack.pop() {
                 let raw_slice = &lower[start..cur_end];
                 let entries: Vec<WordEntry> = lexicon.lookup_exact(&seq);
-                for entry in entries.into_iter().take(6) {
+                let take_limit = if start == 0 && seq.len() == 1 { 32 } else { 8 };
+                for entry in entries.into_iter().take(take_limit) {
                     let tech_bonus = if is_dev_app && entry.is_tech_term {
                         0.45
                     } else {
@@ -584,6 +640,59 @@ const fn merge_match_kind(a: MatchKind, b: MatchKind) -> MatchKind {
     } else {
         MatchKind::Exact
     }
+}
+
+fn extract_greedy_syllables(
+    lower: &str,
+    scheme: ShuangpinScheme,
+) -> Option<SmallVec<[SyllableId; 8]>> {
+    if lower.is_empty() {
+        return None;
+    }
+    let mut out = SmallVec::new();
+    if scheme != ShuangpinScheme::Full {
+        let bytes = lower.as_bytes();
+        if !bytes.len().is_multiple_of(2) {
+            return None;
+        }
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let first = expand_shuangpin_pair(scheme, bytes[i], bytes[i + 1])
+                .into_iter()
+                .next()?;
+            out.push(first);
+            i += 2;
+        }
+        return Some(out);
+    }
+
+    let n = lower.len();
+    let mut pos = 0usize;
+    while pos < n {
+        if lower.as_bytes()[pos] == b'\'' {
+            pos += 1;
+            continue;
+        }
+        let max_len = (n - pos).min(6);
+        let mut matched = None;
+        for len in (1..=max_len).rev() {
+            let sub = &lower[pos..pos + len];
+            if !sub.contains('\'')
+                && let Some(id) = lookup_syllable(sub)
+            {
+                // Avoid greedy split failure like `tian` + `g` when `ti` + `ang` is valid:
+                let rem = &lower[pos + len..];
+                if rem.is_empty() || chime_phonetics::can_segment_exact(rem) {
+                    matched = Some((id, len));
+                    break;
+                }
+            }
+        }
+        let (id, len) = matched?;
+        out.push(id);
+        pos += len;
+    }
+    Some(out)
 }
 
 fn is_transparent_particle(word: &str) -> bool {

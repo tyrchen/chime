@@ -241,14 +241,78 @@ impl CompiledDict {
         None
     }
 
-    /// Collects up to `limit` English prefix completions for `lower_prefix` (length >= 5).
+    /// Collects up to `limit` Pinyin prefix completions (`query.len() >= 3`, e.g. `tianshengwocai`
+    /// -> `天生我材必有用`) in $O(\log N)$ via binary search over sorted `pinyin_groups`.
+    pub fn complete_pinyin_prefix_into(
+        &self,
+        query: &[SyllableId],
+        limit: usize,
+        out: &mut Vec<WordEntry>,
+    ) {
+        if query.len() < 3 {
+            return;
+        }
+        let buf = self.backing.as_ref();
+        let mut lo = 0usize;
+        let mut hi = self.pinyin_group_count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let grp_off = self.pinyin_groups_off + mid * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if self.cmp_syllables(syl_idx, syl_len, query) == Ordering::Less {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        let mut matches = Vec::new();
+        let mut idx = lo;
+        while idx < self.pinyin_group_count && matches.len() < 32 {
+            let grp_off = self.pinyin_groups_off + idx * 16;
+            let syl_idx = read_u32(buf, grp_off) as usize;
+            let syl_len = usize::from(read_u16(buf, grp_off + 4));
+            if !self.starts_with_syllables(syl_idx, syl_len, query) {
+                break;
+            }
+            if syl_len > query.len() {
+                let rec_start = read_u32(buf, grp_off + 8) as usize;
+                let rec_count = (read_u32(buf, grp_off + 12) as usize).min(3);
+                self.collect_word_records(rec_start, rec_count, &mut matches);
+            }
+            idx += 1;
+        }
+        matches.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+        for item in matches.into_iter().take(limit) {
+            if !out.iter().any(|e| e.surface == item.surface) {
+                out.push(item);
+            }
+        }
+    }
+
+    fn starts_with_syllables(&self, syl_idx: usize, syl_len: usize, prefix: &[SyllableId]) -> bool {
+        if syl_len < prefix.len() {
+            return false;
+        }
+        let buf = self.backing.as_ref();
+        for (i, &q) in prefix.iter().enumerate() {
+            let byte_off = self.syl_arena_off + (syl_idx + i) * 2;
+            if SyllableId(read_u16(buf, byte_off)) != q {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Collects up to `limit` English prefix completions for `lower_prefix` (length >= 4).
     pub fn complete_english_prefix_into(
         &self,
         lower_prefix: &str,
         limit: usize,
         out: &mut Vec<WordEntry>,
     ) {
-        if lower_prefix.len() < 5 {
+        if lower_prefix.len() < 4 {
             return;
         }
         let buf = self.backing.as_ref();

@@ -1,6 +1,7 @@
 import AppKit
 import CChimeFFI
 import Foundation
+import InputMethodKit
 
 /// Decoded candidate item returned across the narrow C-ABI boundary.
 public struct ChimeCandidate: Decodable, Sendable, Equatable {
@@ -20,6 +21,9 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
     public let page_index: Int
     public let total_pages: Int
     public let inline_english_mode: Bool
+    public let chinese_punctuation: Bool
+    public let grid_expanded: Bool
+    public let ghost_text: String
     public let candidate_layout: String
     public let generation_id: UInt64
 
@@ -32,6 +36,9 @@ public struct ChimeResponse: Decodable, Sendable, Equatable {
         page_index: 0,
         total_pages: 0,
         inline_english_mode: false,
+        chinese_punctuation: true,
+        grid_expanded: false,
+        ghost_text: "",
         candidate_layout: "horizontal",
         generation_id: 0
     )
@@ -85,6 +92,7 @@ public final class ChimeEngineBridge {
         var lastCaretRect: NSRect
         var leftShiftDownTs: TimeInterval?
         var keyPressedDuringShift: Bool
+        weak var lastClientObject: AnyObject?
     }
 
     private var handle: OpaquePointer?
@@ -109,15 +117,28 @@ public final class ChimeEngineBridge {
 
         CandidatePanel.shared.onSelectCandidate = { [weak self] pageRelIdx in
             guard let self, let key = self.activeControllerKey else { return }
-            _ = self.selectCandidateFromPanel(controllerKey: key, index: pageRelIdx)
+            let resp = self.selectCandidateFromPanel(controllerKey: key, index: pageRelIdx)
+            self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+        }
+
+        CandidatePanel.shared.onToggleGrid = { [weak self] in
+            guard let self, let key = self.activeControllerKey else { return }
+            let resp = self.toggleGrid(controllerKey: key)
+            self.applyResponseToStoredClient(controllerKey: key, resp: resp)
+        }
+
+        CandidatePanel.shared.onTogglePunctuation = { [weak self] in
+            guard let self, let key = self.activeControllerKey else { return }
+            let resp = self.togglePunctuation(controllerKey: key)
+            self.applyResponseToStoredClient(controllerKey: key, resp: resp)
         }
     }
 
-    public var onPanelCommitText: ((ObjectIdentifier, ChimeResponse) -> Void)?
-
-    public func activate(controllerKey: ObjectIdentifier, appBundleId: String) {
+    public func activate(controllerKey: ObjectIdentifier, appBundleId: String, client: AnyObject?) {
         activeControllerKey = controllerKey
-        if slots[controllerKey] != nil {
+        if var existing = slots[controllerKey] {
+            existing.lastClientObject = client
+            slots[controllerKey] = existing
             return
         }
         guard let handle else { return }
@@ -128,7 +149,8 @@ public final class ChimeEngineBridge {
             sessionId: sid,
             lastCaretRect: NSRect(x: 480, y: 360, width: 1, height: 18),
             leftShiftDownTs: nil,
-            keyPressedDuringShift: false
+            keyPressedDuringShift: false,
+            lastClientObject: client
         )
     }
 
@@ -147,6 +169,13 @@ public final class ChimeEngineBridge {
         CandidatePanel.shared.hide()
         guard let slot = slots[controllerKey], let handle, slot.sessionId != 0 else { return }
         chime_reset_session(handle, slot.sessionId)
+    }
+
+    public func registerClient(controllerKey: ObjectIdentifier, client: AnyObject) {
+        if var slot = slots[controllerKey] {
+            slot.lastClientObject = client
+            slots[controllerKey] = slot
+        }
     }
 
     public func pollLeftShiftTap(
@@ -171,6 +200,21 @@ public final class ChimeEngineBridge {
         guard cleanTap else { return nil }
 
         let rawPtr = chime_toggle_english(handle, slot.sessionId)
+        return decodeAndFree(rawPtr)
+    }
+
+    public func togglePunctuation(controllerKey: ObjectIdentifier?) -> ChimeResponse {
+        guard let handle else { return .unhandled }
+        let sid = controllerKey.flatMap { slots[$0]?.sessionId } ?? 0
+        let rawPtr = chime_toggle_punctuation(handle, sid)
+        return decodeAndFree(rawPtr)
+    }
+
+    public func toggleGrid(controllerKey: ObjectIdentifier) -> ChimeResponse {
+        guard let slot = slots[controllerKey], let handle, slot.sessionId != 0 else {
+            return .unhandled
+        }
+        let rawPtr = chime_toggle_grid(handle, slot.sessionId)
         return decodeAndFree(rawPtr)
     }
 
@@ -210,9 +254,7 @@ public final class ChimeEngineBridge {
             return .unhandled
         }
         let rawPtr = chime_select_candidate(handle, slot.sessionId, index)
-        let resp = decodeAndFree(rawPtr)
-        onPanelCommitText?(controllerKey, resp)
-        return resp
+        return decodeAndFree(rawPtr)
     }
 
     public func updateCandidatePanel(
@@ -229,6 +271,37 @@ public final class ChimeEngineBridge {
             caret = slot.lastCaretRect
         }
         CandidatePanel.shared.update(response: response, caretRect: caret)
+    }
+
+    public func applyResponseToStoredClient(controllerKey: ObjectIdentifier, resp: ChimeResponse) {
+        guard let slot = slots[controllerKey], let client = slot.lastClientObject as? IMKTextInput else {
+            return
+        }
+        if !resp.committed_text.isEmpty {
+            client.insertText(
+                resp.committed_text,
+                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+            )
+        }
+        if resp.preedit_text.isEmpty {
+            client.setMarkedText(
+                "",
+                selectionRange: NSRange(location: 0, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+            )
+        } else {
+            let nsPreedit = resp.preedit_text as NSString
+            client.setMarkedText(
+                resp.preedit_text,
+                selectionRange: NSRange(location: nsPreedit.length, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+            )
+        }
+        if resp.candidates.isEmpty && resp.ghost_text.isEmpty {
+            CandidatePanel.shared.hide()
+        } else {
+            CandidatePanel.shared.update(response: resp, caretRect: slot.lastCaretRect)
+        }
     }
 
     public func getConfig() -> ChimeConfigDTO? {
@@ -278,7 +351,7 @@ public final class ChimeEngineBridge {
                 return
             }
             let updated = self.decodeAndFree(rawPtr)
-            if !updated.candidates.isEmpty {
+            if !updated.candidates.isEmpty || !updated.ghost_text.isEmpty {
                 CandidatePanel.shared.update(response: updated, caretRect: slot.lastCaretRect)
             }
         }

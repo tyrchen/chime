@@ -58,8 +58,8 @@ impl Default for FuzzyConfig {
             an_ang: true,
             en_eng: true,
             in_ing: true,
-            ian_iang: false,
-            uan_uang: false,
+            ian_iang: true,
+            uan_uang: true,
             fuzzy_penalty: 0.35,
         }
     }
@@ -68,9 +68,10 @@ impl Default for FuzzyConfig {
 impl FuzzyConfig {
     /// Expands a canonical Pinyin syllable into enabled fuzzy equivalents and their penalties.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn expand(&self, syllable: &str) -> SmallVec<[(SyllableId, f32); 4]> {
         let mut out = SmallVec::new();
-        let mut initial_variants: SmallVec<[(&str, &str, u32); 2]> = SmallVec::new();
+        let mut initial_variants: SmallVec<[(&str, &str, u32); 3]> = SmallVec::new();
 
         if let Some(rest) = syllable.strip_prefix("zh") {
             initial_variants.push(("zh", rest, 0));
@@ -131,7 +132,20 @@ impl FuzzyConfig {
                 initial_variants.push(("f", rest, 1));
             }
         } else {
-            initial_variants.push(("", syllable, 0));
+            // Strip all remaining standard Mandarin initials (`b, p, m, d, t, g, k, j, q, x, y, w`)
+            // so final-rhyme fuzzy pairs (`yin<->ying`, `jin<->jing`, `xin<->xing`, `ming<->min`,
+            // `wang<->wan`, `peng<->pen`, etc.) expand across every syllable!
+            let mut matched_other = false;
+            for init in ["b", "p", "m", "d", "t", "g", "k", "j", "q", "x", "y", "w"] {
+                if let Some(rest) = syllable.strip_prefix(init) {
+                    initial_variants.push((init, rest, 0));
+                    matched_other = true;
+                    break;
+                }
+            }
+            if !matched_other {
+                initial_variants.push(("", syllable, 0));
+            }
         }
 
         for (init, rest, init_edits) in initial_variants {

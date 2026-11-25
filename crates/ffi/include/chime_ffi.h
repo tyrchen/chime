@@ -23,6 +23,8 @@ void chime_session_destroy(ChimeEngineHandle *engine, uint64_t session_id);
 void chime_reset_session(ChimeEngineHandle *engine, uint64_t session_id);
 
 char *chime_toggle_english(ChimeEngineHandle *engine, uint64_t session_id);
+char *chime_toggle_punctuation(ChimeEngineHandle *engine, uint64_t session_id);
+char *chime_toggle_grid(ChimeEngineHandle *engine, uint64_t session_id);
 char *chime_process_key(
     ChimeEngineHandle *engine,
     uint64_t session_id,
