@@ -765,12 +765,15 @@ impl ChimeEngine {
         }
     }
 
-    /// Polls completed asynchronous Stage-2 neural reranks and applies the 60ms Anti-Jitter Freeze
-    /// Window.
+    /// Polls completed asynchronous Stage-2 neural reranks and asynchronous Route A neural beam
+    /// decodes, applying the Anti-Jitter Freeze Window before refreshing the candidate bar.
+    #[allow(clippy::too_many_lines)]
     pub fn poll_async_rerank(&mut self, session_id: u64) -> Option<EngineResponse> {
-        let worker = self.async_reranker.as_ref()?;
-        let results = worker.drain_results();
-        if results.is_empty() {
+        let (results, route_a_results) = {
+            let worker = self.async_reranker.as_ref()?;
+            (worker.drain_results(), worker.drain_route_a_results())
+        };
+        if results.is_empty() && route_a_results.is_empty() {
             return None;
         }
 
@@ -820,6 +823,47 @@ impl ChimeEngine {
             sess.all_candidates =
                 apply_anti_jitter_freeze_window(&displayed, full_part, res.elapsed_ms, freeze_ms);
             if res.session_id == session_id {
+                updated_for_target = true;
+            }
+        }
+
+        let now_epoch_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        for ra in route_a_results {
+            let Some(pos) = self.sessions.iter().position(|s| s.id == ra.session_id) else {
+                continue;
+            };
+            if self.sessions[pos].generation_id != ra.generation_id
+                || self.sessions[pos].all_candidates.is_empty()
+                || ra.candidates.is_empty()
+            {
+                continue;
+            }
+            let app_bundle_id = self.sessions[pos].app_bundle_id.clone();
+            let mut effective_left = self.sessions[pos].left_context.clone();
+            effective_left.push_str(&self.sessions[pos].partial_prefix);
+            let raw_clone = self.sessions[pos].raw_buffer.clone();
+            let displayed = self.sessions[pos].all_candidates.clone();
+
+            let merged = self.merge_route_a_candidates(
+                &app_bundle_id,
+                &effective_left,
+                &raw_clone,
+                now_epoch_secs,
+                &displayed,
+                ra.candidates,
+            );
+            // Allow Route A to seamlessly upgrade candidate #1 within 150ms of the keystroke
+            // (typical GPU beam decode takes 15-80ms); only freeze #1 if heavy GPU contention
+            // delayed the reply beyond that point so the user never mis-commits.
+            self.sessions[pos].all_candidates = apply_anti_jitter_freeze_window(
+                &displayed,
+                merged,
+                ra.elapsed_ms,
+                freeze_ms.max(150),
+            );
+            if ra.session_id == session_id {
                 updated_for_target = true;
             }
         }
@@ -1368,25 +1412,35 @@ impl ChimeEngine {
         );
 
         if let Some(worker) = &self.async_reranker {
-            if let Some(route_a_cands) = self.try_decode_route_a(
+            match self.dispatch_route_a(
                 worker,
+                self.sessions[idx].id,
+                self.sessions[idx].generation_id,
                 &app_clone,
                 &effective_left,
                 &raw_clone,
                 now_epoch_secs,
                 &cands,
             ) {
-                cands = route_a_cands;
-            } else {
-                cands = Self::rerank_candidates_with_budget(
-                    worker,
-                    self.sessions[idx].id,
-                    self.sessions[idx].generation_id,
-                    app_clone,
-                    effective_left,
-                    &raw_clone,
-                    cands,
-                );
+                RouteADispatch::Sync(route_a_cands) => {
+                    cands = route_a_cands;
+                }
+                RouteADispatch::PendingAsync => {
+                    // Frame-0 fast return: render Stage-1 immediately without blocking the macOS
+                    // main thread, and let `poll_async_rerank` seamlessly swap in Route A ~15ms
+                    // later (NEVER fall through to a second synchronous Stage-2 block!).
+                }
+                RouteADispatch::NotEligible => {
+                    cands = Self::rerank_candidates_with_budget(
+                        worker,
+                        self.sessions[idx].id,
+                        self.sessions[idx].generation_id,
+                        app_clone,
+                        effective_left,
+                        &raw_clone,
+                        cands,
+                    );
+                }
             }
         }
         self.sessions[idx].all_candidates = cands;
@@ -1395,17 +1449,19 @@ impl ChimeEngine {
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn try_decode_route_a(
+    fn dispatch_route_a(
         &self,
         worker: &AsyncRerankHandle,
+        session_id: u64,
+        generation_id: u64,
         app_bundle_id: &str,
         effective_left: &str,
         raw_clone: &str,
         now_epoch_secs: u64,
         stage1_cands: &[Candidate],
-    ) -> Option<Vec<Candidate>> {
+    ) -> RouteADispatch {
         if !worker.has_constrained_decoder() || raw_clone.is_empty() {
-            return None;
+            return RouteADispatch::NotEligible;
         }
         if (self.config.uppercase_triggers_english
             && raw_clone.bytes().any(|b| b.is_ascii_uppercase()))
@@ -1413,7 +1469,7 @@ impl ChimeEngine {
                 .bytes()
                 .any(|b| b.is_ascii_digit() || matches!(b, b'.' | b'/' | b'_' | b'-'))
         {
-            return None;
+            return RouteADispatch::NotEligible;
         }
 
         let lower_raw = raw_clone.to_ascii_lowercase();
@@ -1422,6 +1478,90 @@ impl ChimeEngine {
             && !raw_clone.contains('\'')
             && chime_phonetics::is_valid_syllable(&lower_raw);
         let is_single_syl_ctx = has_left_ctx && is_single_syl;
+
+        let mut extra_exact_candidates: Vec<String> = Vec::new();
+        let mut has_stage1_exact = false;
+        for lc in stage1_cands {
+            if lc.consumed_bytes == raw_clone.len() && lc.kind == MatchKind::Exact {
+                has_stage1_exact = true;
+                if raw_clone.len() >= 6
+                    && !is_single_syl
+                    && extra_exact_candidates.len() < 4
+                    && !extra_exact_candidates.contains(&lc.text)
+                {
+                    extra_exact_candidates.push(lc.text.clone());
+                }
+            }
+        }
+
+        // While the user is mid-syllable (`zhejiged`, `shangyib`, `wozijix`), the trailing lone
+        // consonant cannot finish a valid syllable and will be superseded in ~40ms by the next
+        // vowel. Return Stage-1 in < 0.3ms with zero synchronous GPU wait!
+        let last_b = lower_raw.as_bytes().last().copied().unwrap_or(0);
+        let is_mid_syllable_partial = self.config.scheme == ShuangpinScheme::Full
+            && raw_clone.len() >= 4
+            && !has_stage1_exact
+            && !matches!(
+                last_b,
+                b'a' | b'e' | b'i' | b'o' | b'u' | b'v' | b'n' | b'g' | b'r'
+            )
+            && !chime_phonetics::can_segment_exact(&lower_raw);
+
+        let sync_budget = if is_mid_syllable_partial {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(12)
+        };
+
+        let req = RouteADecodeRequest {
+            app_bundle_id: app_bundle_id.to_string(),
+            left_context: effective_left.to_string(),
+            raw_input: raw_clone.to_string(),
+            scheme: self.config.scheme,
+            fuzzy: self.config.fuzzy,
+            pangu_spacing: self.config.pangu_spacing,
+            scoring_mode: if is_single_syl_ctx {
+                ScoringMode::OpenContextual
+            } else {
+                ScoringMode::ClosedSentence
+            },
+            beam_width: if worker.is_pinyin_conditioned() { 4 } else { 5 },
+            extra_exact_candidates,
+        };
+        let Some(ncands) =
+            worker.decode_route_a_timed_or_async(session_id, generation_id, req, sync_budget)
+        else {
+            return RouteADispatch::PendingAsync;
+        };
+        if ncands.is_empty() {
+            return RouteADispatch::NotEligible;
+        }
+        RouteADispatch::Sync(self.merge_route_a_candidates(
+            app_bundle_id,
+            effective_left,
+            raw_clone,
+            now_epoch_secs,
+            stage1_cands,
+            ncands,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn merge_route_a_candidates(
+        &self,
+        app_bundle_id: &str,
+        effective_left: &str,
+        raw_clone: &str,
+        now_epoch_secs: u64,
+        stage1_cands: &[Candidate],
+        ncands: Vec<chime_neural::NeuralBeamCandidate>,
+    ) -> Vec<Candidate> {
+        let lower_raw = raw_clone.to_ascii_lowercase();
+        let has_left_ctx = !effective_left.trim().is_empty();
+        let is_single_syl_ctx = has_left_ctx
+            && self.config.scheme == ShuangpinScheme::Full
+            && !raw_clone.contains('\'')
+            && chime_phonetics::is_valid_syllable(&lower_raw);
 
         let lead_full_count = stage1_cands
             .iter()
@@ -1447,41 +1587,6 @@ impl ChimeEngine {
             } else {
                 middle_partial.push(cand.clone());
             }
-        }
-
-        // Pure-Bayesian Exact-Lexicon Hypothesis Fusion: forward top-4 exact-pinyin full-span
-        // lexicon / `.imepack` / custom user phrase proposals so rare idioms, poetry, and personal
-        // terms are scored on the exact same neural `log P_LM(Y | C)` scale.
-        let mut extra_exact_candidates: Vec<String> = Vec::new();
-        if raw_clone.len() >= 6 && !is_single_syl {
-            for lc in &stage1_full {
-                if lc.kind == MatchKind::Exact && !extra_exact_candidates.contains(&lc.text) {
-                    extra_exact_candidates.push(lc.text.clone());
-                    if extra_exact_candidates.len() >= 4 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        let req = RouteADecodeRequest {
-            app_bundle_id: app_bundle_id.to_string(),
-            left_context: effective_left.to_string(),
-            raw_input: raw_clone.to_string(),
-            scheme: self.config.scheme,
-            fuzzy: self.config.fuzzy,
-            pangu_spacing: self.config.pangu_spacing,
-            scoring_mode: if is_single_syl_ctx {
-                ScoringMode::OpenContextual
-            } else {
-                ScoringMode::ClosedSentence
-            },
-            beam_width: 8,
-            extra_exact_candidates,
-        };
-        let ncands = worker.decode_route_a_with_budget(req, Duration::from_millis(80))?;
-        if ncands.is_empty() {
-            return None;
         }
 
         let mut merged_full: Vec<Candidate> = Vec::with_capacity(ncands.len() + stage1_full.len());
@@ -1554,7 +1659,7 @@ impl ChimeEngine {
         merged_full.extend(middle_partial);
         merged_full.extend(overflow);
         merged_full.extend(raw_fallback);
-        Some(merged_full)
+        merged_full
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2180,6 +2285,12 @@ fn is_terminal_app(app_bundle_id: &str) -> bool {
     ]
     .iter()
     .any(|pat| lower.contains(pat))
+}
+
+enum RouteADispatch {
+    Sync(Vec<Candidate>),
+    PendingAsync,
+    NotEligible,
 }
 
 #[derive(Debug)]

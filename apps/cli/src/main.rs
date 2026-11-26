@@ -1625,8 +1625,14 @@ fn run_large_bench(
                     } else {
                         mode
                     };
-                    let lps =
-                        slm.score_candidates_exact_bayesian(left_ctx, app, &extra_texts, eff_mode);
+                    let lps = slm.score_candidates_exact_bayesian_with_pinyin(
+                        left_ctx,
+                        app,
+                        keys,
+                        scheme,
+                        &extra_texts,
+                        eff_mode,
+                    );
                     for (txt, lp) in extra_texts.into_iter().zip(lps) {
                         if lp.is_finite() {
                             ncands.push(chime_neural::NeuralBeamCandidate {

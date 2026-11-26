@@ -24,7 +24,7 @@ pub use crate::{
     transformer::{
         ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
     },
-    worker::{AsyncRerankHandle, RerankJob, RerankResult, RouteADecodeRequest},
+    worker::{AsyncRerankHandle, RerankJob, RerankResult, RouteADecodeRequest, RouteAResult},
 };
 
 /// Scoring mode controlling right-boundary punctuation closure and logit calibration.
@@ -250,8 +250,91 @@ impl SafetensorsReranker {
         self.pinyin_index.is_some()
     }
 
+    /// Returns true if the loaded model bundle uses full-sentence Pinyin lookahead conditioning
+    /// (`pinyin_char_v1`).
+    #[must_use]
+    pub fn is_pinyin_conditioned(&self) -> bool {
+        self.mlx_model.config().is_pinyin_conditioned()
+    }
+
+    fn build_route_a_prefix_ids(
+        &self,
+        left_context: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+    ) -> Vec<u32> {
+        let trimmed_ctx = left_context.trim();
+        let unk = self.vocab.unk_token;
+        if self.is_pinyin_conditioned() {
+            // Exact `pinyin_char_v1` contract:
+            // `[0] + ctx_ids + [51('|'), 52('~'), scheme_tid, 51('|')] + char_ids(X) + [52('~'),
+            // 50('=')]`
+            let mut prefix_ids = Vec::with_capacity(raw_input.len() + 48);
+            prefix_ids.push(self.vocab.bos_token);
+            if !trimmed_ctx.is_empty() {
+                let chars: Vec<char> = trimmed_ctx.chars().collect();
+                let start = chars.len().saturating_sub(88);
+                let slice: String = chars[start..].iter().collect();
+                let mut c_ids = self.vocab.encode(&slice, false);
+                c_ids.retain(|&id| id != unk);
+                if c_ids.len() > 96 {
+                    let drop = c_ids.len() - 96;
+                    c_ids.drain(..drop);
+                }
+                prefix_ids.extend_from_slice(&c_ids);
+            }
+            let bar = self.vocab.token_id("|").unwrap_or(51);
+            let tilde = self.vocab.token_id("~").unwrap_or(52);
+            let eq = self.vocab.token_id("=").unwrap_or(50);
+            let scheme_str = match scheme {
+                ShuangpinScheme::Full => "p",
+                ShuangpinScheme::Xiaohe => "x",
+                ShuangpinScheme::Ziranma => "z",
+                ShuangpinScheme::Microsoft => "m",
+            };
+            let scheme_tid = self
+                .vocab
+                .token_id(scheme_str)
+                .unwrap_or(self.vocab.bos_token);
+            prefix_ids.extend_from_slice(&[bar, tilde, scheme_tid, bar]);
+            let mut char_buf = [0u8; 4];
+            for ch in raw_input.to_ascii_lowercase().chars() {
+                let s = ch.encode_utf8(&mut char_buf);
+                if let Some(tid) = self.vocab.token_id(s) {
+                    prefix_ids.push(tid);
+                } else if ch == ';'
+                    && let Some(tid) = self.vocab.token_id(":")
+                {
+                    prefix_ids.push(tid);
+                }
+            }
+            prefix_ids.extend_from_slice(&[tilde, eq]);
+            return prefix_ids;
+        }
+
+        let has_left_ctx = !trimmed_ctx.is_empty();
+        let bounded_ctx: String = if has_left_ctx {
+            let chars: Vec<char> = trimmed_ctx.chars().collect();
+            let start = chars.len().saturating_sub(96);
+            let slice: String = chars[start..].iter().collect();
+            if slice.starts_with('。') {
+                slice
+            } else {
+                format!("。{slice}")
+            }
+        } else {
+            "。，".to_string()
+        };
+        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
+        prefix_ids.retain(|&id| id != unk);
+        if prefix_ids.is_empty() {
+            prefix_ids.push(self.vocab.bos_token);
+        }
+        prefix_ids
+    }
+
     /// Runs Route A (First-Principles Pinyin-Constrained Autoregressive Neural Beam Search)
-    /// directly inside the 8-layer MLX Transformer + Multi-LoRA!
+    /// directly inside the on-device MLX Transformer + Multi-LoRA!
     #[allow(clippy::too_many_arguments)]
     pub fn decode_constrained(
         &mut self,
@@ -267,32 +350,23 @@ impl SafetensorsReranker {
         let Some(pinyin_index) = &self.pinyin_index else {
             return Vec::new();
         };
-        let trimmed_ctx = left_context.trim();
-        let has_left_ctx = !trimmed_ctx.is_empty();
-        let bounded_ctx: String = if has_left_ctx {
-            let chars: Vec<char> = trimmed_ctx.chars().collect();
-            let start = chars.len().saturating_sub(96);
-            let slice: String = chars[start..].iter().collect();
-            if slice.starts_with('。') {
-                slice
-            } else {
-                format!("。{slice}")
-            }
-        } else {
-            // 2-token neutral anchor: RoPE position 0 absorbs Qwen3's attention sink while
-            // position 1 produces a crisp, non-degenerate Chinese sentence-start distribution!
-            "。，".to_string()
-        };
-        let unk = self.vocab.unk_token;
-        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
-        prefix_ids.retain(|&id| id != unk);
-        if prefix_ids.is_empty() {
-            prefix_ids.push(self.vocab.bos_token);
-        }
-
+        let is_pc = self.is_pinyin_conditioned();
+        let prefix_ids = self.build_route_a_prefix_ids(left_context, raw_input, scheme);
         let lora_scales = self
             .mlx_model
             .compute_lora_scales(app_bundle_id, left_context, &[]);
+
+        let eos_slice = [self.vocab.bos_token];
+        let (eff_closure_ids, eff_closure_w): (&[u32], f32) = if is_pc {
+            (&eos_slice, 1.0)
+        } else {
+            (&self.closure_token_ids, self.closure_weight)
+        };
+        let cache_opt = if is_pc {
+            None
+        } else {
+            Some(&mut self.beam_cache)
+        };
 
         decode_constrained_beam(
             &self.mlx_model,
@@ -302,15 +376,16 @@ impl SafetensorsReranker {
             app_bundle_id,
             &prefix_ids,
             &lora_scales,
-            &self.closure_token_ids,
-            self.closure_weight,
+            eff_closure_ids,
+            eff_closure_w,
             raw_input,
             scheme,
             fuzzy,
             pangu_spacing,
             mode,
             beam_width,
-            Some(&mut self.beam_cache),
+            is_pc,
+            cache_opt,
         )
     }
 
@@ -325,29 +400,33 @@ impl SafetensorsReranker {
         candidate_texts: &[String],
         mode: ScoringMode,
     ) -> Vec<f32> {
+        self.score_candidates_exact_bayesian_with_pinyin(
+            left_context,
+            app_bundle_id,
+            "",
+            ShuangpinScheme::Full,
+            candidate_texts,
+            mode,
+        )
+    }
+
+    /// Computes exact unnormalized Bayesian log-likelihoods `log P(Y | C, X) (+ closure)` matching
+    /// both legacy text-LM and `pinyin_char_v1` Pinyin-conditioned bundles.
+    pub fn score_candidates_exact_bayesian_with_pinyin(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        candidate_texts: &[String],
+        mode: ScoringMode,
+    ) -> Vec<f32> {
         if candidate_texts.is_empty() {
             return Vec::new();
         }
-        let trimmed_ctx = left_context.trim();
-        let has_left_ctx = !trimmed_ctx.is_empty();
-        let bounded_ctx: String = if has_left_ctx {
-            let chars: Vec<char> = trimmed_ctx.chars().collect();
-            let start = chars.len().saturating_sub(96);
-            let slice: String = chars[start..].iter().collect();
-            if slice.starts_with('。') {
-                slice
-            } else {
-                format!("。{slice}")
-            }
-        } else {
-            "。，".to_string()
-        };
+        let is_pc = self.is_pinyin_conditioned();
         let unk = self.vocab.unk_token;
-        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
-        prefix_ids.retain(|&id| id != unk);
-        if prefix_ids.is_empty() {
-            prefix_ids.push(self.vocab.bos_token);
-        }
+        let prefix_ids = self.build_route_a_prefix_ids(left_context, raw_input, scheme);
 
         let lora_scales =
             self.mlx_model
@@ -370,15 +449,21 @@ impl SafetensorsReranker {
             encoded.push(if valid { ids } else { Vec::new() });
         }
 
-        let eff_closure_weight = match mode {
-            ScoringMode::ClosedSentence => self.closure_weight,
-            ScoringMode::OpenContextual | ScoringMode::BeamPrefixGuidance => 0.0,
+        let eos_slice = [self.vocab.bos_token];
+        let (eff_closure_ids, eff_closure_weight): (&[u32], f32) = if is_pc {
+            (&eos_slice, 1.0)
+        } else {
+            let w = match mode {
+                ScoringMode::ClosedSentence => self.closure_weight,
+                ScoringMode::OpenContextual | ScoringMode::BeamPrefixGuidance => 0.0,
+            };
+            (&self.closure_token_ids, w)
         };
         let Ok(joint_lps) = self.mlx_model.score_candidates_with_closure(
             &self.kv_cache,
             &encoded,
             &lora_scales,
-            &self.closure_token_ids,
+            eff_closure_ids,
             eff_closure_weight,
         ) else {
             return vec![f32::NEG_INFINITY; candidate_texts.len()];

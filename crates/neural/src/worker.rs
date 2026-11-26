@@ -70,6 +70,20 @@ pub struct RerankResult {
     pub elapsed_ms: u64,
 }
 
+/// Completed asynchronous Route A neural beam decode delivered back to the session coordinator
+/// whenever a keystroke's GPU beam search exceeds the frame-0 synchronous budget.
+#[derive(Debug, Clone)]
+pub struct RouteAResult {
+    /// Target session ID.
+    pub session_id: u64,
+    /// Monotonic keystroke generation ID.
+    pub generation_id: u64,
+    /// Ranked Route A neural beam candidates.
+    pub candidates: Vec<NeuralBeamCandidate>,
+    /// End-to-end elapsed time in milliseconds since `dispatched_at`.
+    pub elapsed_ms: u64,
+}
+
 enum ActorCmd {
     Async(RerankJob),
     TimedOrAsync {
@@ -87,6 +101,13 @@ enum ActorCmd {
         req: RouteADecodeRequest,
         reply_tx: Sender<Vec<NeuralBeamCandidate>>,
     },
+    RouteATimedOrAsync {
+        session_id: u64,
+        generation_id: u64,
+        dispatched_at: Instant,
+        req: RouteADecodeRequest,
+        sync_reply_tx: Sender<Vec<NeuralBeamCandidate>>,
+    },
 }
 
 /// Thread-safe (`Send + Sync`) handle to the dedicated MLX Metal GPU actor thread.
@@ -94,6 +115,7 @@ enum ActorCmd {
 pub struct AsyncRerankHandle {
     cmd_tx: Sender<ActorCmd>,
     result_rx: Receiver<RerankResult>,
+    route_a_result_rx: Receiver<RouteAResult>,
     config: ModelConfig,
     lora_count: usize,
     has_constrained_decoder: bool,
@@ -126,6 +148,7 @@ impl AsyncRerankHandle {
             flume::bounded::<Result<(ModelConfig, usize, bool), NeuralError>>(1);
         let (cmd_tx, cmd_rx) = flume::bounded::<ActorCmd>(16);
         let (result_tx, result_rx) = flume::bounded::<RerankResult>(16);
+        let (route_a_result_tx, route_a_result_rx) = flume::bounded::<RouteAResult>(16);
 
         std::thread::spawn(move || {
             let mut reranker = match SafetensorsReranker::load_dir_with_loras(&dir_owned, &loras) {
@@ -206,6 +229,26 @@ impl AsyncRerankHandle {
                                     let out = run_route_a_request(&mut reranker, &req);
                                     let _ = reply_tx.send(out);
                                 }
+                                ActorCmd::RouteATimedOrAsync {
+                                    session_id,
+                                    generation_id,
+                                    dispatched_at,
+                                    req,
+                                    sync_reply_tx: ra_tx,
+                                } => {
+                                    let out = run_route_a_request(&mut reranker, &req);
+                                    if ra_tx.send(out.clone()).is_err() {
+                                        let elapsed_ms =
+                                            u64::try_from(dispatched_at.elapsed().as_millis())
+                                                .unwrap_or(u64::MAX);
+                                        let _ = route_a_result_tx.try_send(RouteAResult {
+                                            session_id,
+                                            generation_id,
+                                            candidates: out,
+                                            elapsed_ms,
+                                        });
+                                    }
+                                }
                             }
                         }
                         let bonuses = reranker.score_candidates_with_scoring_mode(
@@ -272,11 +315,74 @@ impl AsyncRerankHandle {
                                     );
                                     let _ = s_tx.send(bonuses);
                                 }
-                                ActorCmd::Async(_) | ActorCmd::TimedOrAsync { .. } => {}
+                                ActorCmd::Async(_)
+                                | ActorCmd::TimedOrAsync { .. }
+                                | ActorCmd::RouteATimedOrAsync { .. } => {}
                             }
                         }
                         let out = run_route_a_request(&mut reranker, &req);
                         let _ = reply_tx.send(out);
+                    }
+                    ActorCmd::RouteATimedOrAsync {
+                        mut session_id,
+                        mut generation_id,
+                        mut dispatched_at,
+                        mut req,
+                        mut sync_reply_tx,
+                    } => {
+                        // Coalesce rapid keystrokes so burst typing NEVER queues stale Route A
+                        // GPU passes behind earlier keystrokes!
+                        while let Ok(next_cmd) = cmd_rx.try_recv() {
+                            match next_cmd {
+                                ActorCmd::RouteATimedOrAsync {
+                                    session_id: next_session,
+                                    generation_id: next_gen,
+                                    dispatched_at: next_at,
+                                    req: next_req,
+                                    sync_reply_tx: next_tx,
+                                } => {
+                                    session_id = next_session;
+                                    generation_id = next_gen;
+                                    dispatched_at = next_at;
+                                    req = next_req;
+                                    sync_reply_tx = next_tx;
+                                }
+                                ActorCmd::RouteADecode {
+                                    req: r_req,
+                                    reply_tx: r_tx,
+                                } => {
+                                    let out = run_route_a_request(&mut reranker, &r_req);
+                                    let _ = r_tx.send(out);
+                                }
+                                ActorCmd::Sync {
+                                    left_context,
+                                    app_bundle_id,
+                                    candidate_texts,
+                                    scoring_mode,
+                                    reply_tx: s_tx,
+                                } => {
+                                    let bonuses = reranker.score_candidates_with_scoring_mode(
+                                        &left_context,
+                                        &app_bundle_id,
+                                        &candidate_texts,
+                                        scoring_mode,
+                                    );
+                                    let _ = s_tx.send(bonuses);
+                                }
+                                ActorCmd::Async(_) | ActorCmd::TimedOrAsync { .. } => {}
+                            }
+                        }
+                        let out = run_route_a_request(&mut reranker, &req);
+                        if sync_reply_tx.send(out.clone()).is_err() {
+                            let elapsed_ms = u64::try_from(dispatched_at.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
+                            let _ = route_a_result_tx.try_send(RouteAResult {
+                                session_id,
+                                generation_id,
+                                candidates: out,
+                                elapsed_ms,
+                            });
+                        }
                     }
                 }
             }
@@ -289,6 +395,7 @@ impl AsyncRerankHandle {
         Ok(Self {
             cmd_tx,
             result_rx,
+            route_a_result_rx,
             config,
             lora_count,
             has_constrained_decoder,
@@ -300,6 +407,13 @@ impl AsyncRerankHandle {
     #[must_use]
     pub const fn has_constrained_decoder(&self) -> bool {
         self.has_constrained_decoder
+    }
+
+    /// Returns true if the loaded model bundle uses full-sentence Pinyin lookahead conditioning
+    /// (`pinyin_char_v1`).
+    #[must_use]
+    pub fn is_pinyin_conditioned(&self) -> bool {
+        self.config.is_pinyin_conditioned()
     }
 
     /// Runs Route A constrained autoregressive neural beam search (+ pure-Bayesian exact-lexicon
@@ -322,6 +436,46 @@ impl AsyncRerankHandle {
             return None;
         }
         reply_rx.recv_timeout(budget).ok()
+    }
+
+    /// Runs Route A on the Metal GPU worker with a short frame-0 `budget` (e.g. `12 ms`).
+    /// If it finishes within `budget`, returns `Some(candidates)` synchronously; otherwise returns
+    /// `None` immediately (keeping keystrokes ultra-snappy!) and delivers the finished candidates
+    /// asynchronously via [`Self::drain_route_a_results`].
+    #[must_use]
+    pub fn decode_route_a_timed_or_async(
+        &self,
+        session_id: u64,
+        generation_id: u64,
+        req: RouteADecodeRequest,
+        budget: Duration,
+    ) -> Option<Vec<NeuralBeamCandidate>> {
+        if !self.has_constrained_decoder {
+            return None;
+        }
+        let (sync_reply_tx, sync_reply_rx) = flume::bounded(1);
+        if matches!(
+            self.cmd_tx.try_send(ActorCmd::RouteATimedOrAsync {
+                session_id,
+                generation_id,
+                dispatched_at: Instant::now(),
+                req,
+                sync_reply_tx,
+            }),
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
+        ) {
+            return None;
+        }
+        if budget.is_zero() {
+            return None;
+        }
+        sync_reply_rx.recv_timeout(budget).ok()
+    }
+
+    /// Polls any completed asynchronous Route A decode results without blocking.
+    #[must_use]
+    pub fn drain_route_a_results(&self) -> Vec<RouteAResult> {
+        self.route_a_result_rx.try_iter().collect()
     }
 
     /// Returns the loaded model hyperparameters.
@@ -475,9 +629,11 @@ fn run_route_a_request(
             } else {
                 req.scoring_mode
             };
-            let lps = reranker.score_candidates_exact_bayesian(
+            let lps = reranker.score_candidates_exact_bayesian_with_pinyin(
                 &req.left_context,
                 &req.app_bundle_id,
+                &req.raw_input,
+                req.scheme,
                 &to_score,
                 eff_mode,
             );

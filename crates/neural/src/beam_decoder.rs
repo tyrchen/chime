@@ -199,6 +199,7 @@ pub fn decode_constrained_beam(
     pangu_spacing: bool,
     mode: ScoringMode,
     beam_width: usize,
+    is_pinyin_conditioned: bool,
     beam_cache: Option<&mut RouteABeamCache>,
 ) -> Vec<NeuralBeamCandidate> {
     let n = raw_input.len();
@@ -229,6 +230,7 @@ pub fn decode_constrained_beam(
         mode,
         beam_width,
         allow_traditional,
+        is_pinyin_conditioned,
         beam_cache,
     );
 
@@ -280,6 +282,7 @@ pub fn decode_constrained_beam(
                     mode,
                     beam_width,
                     allow_traditional,
+                    is_pinyin_conditioned,
                     None,
                 );
                 for mut rc in rep_cands {
@@ -326,18 +329,16 @@ fn decode_constrained_beam_single(
     mode: ScoringMode,
     beam_width: usize,
     allow_traditional: bool,
+    is_pinyin_conditioned: bool,
     beam_cache: Option<&mut RouteABeamCache>,
 ) -> Vec<NeuralBeamCandidate> {
     let n = raw_input.len();
 
     // Exact Bayesian Left-Boundary Token Healing (`P(B | A, C) = P(AB | C) / P(A | C)`):
-    // When `left_context` ends in a single-char CJK token `c_prev` (e.g. `"因为一"`, `"最低工"`,
-    // `"各大学自"`, `"珊"`, `"玻"`, `"玫"`), check if any multi-char vocabulary token `T` starting
-    // with `c_prev` (`"一些"`, `"工业"`, `"自主"`, `"珊瑚"`, `"玻璃"`, `"玫瑰"`) matches the
-    // typed Pinyin prefix! If so, prefill `prefix_ids[..len-1]` first (zero extra cost because
-    // `ensure_prefix_cached_with_scales` incrementally appends the last token `c_prev`!) so both
-    // the healed KV path and the regular path compete on the exact same Bayesian scale!
-    let healed_matches: Vec<(u32, String, usize, f32, bool)> = if prefix_ids.len() >= 2
+    // Only needed in text-LM mode (in `pinyin_char_v1` mode, `left_context` is separated from `Y`
+    // by `|~p|X~=`, so BPE never splits across the boundary).
+    let healed_matches: Vec<(u32, String, usize, f32, bool)> = if !is_pinyin_conditioned
+        && prefix_ids.len() >= 2
         && let Some(prev_ch) = left_context.trim_end().chars().last()
         && ('\u{4E00}'..='\u{9FA5}').contains(&prev_ch)
         && let Some(&last_tid) = prefix_ids.last()
@@ -497,8 +498,8 @@ fn decode_constrained_beam_single(
             .zip(cache.raw_input.bytes())
             .take_while(|(a, b)| a == b)
             .count();
-        if common_prefix > 10 {
-            let reuse_until = common_prefix.saturating_sub(8);
+        if common_prefix > 6 {
+            let reuse_until = common_prefix.saturating_sub(4);
             if reuse_until >= 2 && cache.saved_buckets.len() > reuse_until {
                 for p in 1..=reuse_until {
                     buckets[p].clone_from(&cache.saved_buckets[p]);
@@ -596,16 +597,20 @@ fn decode_constrained_beam_single(
         && !raw_input.contains('\'')
         && chime_phonetics::is_valid_syllable(lower_input);
     let has_left_ctx = !left_context.trim().is_empty();
-    let eff_closure_weight = match mode {
-        // Mid-sentence contextual short phrases (`has_left_ctx && n <= 12`, e.g. `上一版`,
-        // `业品位`, `主招生`, `体也`) and single syllables must not be penalized for not ending a
-        // sentence!
-        ScoringMode::ClosedSentence if !(is_single_syl_input || (has_left_ctx && n <= 12)) => {
-            closure_weight
+    let eff_closure_weight = if is_pinyin_conditioned {
+        closure_weight
+    } else {
+        match mode {
+            // Mid-sentence contextual short phrases (`has_left_ctx && n <= 12`, e.g. `上一版`,
+            // `业品位`, `主招生`, `体也`) and single syllables must not be penalized for not ending
+            // a sentence!
+            ScoringMode::ClosedSentence if !(is_single_syl_input || (has_left_ctx && n <= 12)) => {
+                closure_weight
+            }
+            ScoringMode::ClosedSentence
+            | ScoringMode::OpenContextual
+            | ScoringMode::BeamPrefixGuidance => 0.0,
         }
-        ScoringMode::ClosedSentence
-        | ScoringMode::OpenContextual
-        | ScoringMode::BeamPrefixGuidance => 0.0,
     };
 
     for pos in start_pos..=n {
@@ -634,8 +639,8 @@ fn decode_constrained_beam_single(
         active.sort_by(|a, b| b.total_score().total_cmp(&a.total_score()));
         // Keep wider early beam on the first 2 syllables (`pos <= 9`) so garden-path verbs and
         // 4-char idioms (`守株待兔`, `掩耳盗铃`, `唱了一首老歌`, `盛了一碗米饭`) survive!
-        let pos_beam_cap = if pos < n && pos <= 9 {
-            (beam_width * 2).min(20)
+        let pos_beam_cap = if !is_pinyin_conditioned && pos < n && pos <= 6 {
+            (beam_width * 2).min(12)
         } else {
             beam_width
         };

@@ -235,6 +235,7 @@ public final class ChimeEngineBridge {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private var slots: [ObjectIdentifier: ControllerSlot] = [:]
+    private var pollTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     public var activeControllerKey: ObjectIdentifier?
 
     // Engine-wide modifier tap & English mode state (shared across windows like Sogou / Doubao)
@@ -787,9 +788,11 @@ public final class ChimeEngineBridge {
     }
 
     private func scheduleAsyncRerankPoll(controllerKey: ObjectIdentifier, sessionId: UInt64) {
-        Task { @MainActor [weak self] in
-            for delayMs in [14, 24, 40] {
+        pollTasks[controllerKey]?.cancel()
+        pollTasks[controllerKey] = Task { @MainActor [weak self] in
+            for delayMs in [12, 20, 32, 55, 90] {
                 try? await Task.sleep(for: .milliseconds(delayMs))
+                if Task.isCancelled { return }
                 guard let self, let handle = self.handle, let slot = self.slots[controllerKey], slot.sessionId == sessionId else {
                     return
                 }

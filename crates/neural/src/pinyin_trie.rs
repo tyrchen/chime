@@ -481,7 +481,7 @@ impl TokenPinyinIndex {
                             if tid_syl != sid
                                 && matches!(edit, TypoEdit::NeighborKey { cost } if cost <= 1.35)
                             {
-                                let cost = -edit.cost() - 3.85;
+                                let cost = -edit.cost() - 4.55;
                                 syl_edges[start].push((end, tid_syl, cost, false, true));
                             }
                         }

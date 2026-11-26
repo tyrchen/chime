@@ -43,6 +43,9 @@ pub struct ModelConfig {
     /// Optional native MLX 4-bit/8-bit quantization config.
     #[serde(default)]
     pub quantization: Option<QuantizationConfig>,
+    /// Optional conditioning mode (e.g. `"pinyin_char_v1"` for full-sentence Pinyin lookahead).
+    #[serde(default)]
+    pub conditioning: Option<String>,
 }
 
 impl ModelConfig {
@@ -54,6 +57,12 @@ impl ModelConfig {
             Some(hd) if hd > 0 => hd,
             _ => self.hidden_size / self.num_attention_heads,
         }
+    }
+
+    /// Returns true if this bundle was trained for Pinyin-conditioned decoding (`pinyin_char_v1`).
+    #[must_use]
+    pub fn is_pinyin_conditioned(&self) -> bool {
+        self.conditioning.as_deref() == Some("pinyin_char_v1")
     }
 }
 
@@ -440,6 +449,7 @@ impl TinyModelBuilder {
             rms_norm_eps: 1e-6,
             rope_theta: 10_000.0,
             quantization: None,
+            conditioning: None,
         };
 
         // Construct orthogonal basis embeddings so context -> target associations score
