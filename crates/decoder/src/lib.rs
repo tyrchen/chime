@@ -727,7 +727,10 @@ impl LatticeDecoder {
                 !(is_single_syllable_input && !st.last_is_english && st.text.chars().count() > 1)
             })
             .map(|st| {
-                let user_delta = if st.text.chars().count() == 1 && !is_single_syllable_input {
+                // Single-syllable inputs already received a safely clamped `user_bonus` on their
+                // lattice edge; never apply `score_boost` a second time here (which would inflate
+                // habit gaps past `score_margin` and starve Stage-2 neural reranking).
+                let user_delta = if st.text.chars().count() == 1 || is_single_syllable_input {
                     0.0
                 } else {
                     user_store.score_boost(
@@ -1031,7 +1034,11 @@ impl LatticeDecoder {
             };
             if full_candidates.len() > keep_full {
                 overflow_full = full_candidates.split_off(keep_full);
-                overflow_full.truncate(6);
+                // When Stage-2 runs asynchronously in `ChimeEngine` (`self.reranker.is_none()`),
+                // keep up to 20 overflow full-span candidates so async neural reranking evaluates
+                // the exact same top-22 pool as synchronous `LatticeDecoder` before re-capping.
+                let overflow_cap = if self.reranker.is_none() { 20 } else { 6 };
+                overflow_full.truncate(overflow_cap);
             }
         }
 

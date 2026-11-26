@@ -1426,7 +1426,7 @@ impl ChimeEngine {
                     scoring_mode: ScoringMode::OpenContextual,
                     dispatched_at: Instant::now(),
                 };
-                if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(12)) {
+                if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(25)) {
                     let mut reranked: Vec<Candidate> = sc_indices
                         .iter()
                         .zip(bonuses)
@@ -1451,30 +1451,76 @@ impl ChimeEngine {
             }
         }
 
+        // Partition `cands` into ALL full-span non-raw candidates (leading + trailing overflow
+        // from Stage-1) vs. middle partial/prefix candidates and raw fallback. Reranking the full
+        // pool BEFORE re-applying `keep_full = lead_full_count` gives `Chime.app` 100% parity with
+        // synchronous `LatticeDecoder` so candidates ranked #7..#22 by Stage-1 (e.g. `上一版`,
+        // `我自己写一页纸`) can rise straight to #1!
+        let mut all_full: Vec<Candidate> = Vec::new();
+        let mut middle_partial: Vec<Candidate> = Vec::new();
+        let mut raw_fallback: Vec<Candidate> = Vec::new();
+        for cand in cands {
+            if cand.consumed_bytes == raw_clone.len() {
+                if cand.kind == MatchKind::CodeSwitch && cand.text == raw_clone {
+                    raw_fallback.push(cand);
+                } else {
+                    all_full.push(cand);
+                }
+            } else {
+                middle_partial.push(cand);
+            }
+        }
+
         let is_single_syl_ctx = has_left_ctx
-            && lead_full_count == cands.len()
-            && cands
+            && middle_partial.is_empty()
+            && all_full
                 .iter()
                 .any(|c| c.kind == MatchKind::Exact && c.text.chars().count() == 1);
-        let best_non_comp = cands
+
+        let reassemble = |mut full: Vec<Candidate>,
+                          middle: Vec<Candidate>,
+                          raw: Vec<Candidate>|
+         -> Vec<Candidate> {
+            let keep_full = if middle.is_empty() {
+                full.len()
+            } else {
+                lead_full_count.max(1).min(full.len())
+            };
+            let mut overflow = if full.len() > keep_full {
+                full.split_off(keep_full)
+            } else {
+                Vec::new()
+            };
+            overflow.truncate(6);
+            full.extend(middle);
+            full.extend(overflow);
+            full.extend(raw);
+            full
+        };
+
+        let best_non_comp = all_full
             .iter()
-            .find(|c| c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion)
+            .find(|c| c.kind != MatchKind::Completion)
             .map_or(f32::NEG_INFINITY, |c| c.score);
-        let score_margin = if is_single_syl_ctx { 8.5 } else { 5.4 };
-        let batch_cap = if is_single_syl_ctx { 18 } else { 10 };
-        let full_texts: Vec<String> = cands
+        let score_margin = if is_single_syl_ctx { 8.5 } else { 6.8 };
+        let batch_cap = if is_single_syl_ctx { 20 } else { 22 };
+        let scored_indices: Vec<usize> = all_full
             .iter()
-            .filter(|c| {
-                c.consumed_bytes == raw_clone.len()
-                    && (is_single_syl_ctx || c.kind != MatchKind::Completion)
+            .enumerate()
+            .filter(|(_, c)| {
+                (is_single_syl_ctx || c.kind != MatchKind::Completion)
                     && c.score >= best_non_comp - score_margin
             })
             .take(batch_cap)
-            .map(|c| c.text.clone())
+            .map(|(i, _)| i)
             .collect();
-        if full_texts.len() < 2 {
-            return cands;
+        if scored_indices.len() < 2 {
+            return reassemble(all_full, middle_partial, raw_fallback);
         }
+        let full_texts: Vec<String> = scored_indices
+            .iter()
+            .map(|&i| all_full[i].text.clone())
+            .collect();
         let has_fem_cue = effective_left.chars().any(|c| {
             matches!(
                 c,
@@ -1510,44 +1556,43 @@ impl ChimeEngine {
             },
             dispatched_at: Instant::now(),
         };
-        let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(12)) else {
-            return cands;
+        let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(35)) else {
+            return reassemble(all_full, middle_partial, raw_fallback);
         };
+        let env_before = scored_indices
+            .iter()
+            .map(|&i| all_full[i].score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_bonus = bonuses.iter().copied().fold(0.0_f32, f32::min);
+        let mut scored_mask = vec![false; all_full.len()];
         let mut env_after = f32::NEG_INFINITY;
-        for (cand, bonus) in cands
-            .iter_mut()
-            .filter(|c| {
-                c.consumed_bytes == raw_clone.len()
-                    && (is_single_syl_ctx || c.kind != MatchKind::Completion)
-                    && c.score >= best_non_comp - score_margin
-            })
-            .take(batch_cap)
-            .zip(bonuses)
-        {
-            cand.score += bonus;
-            env_after = env_after.max(cand.score);
+        for (&idx, &bonus) in scored_indices.iter().zip(bonuses.iter()) {
+            all_full[idx].score += bonus;
+            env_after = env_after.max(all_full[idx].score);
+            scored_mask[idx] = true;
         }
-        let drift = env_after - best_non_comp;
+        let unscored_shift = (min_bonus - 0.40).min(-0.40);
+        for (idx, cand) in all_full.iter_mut().enumerate() {
+            if !scored_mask[idx] && (is_single_syl_ctx || cand.kind != MatchKind::Completion) {
+                cand.score += unscored_shift;
+            }
+        }
+        let drift = env_after - env_before;
         if drift.is_finite() {
-            for cand in &mut cands {
-                if cand.consumed_bytes == raw_clone.len()
-                    && (is_single_syl_ctx || cand.kind != MatchKind::Completion)
-                {
+            for cand in &mut all_full {
+                if is_single_syl_ctx || cand.kind != MatchKind::Completion {
                     cand.score -= drift;
                 }
             }
         }
-        let mut full_part = cands[..lead_full_count].to_vec();
-        let rest_part = cands[lead_full_count..].to_vec();
-        full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
+        all_full.sort_by(|a, b| b.score.total_cmp(&a.score));
         if !has_fem_cue {
-            chime_decoder::apply_unmarked_pronoun_symmetry(&mut full_part, raw_clone.len());
+            chime_decoder::apply_unmarked_pronoun_symmetry(&mut all_full, raw_clone.len());
         }
         if !is_single_syl_ctx {
-            promote_top_completion_into_bar(&mut full_part);
+            promote_top_completion_into_bar(&mut all_full);
         }
-        full_part.extend(rest_part);
-        full_part
+        reassemble(all_full, middle_partial, raw_fallback)
     }
 
     fn commit_candidate_global(

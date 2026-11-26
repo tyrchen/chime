@@ -325,6 +325,12 @@ impl UserStore {
         if rejected == preferred || reading.is_empty() {
             return;
         }
+        // Never permanently penalize single-character homophones (`写`/`些`, `的`/`地`, `是`/`时`,
+        // `不`/`补`/`步`, `他`/`她`/`它`): choosing one over another is contextual, not a
+        // lexicon error, and suppressing a common single char poisons future sentences.
+        if rejected.chars().count() <= 1 && preferred.chars().count() <= 1 {
+            return;
+        }
         let key = (
             reading.to_string(),
             rejected.to_string(),
@@ -506,7 +512,7 @@ impl UserStore {
         }
 
         for ((r, rej, pref), &count) in &self.negative_overrides {
-            if r == reading {
+            if r == reading && !(rej.chars().count() <= 1 && pref.chars().count() <= 1) {
                 #[allow(clippy::cast_precision_loss)]
                 let strength = 1.45 + (count.min(5) as f32) * 0.95;
                 if surface == pref {
