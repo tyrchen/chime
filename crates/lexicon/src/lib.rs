@@ -390,9 +390,17 @@ impl Lexicon {
         syllables: &[SyllableId],
         limit: usize,
     ) -> Vec<WordEntry> {
+        let overlay = self.exact_map.get(syllables);
+        // Fast path: single compiled `mmap` layer with no dynamic overlay entry (already sorted &
+        // deduplicated inside `.imedict`, avoiding O(K^2) `upsert_sorted` and double `Vec` alloc!).
+        if overlay.is_none() && self.compiled_layers.len() == 1 {
+            let mut out = Vec::with_capacity(limit.min(12));
+            self.compiled_layers[0].lookup_exact_into(syllables, limit, &mut out);
+            return out;
+        }
         let mut raw = Vec::new();
-        if let Some(overlay) = self.exact_map.get(syllables) {
-            raw.extend(overlay.iter().take(limit).cloned());
+        if let Some(ov) = overlay {
+            raw.extend(ov.iter().take(limit).cloned());
         }
         for layer in &self.compiled_layers {
             layer.lookup_exact_into(syllables, limit, &mut raw);

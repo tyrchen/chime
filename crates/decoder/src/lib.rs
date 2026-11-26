@@ -130,14 +130,75 @@ struct LatticeEdge {
 #[derive(Debug, Clone)]
 struct BeamState {
     text: String,
-    prev_content_word: String,
-    last_word: String,
     last_is_english: bool,
     score: f32,
     kind: MatchKind,
     edge_count: u8,
     max_word_chars: u8,
     has_bigram_link: bool,
+}
+
+/// Compact `Copy` DAG node for zero-allocation beam search. Strings are only materialized for the
+/// top-K neural checkpoint prefixes and final terminal beams.
+#[derive(Debug, Clone, Copy)]
+struct BeamNode {
+    parent: u32,
+    edge_start: u16,
+    edge_idx: u16,
+    prev_content_node: u32,
+    last_word_node: u32,
+    last_is_english: bool,
+    score: f32,
+    kind: MatchKind,
+    edge_count: u8,
+    max_word_chars: u8,
+    has_bigram_link: bool,
+    char_count: u16,
+    text_hash: u64,
+    prev1_hash: u64,
+    prev2_hash: u64,
+    head2_hash: u64,
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+#[inline]
+const fn fnv1a_char(mut hash: u64, ch: char) -> u64 {
+    let code = ch as u32;
+    hash ^= (code & 0xff) as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash ^= ((code >> 8) & 0xff) as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash ^= ((code >> 16) & 0xff) as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash
+}
+
+/// Session-scoped incremental lattice & beam cache for monotonic keystroke appending.
+#[derive(Debug, Default, Clone)]
+pub struct IncrementalDecodeCache {
+    raw_input: String,
+    left_context: String,
+    app_bundle_id: String,
+    scheme: ShuangpinScheme,
+    fuzzy: FuzzyConfig,
+    pangu_spacing: bool,
+    english_auto_correct: bool,
+    full_is_canonical: bool,
+    edges_by_start: Vec<Vec<LatticeEdge>>,
+    nodes: Vec<BeamNode>,
+    beams: Vec<Vec<u32>>,
+}
+
+impl IncrementalDecodeCache {
+    /// Clears all cached lattice edges and beam states (e.g. on session commit or reset).
+    pub fn clear(&mut self) {
+        self.raw_input.clear();
+        self.edges_by_start.clear();
+        self.nodes.clear();
+        self.beams.clear();
+    }
 }
 
 /// Stage-1 + optional synchronous Stage-2 decoder over raw preedit keystrokes.
@@ -168,7 +229,6 @@ impl LatticeDecoder {
     /// Decodes `raw_input` into ranked full-sentence candidates followed by step-by-step prefix
     /// word candidates.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn decode(
         &self,
         raw_input: &str,
@@ -176,7 +236,24 @@ impl LatticeDecoder {
         user_store: &UserStore,
         ctx: &DecodeContext<'_>,
     ) -> Vec<Candidate> {
+        let mut scratch = IncrementalDecodeCache::default();
+        self.decode_incremental(raw_input, lexicon, user_store, ctx, &mut scratch)
+    }
+
+    /// Incrementally decodes `raw_input`, reusing prefix lattice edges and zero-copy beam nodes
+    /// from `cache` when the user monotonically appends keystrokes to a long sentence.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn decode_incremental(
+        &self,
+        raw_input: &str,
+        lexicon: &Lexicon,
+        user_store: &UserStore,
+        ctx: &DecodeContext<'_>,
+        cache: &mut IncrementalDecodeCache,
+    ) -> Vec<Candidate> {
         if raw_input.is_empty() {
+            cache.clear();
             return Vec::new();
         }
 
@@ -188,6 +265,7 @@ impl LatticeDecoder {
             && (starts_upper_english
                 || classify_code_switch(raw_input) == CodeSwitchSignal::HardRawCode)
         {
+            cache.clear();
             let mut out = vec![Candidate {
                 text: raw_input.to_string(),
                 score: 0.0,
@@ -243,50 +321,123 @@ impl LatticeDecoder {
         }
 
         let is_dev_app = UserStore::is_developer_app(ctx.app_bundle_id);
-        let edges_by_start = self.build_edges(raw_input, lexicon, user_store, ctx, is_dev_app);
         let n = raw_input.len();
+        let lower_all = raw_input.to_ascii_lowercase();
+        let full_is_canonical =
+            ctx.scheme == ShuangpinScheme::Full && chime_phonetics::can_segment_exact(&lower_all);
+
+        // Reuse prefix lattice edges & beam states when monotonically appending to a cached long
+        // sentence with identical context/settings!
+        let can_reuse = self.reranker.is_none()
+            && !cache.raw_input.is_empty()
+            && raw_input.len() > cache.raw_input.len()
+            && raw_input.starts_with(&cache.raw_input)
+            && cache.left_context == ctx.left_context
+            && cache.app_bundle_id == ctx.app_bundle_id
+            && cache.scheme == ctx.scheme
+            && cache.fuzzy == ctx.fuzzy
+            && cache.pangu_spacing == ctx.pangu_spacing
+            && cache.english_auto_correct == ctx.english_auto_correct
+            && cache.full_is_canonical == full_is_canonical
+            && cache.raw_input.len() > 20;
+
+        let reuse_until = if can_reuse {
+            cache.raw_input.len().saturating_sub(20)
+        } else {
+            0
+        };
+
+        let mut edges_by_start = if reuse_until > 0 {
+            let mut prev = std::mem::take(&mut cache.edges_by_start);
+            prev.truncate(reuse_until);
+            prev.resize_with(n, Vec::new);
+            self.build_edges_from(
+                raw_input,
+                &lower_all,
+                full_is_canonical,
+                reuse_until,
+                lexicon,
+                user_store,
+                ctx,
+                is_dev_app,
+                &mut prev,
+            );
+            prev
+        } else {
+            let mut fresh = vec![Vec::new(); n];
+            self.build_edges_from(
+                raw_input,
+                &lower_all,
+                full_is_canonical,
+                0,
+                lexicon,
+                user_store,
+                ctx,
+                is_dev_app,
+                &mut fresh,
+            );
+            fresh
+        };
+
         let checkpoints = select_neural_checkpoints(n);
         let mut next_cp_idx = 0usize;
 
         let (seed_prev_content, seed_last_word) = extract_context_anchors(ctx.left_context);
-        let mut beams: Vec<Vec<BeamState>> = vec![Vec::new(); n + 1];
-        beams[0].push(BeamState {
-            text: String::new(),
-            prev_content_word: seed_prev_content,
-            last_word: seed_last_word,
-            last_is_english: false,
-            score: 0.0,
-            kind: MatchKind::CodeSwitch,
-            edge_count: 0,
-            max_word_chars: 0,
-            has_bigram_link: false,
-        });
+        let (mut nodes, mut beams) = if reuse_until > 0 && cache.beams.len() > reuse_until {
+            let nodes = std::mem::take(&mut cache.nodes);
+            let mut beams = std::mem::take(&mut cache.beams);
+            beams.truncate(reuse_until + 1);
+            beams.resize_with(n + 1, Vec::new);
+            (nodes, beams)
+        } else {
+            let mut nodes = Vec::with_capacity(n * 32 + 64);
+            nodes.push(BeamNode {
+                parent: u32::MAX,
+                edge_start: u16::MAX,
+                edge_idx: u16::MAX,
+                prev_content_node: u32::MAX,
+                last_word_node: u32::MAX,
+                last_is_english: false,
+                score: 0.0,
+                kind: MatchKind::CodeSwitch,
+                edge_count: 0,
+                max_word_chars: 0,
+                has_bigram_link: false,
+                char_count: 0,
+                text_hash: FNV_OFFSET_BASIS,
+                prev1_hash: FNV_OFFSET_BASIS,
+                prev2_hash: FNV_OFFSET_BASIS,
+                head2_hash: FNV_OFFSET_BASIS,
+            });
+            let mut beams: Vec<Vec<u32>> = vec![Vec::new(); n + 1];
+            beams[0].push(0);
+            (nodes, beams)
+        };
 
-        for i in 0..n {
+        for i in reuse_until..n {
             if beams[i].is_empty() {
                 continue;
             }
             if raw_input.as_bytes()[i] == b'\'' {
                 let carried = beams[i].clone();
-                Self::merge_and_prune(&mut beams[i + 1], carried, 40);
+                Self::merge_and_prune_nodes(&mut beams[i + 1], &carried, &nodes, 40);
                 continue;
             }
 
-            // Mid-sentence open-prefix neural beam guidance on long sentences (`>= 20` bytes):
-            // wait until a genuine multi-syllable word boundary (never firing mid-word when an
-            // already-populated span `j > i` has a stronger per-byte score!) and rescore up to 12
-            // competing prefixes while shifting unscored tail beams down proportionately.
+            // Margin-gated mid-sentence open-prefix neural beam guidance on long sentences:
+            // skip GPU dispatch whenever Top-1 already leads Top-2 decisively (> 2.80 nats)!
             if let Some(&cp_target) = checkpoints.get(next_cp_idx)
                 && i >= cp_target
                 && !edges_by_start[i].is_empty()
             {
+                let top0_score = nodes[beams[i][0] as usize].score;
                 #[allow(clippy::cast_precision_loss)]
-                let cur_rate = beams[i][0].score / (i.max(1) as f32);
+                let cur_rate = top0_score / (i.max(1) as f32);
                 let has_better_span_ahead = ((i + 1)..=n.min(i + 6)).any(|j| {
                     #[allow(clippy::cast_precision_loss)]
                     let ahead_ok = !beams[j].is_empty()
                         && (!edges_by_start.get(j).is_none_or(Vec::is_empty) || j == n)
-                        && (beams[j][0].score / (j as f32)) > cur_rate + 0.05;
+                        && (nodes[beams[j][0] as usize].score / (j as f32)) > cur_rate + 0.05;
                     ahead_ok
                 });
                 if !has_better_span_ahead {
@@ -297,11 +448,19 @@ impl LatticeDecoder {
                         let take_k = beams[i].len().min(12);
                         let prefix_batch: Vec<Candidate> = beams[i][..take_k]
                             .iter()
-                            .map(|st| Candidate {
-                                text: st.text.clone(),
-                                score: st.score,
-                                kind: st.kind,
-                                consumed_bytes: i,
+                            .map(|&nid| {
+                                let nd = nodes[nid as usize];
+                                Candidate {
+                                    text: materialize_node_text(
+                                        nid,
+                                        &nodes,
+                                        &edges_by_start,
+                                        ctx.pangu_spacing,
+                                    ),
+                                    score: nd.score,
+                                    kind: nd.kind,
+                                    consumed_bytes: i,
+                                }
                             })
                             .collect();
                         let deltas = reranker.score_open_prefix_batch(
@@ -310,103 +469,135 @@ impl LatticeDecoder {
                             &prefix_batch,
                         );
                         if deltas.iter().any(|&d| d.abs() > 1e-4) {
-                            let env_before = beams[i][0].score;
+                            let env_before = top0_score;
                             let min_delta = deltas.iter().copied().fold(0.0_f32, f32::min);
                             let mut env_after = f32::NEG_INFINITY;
-                            for (st, delta) in beams[i][..take_k].iter_mut().zip(deltas) {
+                            for (&nid, delta) in beams[i][..take_k].iter().zip(deltas) {
+                                let st = &mut nodes[nid as usize];
                                 st.score += delta;
                                 env_after = env_after.max(st.score);
                             }
                             let tail_shift = (min_delta - 0.35).min(-0.35);
-                            for st in &mut beams[i][take_k..] {
-                                st.score += tail_shift;
+                            for &nid in &beams[i][take_k..] {
+                                nodes[nid as usize].score += tail_shift;
                             }
-                            // DAG potential-preserving anchor: never inflate `beams[i]` above
-                            // `env_before`, otherwise paths splitting at vertex `i` (`容易到+至`)
-                            // gain free nats over multi-syllable words straddling `i` (`导致`)!
                             let drift = env_after - env_before;
                             if drift.is_finite() {
-                                for st in &mut beams[i] {
-                                    st.score -= drift;
+                                for &nid in &beams[i] {
+                                    nodes[nid as usize].score -= drift;
                                 }
                             }
-                            beams[i].sort_by(|a, b| b.score.total_cmp(&a.score));
+                            beams[i].sort_by(|&a, &b| {
+                                nodes[b as usize].score.total_cmp(&nodes[a as usize].score)
+                            });
                         }
                     }
                 }
             }
 
-            let current_states = beams[i].clone();
-            for edge in &edges_by_start[i] {
-                let mut next_states = Vec::with_capacity(current_states.len());
+            let current_ids = beams[i].clone();
+            let edge_start_u16 = u16::try_from(i).unwrap_or(u16::MAX);
+            for (e_idx, edge) in edges_by_start[i].iter().enumerate() {
+                let edge_idx_u16 = u16::try_from(e_idx).unwrap_or(u16::MAX);
+                let mut next_ids = Vec::with_capacity(current_ids.len());
                 let is_utterance_end = edge.end == n;
-                for st in &current_states {
-                    let mut composed = st.text.clone();
-                    if !composed.is_empty()
-                        && ctx.pangu_spacing
-                        && (st.last_is_english || edge.is_english)
-                    {
-                        composed.push(' ');
-                    }
-                    composed.push_str(&edge.surface);
+                let edge_chars = u8::try_from(edge.surface.chars().count()).unwrap_or(u8::MAX);
+                let edge_is_transparent = is_transparent_particle(&edge.surface);
+                let edge_is_affix = is_grammatical_affix(&edge.surface);
 
-                    let next_kind = if st.text.is_empty() {
+                for &st_id in &current_ids {
+                    let st = nodes[st_id as usize];
+                    let last_word =
+                        node_surface(st.last_word_node, &nodes, &edges_by_start, &seed_last_word);
+                    let prev_content_word = node_surface(
+                        st.prev_content_node,
+                        &nodes,
+                        &edges_by_start,
+                        &seed_prev_content,
+                    );
+                    let needs_space = st.char_count > 0
+                        && ctx.pangu_spacing
+                        && (st.last_is_english || edge.is_english);
+
+                    let mut h = st.text_hash;
+                    let mut p1 = st.prev1_hash;
+                    let mut p2 = st.prev2_hash;
+                    let mut h2 = st.head2_hash;
+                    let mut cc = st.char_count;
+                    if needs_space {
+                        p2 = p1;
+                        p1 = h;
+                        h = fnv1a_char(h, ' ');
+                        cc = cc.saturating_add(1);
+                        if cc <= 2 {
+                            h2 = h;
+                        }
+                    }
+                    for ch in edge.surface.chars() {
+                        p2 = p1;
+                        p1 = h;
+                        h = fnv1a_char(h, ch);
+                        cc = cc.saturating_add(1);
+                        if cc <= 2 {
+                            h2 = h;
+                        }
+                    }
+
+                    let next_kind = if st.char_count == 0 {
                         edge.kind
                     } else {
                         combine_beam_kind(st.kind, edge.kind)
                     };
-                    // Combine immediate Bigram (static + online user habit!), Trigram, and
-                    // particle-transparent Skip-Bigram across `的/了/在/地`!
-                    let direct_bg = lexicon.bigram_bonus(&st.last_word, &edge.surface)
-                        + user_store.bigram_boost(&st.last_word, &edge.surface);
-                    let skip_bg = if is_transparent_particle(&st.last_word) {
-                        (lexicon.bigram_bonus(&st.prev_content_word, &edge.surface)
-                            + user_store.bigram_boost(&st.prev_content_word, &edge.surface))
+                    let last_is_transparent = is_transparent_particle(last_word);
+                    let direct_bg = lexicon.bigram_bonus(last_word, &edge.surface)
+                        + user_store.bigram_boost(last_word, &edge.surface);
+                    let skip_bg = if last_is_transparent {
+                        (lexicon.bigram_bonus(prev_content_word, &edge.surface)
+                            + user_store.bigram_boost(prev_content_word, &edge.surface))
                             * 0.9
                     } else {
                         0.0
                     };
-                    let tg =
-                        lexicon.trigram_bonus(&st.prev_content_word, &st.last_word, &edge.surface);
-                    let next_prev_content = if is_transparent_particle(&edge.surface) {
-                        if is_transparent_particle(&st.last_word) {
-                            st.prev_content_word.clone()
+                    let tg = lexicon.trigram_bonus(prev_content_word, last_word, &edge.surface);
+                    let next_prev_content_node = if edge_is_transparent {
+                        if last_is_transparent {
+                            st.prev_content_node
                         } else {
-                            st.last_word.clone()
+                            st.last_word_node
                         }
-                    } else if is_transparent_particle(&st.last_word) {
-                        st.prev_content_word.clone()
+                    } else if last_is_transparent {
+                        st.prev_content_node
                     } else {
-                        st.last_word.clone()
+                        st.last_word_node
                     };
 
                     let clitic_bonus =
-                        prosodic_clitic_cohesion(&st.last_word, &edge.surface, st.kind, edge.kind);
+                        prosodic_clitic_cohesion(last_word, &edge.surface, st.kind, edge.kind);
                     let boundary_cost = if clitic_bonus > 0.0 {
                         0.0
-                    } else if is_grammatical_affix(&edge.surface)
-                        || is_grammatical_affix(&st.last_word)
-                    {
+                    } else if edge_is_affix || is_grammatical_affix(last_word) {
                         0.08
                     } else {
                         0.40
                     };
                     let syntax_pen = syntactic_transition_penalty(
-                        &st.prev_content_word,
-                        &st.last_word,
+                        prev_content_word,
+                        last_word,
                         &edge.surface,
                         edge.kind,
                         is_utterance_end,
                         n,
                     );
 
-                    let edge_chars = u8::try_from(edge.surface.chars().count()).unwrap_or(u8::MAX);
-                    let linked_bigram = !st.text.is_empty()
+                    let linked_bigram = st.char_count > 0
                         && (direct_bg.max(skip_bg) > 0.10 || tg > 0.10 || clitic_bonus > 0.0);
-                    next_states.push(BeamState {
-                        text: composed,
-                        prev_content_word: next_prev_content,
-                        last_word: edge.surface.clone(),
+                    let new_id = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
+                    nodes.push(BeamNode {
+                        parent: st_id,
+                        edge_start: edge_start_u16,
+                        edge_idx: edge_idx_u16,
+                        prev_content_node: next_prev_content_node,
+                        last_word_node: new_id,
                         last_is_english: edge.is_english,
                         score: st.score + edge.score + direct_bg.max(skip_bg) + tg - boundary_cost
                             + clitic_bonus
@@ -415,20 +606,64 @@ impl LatticeDecoder {
                         edge_count: st.edge_count.saturating_add(1),
                         max_word_chars: st.max_word_chars.max(edge_chars),
                         has_bigram_link: st.has_bigram_link || linked_bigram,
+                        char_count: cc,
+                        text_hash: h,
+                        prev1_hash: p1,
+                        prev2_hash: p2,
+                        head2_hash: h2,
                     });
+                    next_ids.push(new_id);
                 }
-                Self::merge_and_prune(&mut beams[edge.end], next_states, 40);
+                Self::merge_and_prune_nodes(&mut beams[edge.end], &next_ids, &nodes, 40);
             }
         }
 
-        self.finalize_candidates(
+        let terminal_beams: Vec<BeamState> = beams[n]
+            .iter()
+            .map(|&nid| {
+                let nd = nodes[nid as usize];
+                BeamState {
+                    text: materialize_node_text(nid, &nodes, &edges_by_start, ctx.pangu_spacing),
+                    last_is_english: nd.last_is_english,
+                    score: nd.score,
+                    kind: nd.kind,
+                    edge_count: nd.edge_count,
+                    max_word_chars: nd.max_word_chars,
+                    has_bigram_link: nd.has_bigram_link,
+                }
+            })
+            .collect();
+
+        let out = self.finalize_candidates(
             raw_input,
-            &beams[n],
+            &terminal_beams,
             &edges_by_start[0],
             lexicon,
             user_store,
             ctx,
-        )
+        );
+
+        // Persist cache for incremental appending on the next keystroke!
+        if self.reranker.is_none() && n >= 8 {
+            cache.raw_input.clear();
+            cache.raw_input.push_str(raw_input);
+            cache.left_context.clear();
+            cache.left_context.push_str(ctx.left_context);
+            cache.app_bundle_id.clear();
+            cache.app_bundle_id.push_str(ctx.app_bundle_id);
+            cache.scheme = ctx.scheme;
+            cache.fuzzy = ctx.fuzzy;
+            cache.pangu_spacing = ctx.pangu_spacing;
+            cache.english_auto_correct = ctx.english_auto_correct;
+            cache.full_is_canonical = full_is_canonical;
+            cache.edges_by_start = std::mem::take(&mut edges_by_start);
+            cache.nodes = nodes;
+            cache.beams = beams;
+        } else {
+            cache.clear();
+        }
+
+        out
     }
 
     #[allow(clippy::too_many_lines)]
@@ -680,6 +915,7 @@ impl LatticeDecoder {
                 .find(|c| c.kind != MatchKind::Completion)
                 .map_or(f32::NEG_INFINITY, |c| c.score);
             let score_margin = if contextual_single_syl { 8.5 } else { 6.8 };
+            let batch_cap = if contextual_single_syl { 20 } else { 22 };
             let mut scored_indices: Vec<usize> = full_candidates
                 .iter()
                 .enumerate()
@@ -688,7 +924,7 @@ impl LatticeDecoder {
                         && c.score >= best_non_comp - score_margin
                 })
                 .map(|(i, _)| i)
-                .take(22)
+                .take(batch_cap)
                 .collect();
             if scored_indices.len() >= 2 {
                 let env_before = scored_indices
@@ -913,30 +1149,33 @@ impl LatticeDecoder {
         full_candidates
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn build_edges(
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn build_edges_from(
         &self,
         raw_input: &str,
+        lower: &str,
+        full_is_canonical: bool,
+        start_from: usize,
         lexicon: &Lexicon,
         user_store: &UserStore,
         ctx: &DecodeContext<'_>,
         is_dev_app: bool,
-    ) -> Vec<Vec<LatticeEdge>> {
+        edges: &mut [Vec<LatticeEdge>],
+    ) {
         let _ = self;
         let n = raw_input.len();
-        let lower = raw_input.to_ascii_lowercase();
-        let syl_edges = Self::build_syllable_spans(&lower, ctx);
-        let mut edges: Vec<Vec<LatticeEdge>> = vec![Vec::new(); n];
+        let syl_edges = Self::build_syllable_spans(lower, ctx, full_is_canonical, start_from);
 
         Self::populate_mandarin_edges(
-            &lower,
+            lower,
             &syl_edges,
+            start_from,
             lexicon,
             user_store,
             ctx.app_bundle_id,
             ctx.now_epoch_secs,
             is_dev_app,
-            &mut edges,
+            edges,
         );
 
         // Super-abbreviation initial skeletons (`zgr` -> `中国人`, `wsm` -> `为什么`, `bzd` ->
@@ -944,16 +1183,16 @@ impl LatticeDecoder {
         // spans), NEVER mid-syllable inside a valid full-Pinyin sentence where nasal codas (`ng` +
         // `d/z/s/c/l/h`) would otherwise hallucinate `戈达尔(gde)` / `工作(gz)` / `能够(ng)`!
         if ctx.scheme == ShuangpinScheme::Full {
-            let full_is_canonical = n >= 4 && chime_phonetics::can_segment_exact(&lower);
-            for start in 0..n {
+            let full_is_canon_4 = n >= 4 && full_is_canonical;
+            for start in start_from..n {
                 let left_delimited = start == 0 || lower.as_bytes()[start - 1] == b'\'';
-                if full_is_canonical && start > 0 {
+                if full_is_canon_4 && start > 0 {
                     break;
                 }
                 for len in 2..=6.min(n - start) {
                     let end = start + len;
                     let right_delimited = end == n || lower.as_bytes()[end] == b'\'';
-                    if full_is_canonical && (!left_delimited || !right_delimited) {
+                    if full_is_canon_4 && (!left_delimited || !right_delimited) {
                         continue;
                     }
                     let sub = &lower[start..end];
@@ -976,11 +1215,27 @@ impl LatticeDecoder {
         }
 
         // Modeless English / Code-Switch track (`macos` -> `macOS`, `github` -> `GitHub`, `pr` ->
-        // `PR`).
-        let full_is_canonical =
-            ctx.scheme == ShuangpinScheme::Full && chime_phonetics::can_segment_exact(&lower);
-        for start in 0..n {
-            for end in (start + 2)..=n {
+        // `PR`), bounded to <= 18 bytes and pruned to valid Pinyin boundaries on canonical
+        // lowercase sentences to eliminate O(N^2) substring lookups and typo scans!
+        let is_pure_lower = raw_input
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'\'');
+        let (can_reach_left, can_reach_right) = if full_is_canonical && is_pure_lower {
+            compute_canonical_boundary_masks(lower)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let use_boundary_mask = !can_reach_left.is_empty();
+
+        for start in start_from..n {
+            if use_boundary_mask && !can_reach_left[start] {
+                continue;
+            }
+            let end_cap = n.min(start + 18);
+            for end in (start + 2)..=end_cap {
+                if use_boundary_mask && !can_reach_right[end] {
+                    continue;
+                }
                 let raw_sub = &raw_input[start..end];
                 let lower_sub = &lower[start..end];
                 if ctx.scheme != ShuangpinScheme::Full && raw_sub == lower_sub && (end - start) <= 4
@@ -1054,17 +1309,19 @@ impl LatticeDecoder {
                         is_english: true,
                     });
                 } else if ctx.scheme == ShuangpinScheme::Full {
-                    Self::populate_english_typo_edges(
-                        raw_sub,
-                        lower_sub,
-                        start,
-                        end,
-                        n,
-                        lexicon,
-                        ctx.english_auto_correct,
-                        is_dev_app,
-                        &mut edges[start],
-                    );
+                    if !(full_is_canonical && is_pure_lower && !(start == 0 && end == n)) {
+                        Self::populate_english_typo_edges(
+                            raw_sub,
+                            lower_sub,
+                            start,
+                            end,
+                            n,
+                            lexicon,
+                            ctx.english_auto_correct,
+                            is_dev_app,
+                            &mut edges[start],
+                        );
+                    }
                     if start == 0
                         && end == n
                         && classify_code_switch(raw_sub) != CodeSwitchSignal::AmbiguousAscii
@@ -1103,8 +1360,6 @@ impl LatticeDecoder {
                 }
             }
         }
-
-        edges
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1193,13 +1448,15 @@ impl LatticeDecoder {
     fn build_syllable_spans(
         lower: &str,
         ctx: &DecodeContext<'_>,
+        full_is_canonical: bool,
+        start_from: usize,
     ) -> Vec<Vec<(usize, SyllableId, f32, MatchKind)>> {
         let n = lower.len();
         let bytes = lower.as_bytes();
-        let full_already_exact = n >= 15 && chime_phonetics::can_segment_exact(lower);
+        let full_already_exact = n >= 10 && full_is_canonical;
         let mut spans: Vec<Vec<(usize, SyllableId, f32, MatchKind)>> = vec![Vec::new(); n];
 
-        for i in 0..n {
+        for i in start_from..n {
             if bytes[i] == b'\'' {
                 continue;
             }
@@ -1337,6 +1594,7 @@ impl LatticeDecoder {
     fn populate_mandarin_edges(
         lower: &str,
         syl_edges: &[Vec<(usize, SyllableId, f32, MatchKind)>],
+        start_from: usize,
         lexicon: &Lexicon,
         user_store: &UserStore,
         app_bundle_id: &str,
@@ -1347,7 +1605,7 @@ impl LatticeDecoder {
         type EdgeVisit = (usize, usize, SmallVec<[SyllableId; 16]>, f32, MatchKind);
         let n = lower.len();
         let full_exact_seg = n >= 6 && chime_phonetics::can_segment_exact(lower);
-        for start in 0..n {
+        for start in start_from..n {
             let mut stack: Vec<EdgeVisit> = Vec::new();
             for &(end1, id1, cost1, kind1) in &syl_edges[start] {
                 let mut seq = SmallVec::new();
@@ -1519,97 +1777,198 @@ impl LatticeDecoder {
         }
     }
 
-    fn merge_and_prune(target: &mut Vec<BeamState>, incoming: Vec<BeamState>, beam_width: usize) {
-        for state in incoming {
-            if let Some(existing) = target.iter_mut().find(|s| s.text == state.text) {
-                if state.score > existing.score {
-                    *existing = state;
+    fn merge_and_prune_nodes(
+        target: &mut Vec<u32>,
+        incoming: &[u32],
+        nodes: &[BeamNode],
+        beam_width: usize,
+    ) {
+        for &cand_id in incoming {
+            let cand = nodes[cand_id as usize];
+            if let Some(slot) = target.iter_mut().find(|&&mut existing_id| {
+                let ex = nodes[existing_id as usize];
+                ex.text_hash == cand.text_hash && ex.char_count == cand.char_count
+            }) {
+                if cand.score > nodes[*slot as usize].score {
+                    *slot = cand_id;
                 }
             } else {
-                target.push(state);
+                target.push(cand_id);
             }
         }
-        target.sort_by(|a, b| b.score.total_cmp(&a.score));
+        target.sort_by(|&a, &b| nodes[b as usize].score.total_cmp(&nodes[a as usize].score));
         if target.len() <= beam_width {
             return;
         }
 
-        // Multi-scale diverse beam pruning (prevents mid-sentence homophone fan-out from evicting
-        // competing earlier interpretations before right-context arrives):
-        // 1) Cap any 2-char opening (`head2`) at 10 slots;
-        // 2) Cap any `(char_len - 2)` prefix (`pre2`, when `char_len >= 5`) at 4 slots so a single
-        //    mid-sentence choice (`...主宰` vs `...住在`, `...飞刀` vs `...飞到`) cannot spawn 10
-        //    2-char children and monopolize the beam;
-        // 3) Cap `(char_len - 1)` `stem` at 5 variants for the #1 stem and 3 for secondary stems!
-        let mut kept = Vec::with_capacity(beam_width);
-        let mut overflow = Vec::new();
-        let mut stem_counts: HashMap<String, usize> = HashMap::new();
-        let mut pre2_counts: HashMap<String, usize> = HashMap::new();
-        let mut head_counts: HashMap<String, usize> = HashMap::new();
-        let mut top_stem: Option<String> = None;
-        let mut top_pre2: Option<String> = None;
+        // Zero-allocation multi-scale diverse beam pruning using rolling `u64` prefix hashes:
+        // 1) Cap any 2-char opening (`head2_hash`) at 12 slots;
+        // 2) Cap any `(char_len - 2)` prefix (`prev2_hash`, when `char_len >= 5`) at 8/3 slots;
+        // 3) Cap `(char_len - 1)` stem (`prev1_hash`) at 8/1/2 slots!
+        let mut kept: Vec<u32> = Vec::with_capacity(beam_width);
+        let mut overflow: Vec<u32> = Vec::new();
+        let mut stem_counts: HashMap<u64, u8> = HashMap::new();
+        let mut pre2_counts: HashMap<u64, u8> = HashMap::new();
+        let mut head_counts: HashMap<u64, u8> = HashMap::new();
+        let mut top_stem: Option<u64> = None;
+        let mut top_pre2: Option<u64> = None;
 
-        for state in target.drain(..) {
+        for nid in target.drain(..) {
             if kept.len() >= beam_width {
                 break;
             }
-            let char_count = state.text.chars().count();
+            let st = nodes[nid as usize];
+            let char_count = st.char_count;
             if char_count >= 4 {
-                let head2: String = state.text.chars().take(2).collect();
-                let hc = head_counts.entry(head2).or_insert(0);
+                let hc = head_counts.entry(st.head2_hash).or_insert(0);
                 if *hc >= 12 {
-                    overflow.push(state);
+                    overflow.push(nid);
                     continue;
                 }
                 *hc += 1;
             }
             if char_count >= 5 {
-                let pre2: String = state.text.chars().take(char_count - 2).collect();
                 if top_pre2.is_none() {
-                    top_pre2 = Some(pre2.clone());
+                    top_pre2 = Some(st.prev2_hash);
                 }
-                let pre2_cap = if top_pre2.as_deref() == Some(pre2.as_str()) {
+                let pre2_cap = if top_pre2 == Some(st.prev2_hash) {
                     8
                 } else {
                     3
                 };
-                let pc = pre2_counts.entry(pre2).or_insert(0);
+                let pc = pre2_counts.entry(st.prev2_hash).or_insert(0);
                 if *pc >= pre2_cap {
-                    overflow.push(state);
+                    overflow.push(nid);
                     continue;
                 }
                 *pc += 1;
             }
             if char_count >= 3 {
-                let stem: String = state.text.chars().take(char_count - 1).collect();
                 if top_stem.is_none() {
-                    top_stem = Some(stem.clone());
+                    top_stem = Some(st.prev1_hash);
                 }
-                let cap = if top_stem.as_deref() == Some(stem.as_str()) {
+                let cap = if top_stem == Some(st.prev1_hash) {
                     8
                 } else if char_count <= 4 {
                     1
                 } else {
                     2
                 };
-                let count = stem_counts.entry(stem).or_insert(0);
+                let count = stem_counts.entry(st.prev1_hash).or_insert(0);
                 if *count >= cap {
-                    overflow.push(state);
+                    overflow.push(nid);
                     continue;
                 }
                 *count += 1;
             }
-            kept.push(state);
+            kept.push(nid);
         }
 
-        for state in overflow {
+        for nid in overflow {
             if kept.len() >= beam_width {
                 break;
             }
-            kept.push(state);
+            kept.push(nid);
         }
         *target = kept;
     }
+}
+
+#[inline]
+fn node_surface<'a>(
+    node_id: u32,
+    nodes: &[BeamNode],
+    edges_by_start: &'a [Vec<LatticeEdge>],
+    seed_fallback: &'a str,
+) -> &'a str {
+    if node_id == u32::MAX {
+        return seed_fallback;
+    }
+    let nd = nodes[node_id as usize];
+    if nd.edge_start == u16::MAX {
+        return seed_fallback;
+    }
+    &edges_by_start[usize::from(nd.edge_start)][usize::from(nd.edge_idx)].surface
+}
+
+fn materialize_node_text(
+    node_id: u32,
+    nodes: &[BeamNode],
+    edges_by_start: &[Vec<LatticeEdge>],
+    pangu_spacing: bool,
+) -> String {
+    let mut chain: SmallVec<[&LatticeEdge; 16]> = SmallVec::new();
+    let mut cur = node_id;
+    while cur != u32::MAX {
+        let nd = nodes[cur as usize];
+        if nd.edge_start == u16::MAX {
+            break;
+        }
+        chain.push(&edges_by_start[usize::from(nd.edge_start)][usize::from(nd.edge_idx)]);
+        cur = nd.parent;
+    }
+    let mut out = String::with_capacity(chain.len() * 6);
+    let mut prev_is_english = false;
+    for (idx, edge) in chain.iter().rev().enumerate() {
+        if idx > 0 && pangu_spacing && (prev_is_english || edge.is_english) {
+            out.push(' ');
+        }
+        out.push_str(&edge.surface);
+        prev_is_english = edge.is_english;
+    }
+    out
+}
+
+/// Computes `O(N)` left-reachable and right-reachable canonical Pinyin syllable boundary masks so
+/// modeless English substring lookup skips impossible mid-syllable positions on canonical inputs.
+fn compute_canonical_boundary_masks(lower: &str) -> (Vec<bool>, Vec<bool>) {
+    let n = lower.len();
+    let bytes = lower.as_bytes();
+    let mut left = vec![false; n + 1];
+    left[0] = true;
+    for i in 0..n {
+        if !left[i] {
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            left[i + 1] = true;
+            continue;
+        }
+        let max_len = (n - i).min(6);
+        for len in 1..=max_len {
+            let sub = &lower[i..i + len];
+            if sub.contains('\'') {
+                break;
+            }
+            if chime_phonetics::is_valid_syllable(sub) {
+                left[i + len] = true;
+            }
+        }
+    }
+
+    let mut right = vec![false; n + 1];
+    right[n] = true;
+    for i in (0..n).rev() {
+        if bytes[i] == b'\'' {
+            right[i] = right[i + 1];
+            continue;
+        }
+        let max_len = (n - i).min(6);
+        for len in 1..=max_len {
+            if !right[i + len] {
+                continue;
+            }
+            let sub = &lower[i..i + len];
+            if sub.contains('\'') {
+                break;
+            }
+            if chime_phonetics::is_valid_syllable(sub) {
+                right[i] = true;
+                break;
+            }
+        }
+    }
+    (left, right)
 }
 
 const fn combine_beam_kind(prev: MatchKind, next: MatchKind) -> MatchKind {

@@ -268,6 +268,7 @@ impl SafetensorsReranker {
     }
 
     /// Computes zero-meaned conditional log-likelihood bonuses under an explicit [`ScoringMode`].
+    #[allow(clippy::too_many_lines)]
     pub fn score_candidates_with_scoring_mode(
         &mut self,
         left_context: &str,
@@ -335,9 +336,75 @@ impl SafetensorsReranker {
             self.mlx_model
                 .compute_lora_scales(app_bundle_id, left_context, candidate_texts);
 
+        // Candidate Longest Common Prefix (LCP) KV-Cache reuse: when all valid candidates share
+        // the same character length and at least 1 common leading token (typical for long-sentence
+        // homophone beams where only the last 2-3 chars diverge), prefill `left_context + LCP`
+        // once at batch=1 and score only the diverging suffixes! Mathematically 100% exact.
+        let (min_valid_clen, max_valid_clen, min_tok_len) = encoded
+            .iter()
+            .zip(char_lens.iter())
+            .zip(valid_mask.iter())
+            .filter(|&((_, _), &v)| v)
+            .fold(
+                (usize::MAX, 0usize, usize::MAX),
+                |(min_c, max_c, min_t), ((ids, &clen), _)| {
+                    (min_c.min(clen), max_c.max(clen), min_t.min(ids.len()))
+                },
+            );
+        let lcp_len = if min_valid_clen == max_valid_clen && min_tok_len >= 2 {
+            let max_lcp = min_tok_len - 1;
+            let mut valid_iter = encoded
+                .iter()
+                .zip(valid_mask.iter())
+                .filter_map(|(ids, &v)| v.then_some(ids.as_slice()));
+            if let Some(first) = valid_iter.next() {
+                let mut common = max_lcp;
+                for other in valid_iter {
+                    common = first[..common]
+                        .iter()
+                        .zip(other.iter())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    if common == 0 {
+                        break;
+                    }
+                }
+                common
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let (effective_prefix, scoring_encoded): (Vec<u32>, Vec<Vec<u32>>) = if lcp_len > 0 {
+            let first_valid = encoded
+                .iter()
+                .zip(valid_mask.iter())
+                .find_map(|(ids, &v)| v.then_some(ids.as_slice()))
+                .unwrap_or(&[]);
+            let mut ext_prefix = Vec::with_capacity(prefix_ids.len() + lcp_len);
+            ext_prefix.extend_from_slice(&prefix_ids);
+            ext_prefix.extend_from_slice(&first_valid[..lcp_len]);
+            let suffixes = encoded
+                .iter()
+                .zip(valid_mask.iter())
+                .map(|(ids, &v)| {
+                    if v {
+                        ids[lcp_len..].to_vec()
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect();
+            (ext_prefix, suffixes)
+        } else {
+            (prefix_ids, encoded.clone())
+        };
+
         if self
             .mlx_model
-            .ensure_prefix_cached_with_scales(&prefix_ids, &lora_scales, &mut self.kv_cache)
+            .ensure_prefix_cached_with_scales(&effective_prefix, &lora_scales, &mut self.kv_cache)
             .is_err()
         {
             return vec![0.0; candidate_texts.len()];
@@ -349,7 +416,7 @@ impl SafetensorsReranker {
         };
         let Ok(joint_lps) = self.mlx_model.score_candidates_with_closure(
             &self.kv_cache,
-            &encoded,
+            &scoring_encoded,
             &lora_scales,
             &self.closure_token_ids,
             eff_closure_weight,
@@ -357,12 +424,21 @@ impl SafetensorsReranker {
             return vec![0.0; candidate_texts.len()];
         };
 
+        // Lossless-CJK vocabularies (`>= 32K`, retaining 100% of all Qwen3 CJK BPE tokens) have
+        // no pruned-word subword-split inflation, so `split_pen = 0.0`; compact pruned `< 32K`
+        // vocabularies retain the `1.85` subword-compression compensation.
+        let split_pen = if self.mlx_model.config().vocab_size >= 32_768 {
+            0.0
+        } else {
+            1.85
+        };
         let (norm_scores, mean_lp) = Self::normalize_with_bpe_compression_prior(
             joint_lps,
             &char_lens,
             &encoded,
             &valid_mask,
             valid_count,
+            split_pen,
         );
 
         let eff_scale = match mode {
@@ -396,6 +472,7 @@ impl SafetensorsReranker {
         encoded: &[Vec<u32>],
         valid_mask: &[bool],
         valid_count: usize,
+        split_pen: f32,
     ) -> (Vec<f32>, f32) {
         #[allow(clippy::cast_precision_loss)]
         let mean_clen: f32 = char_lens
@@ -426,7 +503,7 @@ impl SafetensorsReranker {
                 } else {
                     0.0
                 };
-                (lp - 1.85 * extra_splits) / rel_denom
+                (lp - split_pen * extra_splits) / rel_denom
             })
             .collect();
         #[allow(clippy::cast_precision_loss)]

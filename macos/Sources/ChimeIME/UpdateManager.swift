@@ -167,6 +167,20 @@ public final class ChimeUpdateManager: ObservableObject {
             if userInitiated {
                 statusMessage = "当前已是最新版本（v\(currentVersion)）。"
             }
+            // Automatically hot-update any installed official `.imepack` cartridge whose version
+            // lags the active app release (e.g. migrating 6L LoRAs to the 8L/36K base).
+            await autoUpdateOutdatedOfficialPacks(manifest: manifest)
+        }
+    }
+
+    private func autoUpdateOutdatedOfficialPacks(manifest: ChimeReleaseManifest) async {
+        guard activePackDownloadId == nil else { return }
+        guard let installed = ChimeEngineBridge.shared.getStatus()?.pack_details else { return }
+        let officialIds: Set<String> = ["classics-poetry", "tech-developer"]
+        for pack in installed where officialIds.contains(pack.id) {
+            if Self.isVersionNewer(manifest.version, than: pack.version) {
+                await downloadAndInstallOfficialPack(packId: pack.id, manifest: manifest)
+            }
         }
     }
 
@@ -369,61 +383,69 @@ public final class ChimeUpdateManager: ObservableObject {
                 statusMessage = "无法获取官方词包校验清单，请检查网络连接。"
                 return
             }
-
-            let expectedSha: String
-            switch packId {
-            case "classics-poetry":
-                expectedSha = manifest.classics_sha256.lowercased()
-            case "tech-developer":
-                expectedSha = manifest.tech_sha256.lowercased()
-            default:
-                statusMessage = "未知的官方扩展词包：\(packId)"
-                return
+            if await downloadAndInstallOfficialPack(packId: packId, manifest: manifest) {
+                onCompleted()
             }
+        }
+    }
 
-            let ver = manifest.version
-            guard let url = URL(string: "https://github.com/tyrchen/chime/releases/download/v\(ver)/\(packId).imepack.zip") else {
-                return
-            }
+    @discardableResult
+    private func downloadAndInstallOfficialPack(packId: String, manifest: ChimeReleaseManifest) async -> Bool {
+        let expectedSha: String
+        switch packId {
+        case "classics-poetry":
+            expectedSha = manifest.classics_sha256.lowercased()
+        case "tech-developer":
+            expectedSha = manifest.tech_sha256.lowercased()
+        default:
+            statusMessage = "未知的官方扩展词包：\(packId)"
+            return false
+        }
 
-            statusMessage = "正在下载扩展包 \(packId) (v\(ver))…"
-            let session = Self.makeZeroTelemetrySession()
-            let workDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("chime-pack-\(UUID().uuidString)", isDirectory: true)
+        let ver = manifest.version
+        guard let url = URL(string: "https://github.com/tyrchen/chime/releases/download/v\(ver)/\(packId).imepack.zip") else {
+            return false
+        }
 
-            do {
-                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-                let (tmpFile, resp) = try await session.download(from: url)
-                guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                    try? FileManager.default.removeItem(at: workDir)
-                    statusMessage = "下载扩展包 \(packId) 失败。"
-                    return
-                }
+        statusMessage = "正在下载扩展包 \(packId) (v\(ver))…"
+        let session = Self.makeZeroTelemetrySession()
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chime-pack-\(UUID().uuidString)", isDirectory: true)
 
-                let zipURL = workDir.appendingPathComponent("\(packId).imepack.zip")
-                try FileManager.default.moveItem(at: tmpFile, to: zipURL)
-
-                let actualSha = try Self.sha256Hex(of: zipURL)
-                guard actualSha == expectedSha else {
-                    try? FileManager.default.removeItem(at: workDir)
-                    statusMessage = "安全拦截：\(packId) 的 SHA-256 校验未通过。"
-                    return
-                }
-
-                let imported = ChimeEngineBridge.shared.importAsset(url: zipURL)
+        do {
+            try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+            let (tmpFile, resp) = try await session.download(from: url)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 try? FileManager.default.removeItem(at: workDir)
-
-                if imported >= 0 {
-                    CoreMLStatefulReranker.shared.loadInstalledModelIfPresent()
-                    statusMessage = "已安装并热挂载 \(packId) (v\(ver))，无需重启立即生效！"
-                    onCompleted()
-                } else {
-                    statusMessage = "挂载扩展包 \(packId) 失败。"
-                }
-            } catch {
-                try? FileManager.default.removeItem(at: workDir)
-                statusMessage = "下载扩展包失败：\(error.localizedDescription)"
+                statusMessage = "下载扩展包 \(packId) 失败。"
+                return false
             }
+
+            let zipURL = workDir.appendingPathComponent("\(packId).imepack.zip")
+            try FileManager.default.moveItem(at: tmpFile, to: zipURL)
+
+            let actualSha = try Self.sha256Hex(of: zipURL)
+            guard actualSha == expectedSha else {
+                try? FileManager.default.removeItem(at: workDir)
+                statusMessage = "安全拦截：\(packId) 的 SHA-256 校验未通过。"
+                return false
+            }
+
+            let imported = ChimeEngineBridge.shared.importAsset(url: zipURL)
+            try? FileManager.default.removeItem(at: workDir)
+
+            if imported >= 0 {
+                CoreMLStatefulReranker.shared.loadInstalledModelIfPresent()
+                statusMessage = "已安装并热挂载 \(packId) (v\(ver))，无需重启立即生效！"
+                return true
+            } else {
+                statusMessage = "挂载扩展包 \(packId) 失败。"
+                return false
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: workDir)
+            statusMessage = "下载扩展包失败：\(error.localizedDescription)"
+            return false
         }
     }
 

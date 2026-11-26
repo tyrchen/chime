@@ -70,7 +70,7 @@ const PRESETS = {
     chain: []
   },
   singlegen: {
-    lora: "Base Qwen3-6L (4-bit MLX · 64.2 MB)",
+    lora: "Base Qwen3-8L (4-bit MLX · 87.8 MB · 36K Vocab)",
     initialCommitted: "",
     preedit: "gen",
     candidates: [
@@ -90,8 +90,8 @@ const I18N_EN = {
   "nav.packs": "LoRA Pack Hub",
   "nav.diy": "Private LoRA",
   "hero.eyebrow": "macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0",
-  "hero.title": "A 64 MB local neural IME on Unified Memory, with hot-swappable LoRA cartridges.",
-  "hero.lead": "Chime is an offline-first Chinese Pinyin IME for Apple Silicon. Written in Rust and Swift 6, it pairs a <0.8 ms zero-copy mmap lattice decoder (with Shift En mode, dual-mode English spelling auto-correction & 1-key Backspace undo) with a 6-layer 4-bit MLX Qwen3 reranker, 1-click Multi-LoRA .imepack cartridges, and verified zero-telemetry updates.",
+  "hero.title": "An 88 MB local neural IME distilled from Qwen3-4B on Unified Memory, with hot-swappable LoRA cartridges.",
+  "hero.lead": "Chime is an offline-first Chinese Pinyin IME for Apple Silicon. Written in Rust and Swift 6, it pairs a fast zero-copy mmap lattice decoder (with Shift En mode, dual-mode English spelling auto-correction & 1-key Backspace undo) with an 8-layer 4-bit MLX Qwen3 reranker (36,864 full-CJK vocab), 1-click Multi-LoRA .imepack cartridges, and verified zero-telemetry updates.",
   "hero.dlPkg": "Download macOS Installer (.pkg)",
   "hero.dlZip": "Portable Chime.app (.zip)",
   "hero.dlZipSub": "Drag into ~/Library/Input Methods",

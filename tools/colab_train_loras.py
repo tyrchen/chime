@@ -178,8 +178,11 @@ class Qwen3FrozenBaseWithLora(nn.Module):
     ) -> None:
         super().__init__()
         self.register_buffer("embed_weight", embed_pruned.to(compute_dtype))
+        num_layers = sum(
+            1 for k in student_st if k.startswith("model.layers.") and k.endswith(".input_layernorm.weight")
+        )
         self.layers = nn.ModuleList(
-            [Qwen3LoraBlock(student_st, i, cfg, rank=rank, compute_dtype=compute_dtype) for i in range(6)]
+            [Qwen3LoraBlock(student_st, i, cfg, rank=rank, compute_dtype=compute_dtype) for i in range(num_layers)]
         )
         self.norm = RMSNorm(student_st["model.norm.weight"], float(cfg.get("rms_norm_eps", 1e-6)))
 
@@ -459,7 +462,8 @@ def main() -> None:
         student_st: dict[str, torch.Tensor] = {
             "model.norm.weight": torch.from_numpy(np.array(q4_w["model.norm.weight"].astype(mx.float32))).contiguous()
         }
-        for l_idx in range(6):
+        num_layers = int(q4_cfg.get("num_hidden_layers", 6))
+        for l_idx in range(num_layers):
             p = f"model.layers.{l_idx}"
             for norm_suf in (
                 "input_layernorm.weight",

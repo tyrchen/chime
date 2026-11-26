@@ -48,6 +48,12 @@ pub struct CompiledDict {
     syl_arena_off: usize,
     str_arena_off: usize,
     str_arena_len: usize,
+    /// In-memory O(1) first-syllable range table (`SyllableId -> [lo, hi)`) over sorted
+    /// `pinyin_groups`, built in ~15 us on load to cut binary-search depth in half.
+    first_syl_ranges: Vec<(usize, usize)>,
+    /// In-memory O(1) first-ASCII-letter range table (`'a'..='z' -> [lo, hi)`) over sorted
+    /// `english_terms`.
+    english_byte_ranges: [(usize, usize); 26],
 }
 
 impl CompiledDict {
@@ -132,7 +138,7 @@ impl CompiledDict {
         std::str::from_utf8(&buf[str_arena_off..str_arena_off + str_arena_len])
             .map_err(|_| LexiconError::InvalidCompiledDict("corrupt UTF-8 in string arena"))?;
 
-        Ok(Self {
+        let mut dict = Self {
             backing,
             pinyin_group_count,
             skeleton_group_count,
@@ -151,7 +157,91 @@ impl CompiledDict {
             syl_arena_off,
             str_arena_off,
             str_arena_len,
-        })
+            first_syl_ranges: Vec::new(),
+            english_byte_ranges: [(0, english_count); 26],
+        };
+        dict.build_range_indices();
+        Ok(dict)
+    }
+
+    fn build_range_indices(&mut self) {
+        const MAX_SYL_BUCKETS: usize = 420;
+        let mut ranges = vec![(0usize, 0usize); MAX_SYL_BUCKETS];
+        let buf = self.backing.as_ref();
+        for (s_id, slot) in ranges.iter_mut().enumerate() {
+            let target = u16::try_from(s_id).unwrap_or(u16::MAX);
+            // Lower bound: first group whose first syllable >= target
+            let mut lo = 0usize;
+            let mut hi = self.pinyin_group_count;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let grp_off = self.pinyin_groups_off + mid * 16;
+                let syl_idx = read_u32(buf, grp_off) as usize;
+                let first_s = read_u16(buf, self.syl_arena_off + syl_idx * 2);
+                if first_s < target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            let start = lo;
+            // Upper bound: first group whose first syllable > target
+            hi = self.pinyin_group_count;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let grp_off = self.pinyin_groups_off + mid * 16;
+                let syl_idx = read_u32(buf, grp_off) as usize;
+                let first_s = read_u16(buf, self.syl_arena_off + syl_idx * 2);
+                if first_s <= target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            *slot = (start, lo);
+        }
+        self.first_syl_ranges = ranges;
+
+        let mut en_ranges = [(0usize, 0usize); 26];
+        for (idx, slot) in en_ranges.iter_mut().enumerate() {
+            let b_target = b'a' + u8::try_from(idx).unwrap_or(0);
+            let mut lo = 0usize;
+            let mut hi = self.english_count;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let rec_off = self.english_off + mid * 16;
+                let low_off = read_u32(buf, rec_off) as usize;
+                let first_b = buf.get(self.str_arena_off + low_off).copied().unwrap_or(0);
+                if first_b < b_target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            let start = lo;
+            hi = self.english_count;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let rec_off = self.english_off + mid * 16;
+                let low_off = read_u32(buf, rec_off) as usize;
+                let first_b = buf.get(self.str_arena_off + low_off).copied().unwrap_or(0);
+                if first_b <= b_target {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            *slot = (start, lo);
+        }
+        self.english_byte_ranges = en_ranges;
+    }
+
+    #[inline]
+    fn pinyin_bucket_bounds(&self, first_syl: SyllableId) -> (usize, usize) {
+        self.first_syl_ranges
+            .get(usize::from(first_syl.0))
+            .copied()
+            .unwrap_or((0, self.pinyin_group_count))
     }
 
     /// Number of distinct Pinyin readings indexed in this compiled dictionary.
@@ -215,9 +305,11 @@ impl CompiledDict {
 
     /// Appends up to `limit` matching [`WordEntry`] items for an exact `SyllableId` sequence.
     pub fn lookup_exact_into(&self, query: &[SyllableId], limit: usize, out: &mut Vec<WordEntry>) {
+        let Some(&first) = query.first() else {
+            return;
+        };
         let buf = self.backing.as_ref();
-        let mut lo = 0usize;
-        let mut hi = self.pinyin_group_count;
+        let (mut lo, mut hi) = self.pinyin_bucket_bounds(first);
 
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -265,9 +357,13 @@ impl CompiledDict {
     /// Looks up a canonical English term by lowercase ASCII key in $O(\log N)$.
     #[must_use]
     pub fn lookup_english(&self, lower_ascii: &str) -> Option<WordEntry> {
+        let first_b = *lower_ascii.as_bytes().first()?;
         let buf = self.backing.as_ref();
-        let mut lo = 0usize;
-        let mut hi = self.english_count;
+        let (mut lo, mut hi) = if first_b.is_ascii_lowercase() {
+            self.english_byte_ranges[usize::from(first_b - b'a')]
+        } else {
+            (0usize, self.english_count)
+        };
 
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -288,12 +384,12 @@ impl CompiledDict {
     /// `prefix` starts with `prefix` (enabling fast 5..=12 syllable verse/idiom lattice edges).
     #[must_use]
     pub fn has_longer_pinyin_prefix(&self, prefix: &[SyllableId]) -> bool {
-        if prefix.is_empty() {
+        let Some(&first) = prefix.first() else {
             return false;
-        }
+        };
         let buf = self.backing.as_ref();
-        let mut lo = 0usize;
-        let mut hi = self.pinyin_group_count;
+        let (mut lo, mut hi) = self.pinyin_bucket_bounds(first);
+        let bucket_hi = hi;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let grp_off = self.pinyin_groups_off + mid * 16;
@@ -305,7 +401,7 @@ impl CompiledDict {
                 hi = mid;
             }
         }
-        for idx in lo..(lo + 2).min(self.pinyin_group_count) {
+        for idx in lo..(lo + 2).min(bucket_hi) {
             let grp_off = self.pinyin_groups_off + idx * 16;
             let syl_idx = read_u32(buf, grp_off) as usize;
             let syl_len = usize::from(read_u16(buf, grp_off + 4));

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Chime 拼音 — macOS Apple Silicon 端侧神经输入法与 LoRA 卡带中心</title>
-  <meta name="description" content="100% 离线、零遥测的 macOS 15+ Apple Silicon 中文拼音输入法。64 MB 4-bit MLX Qwen3 基础模型 + 热插拔 Multi-LoRA 与零拷贝 .imepack 词库卡带。" />
+  <meta name="description" content="100% 离线、零遥测的 macOS 15+ Apple Silicon 中文拼音输入法。88 MB 4-bit MLX Qwen3-4B 蒸馏底座（8 层 / 36,864 全中文词表）+ 热插拔 Multi-LoRA 与零拷贝 .imepack 词库卡带。" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -13,7 +13,7 @@
       <a class="brand" href="#">
         <span class="brand-badge">中</span>
         <span class="brand-text">Chime <span class="brand-sub">拼音</span></span>
-        <span class="version-pill">v0.11.0</span>
+        <span class="version-pill">v0.12.0</span>
       </a>
       <nav class="nav-links">
         <a href="#demo" data-i18n="nav.demo">交互演示</a>
@@ -32,14 +32,14 @@
       <div class="container hero-grid">
         <div class="hero-copy">
           <p class="eyebrow" data-i18n="hero.eyebrow">macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0</p>
-          <h1 data-i18n="hero.title">把大模型塞进 64 MB 统一内存，按键零联网，卡带随插随用。</h1>
+          <h1 data-i18n="hero.title">把 4B 教师蒸馏进 88 MB 统一内存，按键零联网，卡带随插随用。</h1>
           <p class="lead" data-i18n="hero.lead">
-            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器（原生支持 <strong>Shift 中英切换 + 中/英双模式英文拼写自动纠错与退格撤回</strong>），二阶段在本地 Metal GPU 上运行 6 层 4-bit 蒸馏版 Qwen3（6 候选批处理 0.86 ms），并支持一键在线挂载 <strong>2 MB 级别的领域 LoRA 与 .imepack 扩展卡带</strong>及零遥测自动更新。
+            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器（原生支持 <strong>Shift 中英切换 + 中/英双模式英文拼写自动纠错与退格撤回</strong>），二阶段在本地 Metal GPU 上运行 8 层 4-bit 蒸馏版 Qwen3（<code>Qwen3-4B-Base</code> 教师、<code>36,864</code> 100% 全中文词表），并支持一键在线挂载 <strong>2~3 MB 级别的领域 LoRA 与 .imepack 扩展卡带</strong>及零遥测自动更新。
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg">
               <span class="btn-main" data-i18n="hero.dlPkg">下载 macOS 安装包 (.pkg)</span>
-              <span class="btn-meta">Chime v0.11.0 · Apple Notarized · ~75 MB</span>
+              <span class="btn-meta">Chime v0.12.0 · Apple Notarized · ~102 MB</span>
             </a>
             <a class="btn btn-secondary" id="dl-zip" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip">
               <span class="btn-main" data-i18n="hero.dlZip">便携版 Chime.app (.zip)</span>
@@ -48,7 +48,7 @@
           </div>
           <div class="metrics-strip">
             <div class="metric">
-              <span class="metric-val">64.2 MB</span>
+              <span class="metric-val">87.8 MB</span>
               <span class="metric-lbl" data-i18n="m.base">4-bit MLX 基础模型</span>
             </div>
             <div class="metric">
@@ -121,10 +121,10 @@
             </p>
           </article>
           <article class="arch-card">
-            <div class="arch-step">02 · Frozen 4-bit Base (64.2 MB)</div>
-            <h3 data-i18n="arch.c2Title">6 层蒸馏版 Qwen3 常驻统一内存</h3>
+            <div class="arch-step">02 · Frozen 4-bit Base (87.8 MB)</div>
+            <h3 data-i18n="arch.c2Title">8 层蒸馏版 Qwen3 常驻统一内存</h3>
             <p data-i18n="arch.c2Body">
-              从 28 层 <code>Qwen3-0.6B-Base</code> 经层间隐状态对齐与双温度 KL 蒸馏压缩至 6 层，词表裁剪至 24,576 个高频中英子词。全系统无论挂载多少个扩展包，基础权重只占一份内存。
+              从 36 层 <code>Qwen3-4B-Base</code> 经 1024→2560 隐状态投影对齐与同音子空间 KL 蒸馏压缩至 8 层，保留 <code>36,864</code> 个词元（100% 覆盖全部 Qwen3 中文词元）。全系统无论挂载多少个扩展包，基础权重只占一份内存。
             </p>
           </article>
           <article class="arch-card">
@@ -156,7 +156,7 @@
                 <h3>classics-poetry.imepack</h3>
                 <p class="pack-subtitle" data-i18n="p1.sub">古典诗词曲赋、四书古文与成语歇后语全库</p>
               </div>
-              <span class="pack-version">v0.11.0</span>
+              <span class="pack-version">v0.12.0</span>
             </div>
             <p class="pack-body" data-i18n="p1.body">
               完整收录《唐诗三百首》《宋词三百首》、苏辛柳李词集、《诗经》《楚辞》《论语》《孟子》《庄子·逍遥游》《滕王阁序》《岳阳楼记》《赤壁赋》《将进酒》《琵琶行》《长恨歌》《春江花月夜》及 3 万条新华成语、1.4 万条歇后语。支持全篇逐句「一路 Tab」背诵续写与重首句上下文消歧。
@@ -181,7 +181,7 @@
                 <h3>tech-developer.imepack</h3>
                 <p class="pack-subtitle" data-i18n="p2.sub">系统编程、AI 推理与云原生中英双语增强包</p>
               </div>
-              <span class="pack-version">v0.11.0</span>
+              <span class="pack-version">v0.12.0</span>
             </div>
             <p class="pack-body" data-i18n="p2.body">
               针对程序员日常输入调优：涵盖 Rust、Swift 6、Apple Silicon、MLX、CoreML、Kubernetes、分布式存储与大模型工程中英术语，强化精确驼峰大小写（<code>macOS</code>、<code>GitHub</code>、<code>ChatGPT</code>、<code>PostgreSQL</code>）与中英混输连贯度。在终端与 IDE 中自动满权激活，在微信等聊天软件中自动收敛至 0.25x。
@@ -233,7 +233,7 @@ chime pack install /tmp/personal-style.imepack</code></pre>
 
   <footer class="footer">
     <div class="container footer-inner">
-      <p>Chime 拼音 v0.11.0 · Dual-licensed under MIT OR Apache-2.0 · Built with Rust, Swift 6 &amp; MLX Metal.</p>
+      <p>Chime 拼音 v0.12.0 · Dual-licensed under MIT OR Apache-2.0 · Built with Rust, Swift 6 &amp; MLX Metal.</p>
       <p class="footer-links">
         <a href="https://github.com/tyrchen/chime/releases" target="_blank" rel="noopener">GitHub Releases</a>
         <span>·</span>

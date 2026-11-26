@@ -586,9 +586,11 @@ impl MlxTransformer {
         let mut lora_layers = Vec::with_capacity(self.config.num_hidden_layers);
         let mut to_eval: Vec<Array> = Vec::new();
         let mut loaded_any = false;
+        let mut matched_layers = 0usize;
 
         for idx in 0..self.config.num_hidden_layers {
             let p = format!("model.layers.{idx}");
+            let mut layer_loaded = false;
             let mut take_pair = |proj: &str| -> Result<Option<MlxLoraPair>, NeuralError> {
                 let ka1 = format!("{p}.{proj}.lora_A");
                 let kb1 = format!("{p}.{proj}.lora_B");
@@ -604,6 +606,7 @@ impl MlxTransformer {
                     to_eval.push(a_t.clone());
                     to_eval.push(b_t.clone());
                     loaded_any = true;
+                    layer_loaded = true;
                     Ok(Some(MlxLoraPair { a_t, b_t, rank }))
                 } else {
                     Ok(None)
@@ -619,12 +622,27 @@ impl MlxTransformer {
                 up: take_pair("mlp.up_proj")?,
                 down: take_pair("mlp.down_proj")?,
             });
+            if layer_loaded {
+                matched_layers += 1;
+            }
         }
 
         if !loaded_any {
             return Err(NeuralError::Safetensors(format!(
                 "no valid model.layers.* lora_A/lora_B tensors found in {}",
                 spec.path.display()
+            )));
+        }
+
+        let has_extra_layers = raw.keys().any(|k| k.starts_with("model.layers."));
+        if self.config.num_hidden_layers >= 4
+            && (matched_layers != self.config.num_hidden_layers || has_extra_layers)
+        {
+            return Err(NeuralError::Safetensors(format!(
+                "incompatible LoRA layer depth in {} (matched {matched_layers}/{} base layers, \
+                 extra_layers={has_extra_layers}); skipping LoRA until pack is updated",
+                spec.path.display(),
+                self.config.num_hidden_layers
             )));
         }
 

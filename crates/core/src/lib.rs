@@ -16,8 +16,8 @@ use std::{
 };
 
 use chime_decoder::{
-    Candidate, DecodeContext, LatticeDecoder, MatchKind, apply_anti_jitter_freeze_window,
-    promote_top_completion_into_bar,
+    Candidate, DecodeContext, IncrementalDecodeCache, LatticeDecoder, MatchKind,
+    apply_anti_jitter_freeze_window, promote_top_completion_into_bar,
 };
 use chime_lexicon::{
     CompiledDictBuilder, EnglishEditKind, Lexicon, TypingSample, UserStore,
@@ -193,6 +193,7 @@ struct InputSession {
     en_token_tainted: bool,
     en_last_autocorrect: Option<EnAutoCorrectUndo>,
     en_suppressed_words: Vec<String>,
+    decode_cache: IncrementalDecodeCache,
     generation_id: u64,
 }
 
@@ -220,6 +221,7 @@ impl InputSession {
             en_token_tainted: false,
             en_last_autocorrect: None,
             en_suppressed_words: Vec::new(),
+            decode_cache: IncrementalDecodeCache::default(),
             generation_id: 0,
         }
     }
@@ -249,6 +251,7 @@ impl InputSession {
         self.selected_global_idx = 0;
         self.grid_expanded = false;
         self.typo_rollback_prev_idx = None;
+        self.decode_cache.clear();
     }
 
     fn record_emitted_text(&mut self, emitted: &str) {
@@ -1356,9 +1359,13 @@ impl ChimeEngine {
             english_auto_correct: self.config.english_auto_correct,
             now_epoch_secs,
         };
-        let mut cands = self
-            .decoder
-            .decode(&raw_clone, &self.lexicon, &self.user_store, &ctx);
+        let mut cands = self.decoder.decode_incremental(
+            &raw_clone,
+            &self.lexicon,
+            &self.user_store,
+            &ctx,
+            &mut self.sessions[idx].decode_cache,
+        );
 
         if let Some(worker) = &self.async_reranker {
             cands = Self::rerank_candidates_with_budget(
