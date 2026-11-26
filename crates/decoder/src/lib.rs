@@ -105,6 +105,17 @@ pub trait NeuralReranker: std::fmt::Debug + Send + Sync {
         let _ = (left_context, app_bundle_id);
         vec![0.0; candidates.len()]
     }
+
+    /// Scores mid-sentence contextual single-syllable or OOV stepwise continuations without
+    /// right-boundary punctuation closure while keeping full contextual weight.
+    fn score_contextual_open_batch(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        self.score_open_prefix_batch(left_context, app_bundle_id, candidates)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +135,9 @@ struct BeamState {
     last_is_english: bool,
     score: f32,
     kind: MatchKind,
+    edge_count: u8,
+    max_word_chars: u8,
+    has_bigram_link: bool,
 }
 
 /// Stage-1 + optional synchronous Stage-2 decoder over raw preedit keystrokes.
@@ -243,6 +257,9 @@ impl LatticeDecoder {
             last_is_english: false,
             score: 0.0,
             kind: MatchKind::CodeSwitch,
+            edge_count: 0,
+            max_word_chars: 0,
+            has_bigram_link: false,
         });
 
         for i in 0..n {
@@ -383,6 +400,9 @@ impl LatticeDecoder {
                         n,
                     );
 
+                    let edge_chars = u8::try_from(edge.surface.chars().count()).unwrap_or(u8::MAX);
+                    let linked_bigram = !st.text.is_empty()
+                        && (direct_bg.max(skip_bg) > 0.10 || tg > 0.10 || clitic_bonus > 0.0);
                     next_states.push(BeamState {
                         text: composed,
                         prev_content_word: next_prev_content,
@@ -392,6 +412,9 @@ impl LatticeDecoder {
                             + clitic_bonus
                             + syntax_pen,
                         kind: next_kind,
+                        edge_count: st.edge_count.saturating_add(1),
+                        max_word_chars: st.max_word_chars.max(edge_chars),
+                        has_bigram_link: st.has_bigram_link || linked_bigram,
                     });
                 }
                 Self::merge_and_prune(&mut beams[edge.end], next_states, 40);
@@ -427,6 +450,40 @@ impl LatticeDecoder {
         };
         let is_single_syllable_input = single_exact_syl.is_some();
 
+        let best_single_exact_score = if is_single_syllable_input {
+            terminal_beams
+                .iter()
+                .filter(|st| {
+                    !st.last_is_english
+                        && st.kind == MatchKind::Exact
+                        && st.text.chars().count() == 1
+                })
+                .map(|st| st.score)
+                .fold(f32::NEG_INFINITY, f32::max)
+        } else {
+            f32::NEG_INFINITY
+        };
+        let mut exact_single_rank = 0usize;
+
+        let has_left_ctx = !ctx.left_context.trim().is_empty();
+        let cross_boundary_map = if has_left_ctx {
+            let lead_syl = single_exact_syl.or_else(|| {
+                leading_edges
+                    .iter()
+                    .find(|e| {
+                        !e.is_english
+                            && e.surface.chars().count() == 1
+                            && e.kind == MatchKind::Exact
+                            && e.end <= lower_all.len()
+                    })
+                    .and_then(|e| lookup_syllable(&lower_all[..e.end]))
+            });
+            lead_syl
+                .map_or_default(|syl| cross_boundary_compound_chars(ctx.left_context, syl, lexicon))
+        } else {
+            HashMap::new()
+        };
+
         let mut full_candidates: Vec<Candidate> = terminal_beams
             .iter()
             .filter(|st| {
@@ -446,26 +503,61 @@ impl LatticeDecoder {
                     )
                 };
                 // Demote rare single characters (`哏`, `艮`, `揯`) below top everyday 2-character
-                // words (`根据`, `根本`) in the horizontal Top-5 bar; rare chars stay in the `5x5`
-                // `↓` character grid!
-                let rare_single_pen = if is_single_syllable_input
+                // words (`根据`, `根本`) ONLY when `left_context` is empty! With surrounding
+                // context (`玉` + `gui`), all homophone single characters must enter Stage-2 on
+                // equal footing so contextual cohesion (`玉` + `桂`) is never pre-handicapped!
+                let is_exact_single = is_single_syllable_input
                     && !st.last_is_english
                     && st.kind == MatchKind::Exact
-                    && st.text.chars().count() == 1
-                    && st.score < -4.35
+                    && st.text.chars().count() == 1;
+                if is_exact_single {
+                    exact_single_rank += 1;
+                }
+                let rare_single_pen = if !has_left_ctx
+                    && is_exact_single
+                    && exact_single_rank > 2
+                    && st.score < -4.35_f32.min(best_single_exact_score - 0.15)
                 {
                     -3.20
                 } else {
                     0.0
                 };
+                let cb_bonus = if is_exact_single {
+                    cross_boundary_map.get(&st.text).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 Candidate {
                     text: st.text.clone(),
-                    score: st.score + user_delta + rare_single_pen,
+                    score: st.score + user_delta + rare_single_pen + cb_bonus,
                     kind: st.kind,
                     consumed_bytes: n,
                 }
             })
             .collect();
+
+        // Detect OOV / fragmented multi-syllable inputs (`yuguigou`, `yugui`, `guigou`) where the
+        // top path is glued from isolated characters, a very rare compound, or a forced typo guess
+        // over canonical Pinyin.
+        let full_is_canonical_pinyin =
+            ctx.scheme == ShuangpinScheme::Full && chime_phonetics::can_segment_exact(&lower_all);
+        let is_oov_fragmented = if !is_single_syllable_input && n >= 4 {
+            terminal_beams
+                .iter()
+                .find(|st| !st.last_is_english)
+                .is_some_and(|top| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let char_cnt = top.text.chars().count().max(1) as f32;
+                    let avg_score = top.score / char_cnt;
+                    (top.edge_count >= 2
+                        && !top.has_bigram_link
+                        && (top.max_word_chars <= 1 || avg_score < -3.35))
+                        || (full_is_canonical_pinyin && top.kind == MatchKind::TypoCorrected)
+                        || (full_is_canonical_pinyin && char_cnt <= 2.0 && top.score < -5.80)
+                })
+        } else {
+            false
+        };
 
         // Include custom user-coined full phrases from L1 Cedar trie!
         for (surf, weight) in user_store.lookup_custom_phrases(&lower_all) {
@@ -582,53 +674,67 @@ impl LatticeDecoder {
         full_candidates.truncate(36);
 
         if let Some(reranker) = &self.reranker {
+            let contextual_single_syl = is_single_syllable_input && has_left_ctx;
             let best_non_comp = full_candidates
                 .iter()
                 .find(|c| c.kind != MatchKind::Completion)
                 .map_or(f32::NEG_INFINITY, |c| c.score);
-            let mut non_comp_indices: Vec<usize> = full_candidates
+            let score_margin = if contextual_single_syl { 8.5 } else { 6.8 };
+            let mut scored_indices: Vec<usize> = full_candidates
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| c.kind != MatchKind::Completion && c.score >= best_non_comp - 6.8)
+                .filter(|(_, c)| {
+                    (contextual_single_syl || c.kind != MatchKind::Completion)
+                        && c.score >= best_non_comp - score_margin
+                })
                 .map(|(i, _)| i)
                 .take(22)
                 .collect();
-            if non_comp_indices.len() >= 2 {
-                let env_before = non_comp_indices
+            if scored_indices.len() >= 2 {
+                let env_before = scored_indices
                     .iter()
                     .map(|&i| full_candidates[i].score)
                     .fold(f32::NEG_INFINITY, f32::max);
-                let batch: Vec<Candidate> = non_comp_indices
+                let batch: Vec<Candidate> = scored_indices
                     .iter()
                     .map(|&i| full_candidates[i].clone())
                     .collect();
-                let bonuses = reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &batch);
+                let bonuses = if contextual_single_syl {
+                    reranker.score_contextual_open_batch(
+                        ctx.left_context,
+                        ctx.app_bundle_id,
+                        &batch,
+                    )
+                } else {
+                    reranker.score_batch(ctx.left_context, ctx.app_bundle_id, &batch)
+                };
                 let min_bonus = bonuses.iter().copied().fold(0.0_f32, f32::min);
                 let mut scored_mask = vec![false; full_candidates.len()];
                 let mut env_after = f32::NEG_INFINITY;
-                for (&idx, &bonus) in non_comp_indices.iter().zip(bonuses.iter()) {
+                for (&idx, &bonus) in scored_indices.iter().zip(bonuses.iter()) {
                     full_candidates[idx].score += bonus;
                     env_after = env_after.max(full_candidates[idx].score);
                     scored_mask[idx] = true;
                 }
                 let unscored_shift = (min_bonus - 0.40).min(-0.40);
                 for (idx, cand) in full_candidates.iter_mut().enumerate() {
-                    if !scored_mask[idx] && cand.kind != MatchKind::Completion {
+                    if !scored_mask[idx]
+                        && (contextual_single_syl || cand.kind != MatchKind::Completion)
+                    {
                         cand.score += unscored_shift;
                     }
                 }
                 // Envelope-preserving calibration: keep exact pairwise differences among all
-                // non-completion candidates while anchoring their maximum score to `env_before` so
-                // Stage-2 zero-mean shifts never inflate above `Completion` candidates!
+                // scored candidates while anchoring their maximum score to `env_before`.
                 let drift = env_after - env_before;
                 if drift.is_finite() {
                     for cand in &mut full_candidates {
-                        if cand.kind != MatchKind::Completion {
+                        if contextual_single_syl || cand.kind != MatchKind::Completion {
                             cand.score -= drift;
                         }
                     }
                 }
-                non_comp_indices.clear();
+                scored_indices.clear();
                 full_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
             }
         }
@@ -673,17 +779,45 @@ impl LatticeDecoder {
             promote_top_completion_into_bar(&mut full_candidates);
         }
 
+        // On OOV / fragmented multi-syllable queries (`yuguigou`, `yugui`) with no coherent
+        // whole-span word, cap the leading full-span guesses to 1 so Slots #2..#5 immediately
+        // offer real prefix words (`玉桂`) and leading single characters (`与 / 于 / 语 / 鱼 / 雨
+        // / 玉...`) for effortless step-by-step composition, rather than 25 Cartesian-product
+        // single-character concatenations! Even on coherent sentences, cap leading full-spans to 6
+        // so prefix words & single chars appear on Page 1 of the 5x5 grid instead of Page 8.
+        let mut overflow_full: Vec<Candidate> = Vec::new();
+        if !is_single_syllable_input {
+            let has_user_coined = !user_store.lookup_custom_phrases(&lower_all).is_empty();
+            let keep_full = if is_oov_fragmented && !has_user_coined {
+                1
+            } else {
+                6
+            };
+            if full_candidates.len() > keep_full {
+                overflow_full = full_candidates.split_off(keep_full);
+                overflow_full.truncate(6);
+            }
+        }
+
         // 1) Append multi-character partial prefix word candidates (`consumed_bytes < n`, `chars >=
-        //    2`)
-        // for step-by-step phrase composition!
+        //    2`) for step-by-step phrase composition, requiring a valid Pinyin remainder so
+        //    dead-end splits (`yugu` + `igou`) never appear!
         let mut multi_prefix_edges: Vec<&LatticeEdge> = leading_edges
             .iter()
-            .filter(|e| e.end < n && !e.is_english && e.surface.chars().count() >= 2)
+            .filter(|e| {
+                e.end < n
+                    && !e.is_english
+                    && e.surface.chars().count() >= 2
+                    && (!full_is_canonical_pinyin
+                        || chime_phonetics::can_segment_exact(&lower_all[e.end..]))
+                    && (!is_oov_fragmented || e.score >= -5.35)
+            })
             .collect();
         multi_prefix_edges
             .sort_by(|a, b| b.end.cmp(&a.end).then_with(|| b.score.total_cmp(&a.score)));
 
-        for pe in multi_prefix_edges.into_iter().take(10) {
+        let prefix_cap = if is_oov_fragmented { 3 } else { 8 };
+        for pe in multi_prefix_edges.into_iter().take(prefix_cap) {
             if !full_candidates.iter().any(|c| c.text == pe.surface) {
                 full_candidates.push(Candidate {
                     text: pe.surface.clone(),
@@ -695,12 +829,27 @@ impl LatticeDecoder {
         }
 
         // 2) Always append rich single-character candidates (`chars == 1`, up to 35 chars) for the
-        // leading syllable so users can expand the `5x5` grid and pick characters one-by-one!
-        let mut single_char_edges: Vec<&LatticeEdge> = leading_edges
+        // leading syllable (also verifying a valid Pinyin remainder so `gu` + `igou` is excluded!).
+        let mut single_char_cands: Vec<Candidate> = leading_edges
             .iter()
-            .filter(|e| !e.is_english && e.surface.chars().count() == 1)
+            .filter(|e| {
+                !e.is_english
+                    && e.surface.chars().count() == 1
+                    && (!full_is_canonical_pinyin
+                        || e.end == n
+                        || chime_phonetics::can_segment_exact(&lower_all[e.end..]))
+            })
+            .map(|e| {
+                let cb = cross_boundary_map.get(&e.surface).copied().unwrap_or(0.0);
+                Candidate {
+                    text: e.surface.clone(),
+                    score: e.score + cb - 9.0,
+                    kind: e.kind,
+                    consumed_bytes: e.end,
+                }
+            })
             .collect();
-        single_char_edges.sort_by(|a, b| {
+        single_char_cands.sort_by(|a, b| {
             let a_exact = u8::from(a.kind == MatchKind::Exact);
             let b_exact = u8::from(b.kind == MatchKind::Exact);
             b_exact
@@ -708,17 +857,44 @@ impl LatticeDecoder {
                 .then_with(|| b.score.total_cmp(&a.score))
         });
 
-        for sc in single_char_edges {
-            if full_candidates.len() >= 55 {
+        // When stepping through an OOV phrase with left context (`玉` + `guigou`), contextually
+        // rerank the top leading single-character candidates in open-prefix mode so `桂` rises
+        // immediately into the top slots instead of staying buried by static unigram frequency!
+        if is_oov_fragmented
+            && has_left_ctx
+            && single_char_cands.len() >= 2
+            && let Some(reranker) = &self.reranker
+        {
+            let top_k = single_char_cands.len().min(16);
+            let bonuses = reranker.score_contextual_open_batch(
+                ctx.left_context,
+                ctx.app_bundle_id,
+                &single_char_cands[..top_k],
+            );
+            for (cand, bonus) in single_char_cands[..top_k].iter_mut().zip(bonuses) {
+                cand.score += bonus;
+            }
+            single_char_cands[..top_k].sort_by(|a, b| {
+                let a_exact = u8::from(a.kind == MatchKind::Exact);
+                let b_exact = u8::from(b.kind == MatchKind::Exact);
+                b_exact
+                    .cmp(&a_exact)
+                    .then_with(|| b.score.total_cmp(&a.score))
+            });
+        }
+
+        for sc in single_char_cands {
+            if full_candidates.len() >= 50 {
                 break;
             }
-            if !full_candidates.iter().any(|c| c.text == sc.surface) {
-                full_candidates.push(Candidate {
-                    text: sc.surface.clone(),
-                    score: sc.score - 9.0,
-                    kind: sc.kind,
-                    consumed_bytes: sc.end,
-                });
+            if !full_candidates.iter().any(|c| c.text == sc.text) {
+                full_candidates.push(sc);
+            }
+        }
+
+        for extra in overflow_full {
+            if !full_candidates.iter().any(|c| c.text == extra.text) {
+                full_candidates.push(extra);
             }
         }
 
@@ -814,6 +990,18 @@ impl LatticeDecoder {
                 if let Some(eng) = lexicon.lookup_english(lower_sub) {
                     let is_generic_lower =
                         !eng.is_tech_term && eng.surface == lower_sub && raw_sub == lower_sub;
+                    let is_upper_acronym_on_pinyin_syl = raw_sub == lower_sub
+                        && eng.surface.bytes().all(|b| b.is_ascii_uppercase())
+                        && chime_phonetics::is_valid_syllable(lower_sub);
+                    // Suppress all-uppercase English acronyms (`GUI`, `AI`) from hijacking a
+                    // canonical lowercase Mandarin syllable inside a pure-Pinyin sentence
+                    // (`yuguigou`, `yugui`, `baogui`) when the user typed no uppercase letters!
+                    if is_upper_acronym_on_pinyin_syl
+                        && !(start == 0 && end == n)
+                        && full_is_canonical
+                    {
+                        continue;
+                    }
                     // Suppress generic lowercase English words (`and`, `any`, `chile`, `wang`,
                     // `song`) from tearing apart Shuangpin pairs or internal Mandarin syllables
                     // (`jiandan` -> `ji + and + an`) when the user typed no uppercase cue and the
@@ -830,10 +1018,11 @@ impl LatticeDecoder {
                             continue;
                         }
                     }
-                    // On standalone canonical Pinyin inputs (`women` -> `我们`, `name` -> `那么`,
-                    // `like` -> `立刻`), cap non-tech lowercase English homographs below Chinese
-                    // words while keeping their true Zipf priors for `En` mode & typo recovery.
-                    let base_eng_lp = if start == 0
+                    // On standalone canonical Pinyin inputs (`women` -> `我们`, `gui` -> `贵/归`),
+                    // keep lowercase English homographs and acronyms below primary Mandarin words.
+                    let base_eng_lp = if is_upper_acronym_on_pinyin_syl && start == 0 && end == n {
+                        eng.log_prob.min(-5.15)
+                    } else if start == 0
                         && end == n
                         && !eng.is_tech_term
                         && eng.surface == lower_sub
@@ -844,11 +1033,12 @@ impl LatticeDecoder {
                     } else {
                         eng.log_prob
                     };
-                    let dev_bonus = if is_dev_app && eng.is_tech_term {
-                        0.95
-                    } else {
-                        0.0
-                    };
+                    let dev_bonus =
+                        if is_dev_app && eng.is_tech_term && !is_upper_acronym_on_pinyin_syl {
+                            0.95
+                        } else {
+                            0.0
+                        };
                     let phonotactic_bonus = if !chime_phonetics::can_segment_exact(lower_sub)
                         && classify_code_switch(raw_sub) == CodeSwitchSignal::PhonotacticEnglish
                     {
@@ -2139,6 +2329,44 @@ fn is_transparent_particle(word: &str) -> bool {
     )
 }
 
+/// Probes `lexicon` for 2-character compounds spanning the boundary between the trailing CJK
+/// character of `left_context` and the leading syllable `cur_syl` (e.g., `玉` + `gui` -> `玉桂`,
+/// `苹` + `guo` -> `苹果`). Returns a mild additive cohesion bonus keyed by the second character.
+fn cross_boundary_compound_chars(
+    left_context: &str,
+    cur_syl: SyllableId,
+    lexicon: &Lexicon,
+) -> HashMap<String, f32> {
+    let mut bonuses = HashMap::new();
+    let Some(prev_ch) = left_context.trim_end().chars().last() else {
+        return bonuses;
+    };
+    if !('\u{4E00}'..='\u{9FA5}').contains(&prev_ch) {
+        return bonuses;
+    }
+    let prev_str = prev_ch.to_string();
+    let empty_overrides: HashMap<&str, &str> = HashMap::new();
+    let Some(prev_py) = annotate_chinese_word(&prev_str, &empty_overrides) else {
+        return bonuses;
+    };
+    let Some(prev_syl) = lookup_syllable(&prev_py) else {
+        return bonuses;
+    };
+    for entry in lexicon.lookup_exact(&[prev_syl, cur_syl]) {
+        let mut chars = entry.surface.chars();
+        if chars.next() == Some(prev_ch)
+            && let Some(second_ch) = chars.next()
+            && chars.next().is_none()
+        {
+            let bonus = 1.60 + (entry.log_prob + 6.5).clamp(0.0, 2.0) * 0.40;
+            let key = second_ch.to_string();
+            let slot = bonuses.entry(key).or_insert(0.0_f32);
+            *slot = slot.max(bonus);
+        }
+    }
+    bonuses
+}
+
 fn extract_context_anchors(left_context: &str) -> (String, String) {
     let trimmed = left_context.trim_end_matches(|c: char| {
         c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | '：' | ',' | '.')
@@ -2340,5 +2568,44 @@ mod tests {
 
         // 3. Canonical Chinese Pinyin homographs (`women` -> `我们`) must never be displaced!
         assert_eq!(dec.decode("women", &lex, &store, &ctx)[0].text, "我们");
+    }
+
+    #[test]
+    fn test_should_prevent_gui_hijack_and_promote_single_chars_on_oov_yuguigou() {
+        let mut lex = Lexicon::with_builtin_seed();
+        lex.insert_pinyin_word("与", "yu", -2.80, false);
+        lex.insert_pinyin_word("于", "yu", -3.35, false);
+        lex.insert_pinyin_word("玉", "yu", -4.20, false);
+        lex.insert_pinyin_word("鬼", "gui", -4.60, false);
+        lex.insert_pinyin_word("桂", "gui", -4.75, false);
+        lex.insert_pinyin_word("狗", "gou", -4.30, false);
+
+        let store = UserStore::new();
+        let dec = LatticeDecoder::new();
+        let dev_ctx = DecodeContext {
+            app_bundle_id: "com.mitchellh.ghostty",
+            ..DecodeContext::default()
+        };
+
+        let cands = dec.decode("yuguigou", &lex, &store, &dev_ctx);
+        assert!(
+            !cands[0].text.contains("GUI"),
+            "lowercase Pinyin yuguigou must not be hijacked by GUI: {:?}",
+            cands[0].text
+        );
+        // On OOV fragmented `yuguigou`, leading single chars (`与`, `于`, `玉`) must appear in the
+        // very first row (`top 5`) instead of being buried behind 25 Cartesian-product phrases!
+        let top5: Vec<&str> = cands.iter().take(5).map(|c| c.text.as_str()).collect();
+        assert!(
+            top5.contains(&"玉"),
+            "expected leading single char 玉 in top-5 on OOV yuguigou, got {top5:?}"
+        );
+
+        let gui_cands = dec.decode("gui", &lex, &store, &dev_ctx);
+        assert_ne!(
+            gui_cands[0].text, "GUI",
+            "lowercase standalone gui should put Chinese char above GUI: {:?}",
+            gui_cands[0].text
+        );
     }
 }

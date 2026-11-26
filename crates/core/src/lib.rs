@@ -24,7 +24,7 @@ use chime_lexicon::{
     import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes,
     parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob};
+use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, ScoringMode};
 use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -801,12 +801,18 @@ impl ChimeEngine {
             {
                 cand.score += bonus;
             }
-            let (mut full_part, partial_part): (Vec<_>, Vec<_>) = rescored
-                .into_iter()
-                .partition(|c| c.consumed_bytes == sess.raw_buffer.len());
+            let lead_full_count = rescored
+                .iter()
+                .take_while(|c| {
+                    c.consumed_bytes == sess.raw_buffer.len()
+                        && !(c.kind == MatchKind::CodeSwitch && c.text == sess.raw_buffer)
+                })
+                .count();
+            let mut full_part = rescored[..lead_full_count].to_vec();
+            let rest_part = rescored[lead_full_count..].to_vec();
             full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
             promote_top_completion_into_bar(&mut full_part);
-            full_part.extend(partial_part);
+            full_part.extend(rest_part);
 
             sess.all_candidates =
                 apply_anti_jitter_freeze_window(&displayed, full_part, res.elapsed_ms, freeze_ms);
@@ -1370,7 +1376,7 @@ impl ChimeEngine {
         self.build_snapshot(idx, true, String::new())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn rerank_candidates_with_budget(
         worker: &AsyncRerankHandle,
         session_id: u64,
@@ -1380,18 +1386,83 @@ impl ChimeEngine {
         raw_clone: &str,
         mut cands: Vec<Candidate>,
     ) -> Vec<Candidate> {
+        let has_left_ctx = !effective_left.trim().is_empty();
+        let lead_full_count = cands
+            .iter()
+            .take_while(|c| {
+                c.consumed_bytes == raw_clone.len()
+                    && !(c.kind == MatchKind::CodeSwitch && c.text == raw_clone)
+            })
+            .count();
+
+        // OOV stepwise mode (`玉` + `guigou`): `lead_full_count <= 1`, followed by leading
+        // single-character candidates (`consumed_bytes < raw_clone.len()`). Contextually rerank
+        // the top 16 leading single chars in `OpenContextual` mode so `桂` jumps to the top!
+        if has_left_ctx && lead_full_count <= 1 {
+            let sc_indices: Vec<usize> = cands
+                .iter()
+                .enumerate()
+                .skip(lead_full_count)
+                .filter(|(_, c)| c.consumed_bytes < raw_clone.len() && c.text.chars().count() == 1)
+                .take(16)
+                .map(|(i, _)| i)
+                .collect();
+            if sc_indices.len() >= 2 {
+                let sc_texts: Vec<String> =
+                    sc_indices.iter().map(|&i| cands[i].text.clone()).collect();
+                let job = RerankJob {
+                    session_id,
+                    generation_id,
+                    app_bundle_id,
+                    left_context: effective_left,
+                    candidate_texts: sc_texts,
+                    scoring_mode: ScoringMode::OpenContextual,
+                    dispatched_at: Instant::now(),
+                };
+                if let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(12)) {
+                    let mut reranked: Vec<Candidate> = sc_indices
+                        .iter()
+                        .zip(bonuses)
+                        .map(|(&idx, bonus)| {
+                            let mut c = cands[idx].clone();
+                            c.score += bonus;
+                            c
+                        })
+                        .collect();
+                    reranked.sort_by(|a, b| {
+                        let a_exact = u8::from(a.kind == MatchKind::Exact);
+                        let b_exact = u8::from(b.kind == MatchKind::Exact);
+                        b_exact
+                            .cmp(&a_exact)
+                            .then_with(|| b.score.total_cmp(&a.score))
+                    });
+                    for (&idx, updated) in sc_indices.iter().zip(reranked) {
+                        cands[idx] = updated;
+                    }
+                }
+                return cands;
+            }
+        }
+
+        let is_single_syl_ctx = has_left_ctx
+            && lead_full_count == cands.len()
+            && cands
+                .iter()
+                .any(|c| c.kind == MatchKind::Exact && c.text.chars().count() == 1);
         let best_non_comp = cands
             .iter()
             .find(|c| c.consumed_bytes == raw_clone.len() && c.kind != MatchKind::Completion)
             .map_or(f32::NEG_INFINITY, |c| c.score);
+        let score_margin = if is_single_syl_ctx { 8.5 } else { 5.4 };
+        let batch_cap = if is_single_syl_ctx { 18 } else { 10 };
         let full_texts: Vec<String> = cands
             .iter()
             .filter(|c| {
                 c.consumed_bytes == raw_clone.len()
-                    && c.kind != MatchKind::Completion
-                    && c.score >= best_non_comp - 5.4
+                    && (is_single_syl_ctx || c.kind != MatchKind::Completion)
+                    && c.score >= best_non_comp - score_margin
             })
-            .take(10)
+            .take(batch_cap)
             .map(|c| c.text.clone())
             .collect();
         if full_texts.len() < 2 {
@@ -1425,6 +1496,11 @@ impl ChimeEngine {
             app_bundle_id,
             left_context: effective_left,
             candidate_texts: full_texts,
+            scoring_mode: if is_single_syl_ctx {
+                ScoringMode::OpenContextual
+            } else {
+                ScoringMode::ClosedSentence
+            },
             dispatched_at: Instant::now(),
         };
         let Some(bonuses) = worker.submit_with_budget(job, Duration::from_millis(12)) else {
@@ -1435,10 +1511,10 @@ impl ChimeEngine {
             .iter_mut()
             .filter(|c| {
                 c.consumed_bytes == raw_clone.len()
-                    && c.kind != MatchKind::Completion
-                    && c.score >= best_non_comp - 5.4
+                    && (is_single_syl_ctx || c.kind != MatchKind::Completion)
+                    && c.score >= best_non_comp - score_margin
             })
-            .take(10)
+            .take(batch_cap)
             .zip(bonuses)
         {
             cand.score += bonus;
@@ -1447,20 +1523,23 @@ impl ChimeEngine {
         let drift = env_after - best_non_comp;
         if drift.is_finite() {
             for cand in &mut cands {
-                if cand.consumed_bytes == raw_clone.len() && cand.kind != MatchKind::Completion {
+                if cand.consumed_bytes == raw_clone.len()
+                    && (is_single_syl_ctx || cand.kind != MatchKind::Completion)
+                {
                     cand.score -= drift;
                 }
             }
         }
-        let (mut full_part, partial_part): (Vec<_>, Vec<_>) = cands
-            .into_iter()
-            .partition(|c| c.consumed_bytes == raw_clone.len());
+        let mut full_part = cands[..lead_full_count].to_vec();
+        let rest_part = cands[lead_full_count..].to_vec();
         full_part.sort_by(|a, b| b.score.total_cmp(&a.score));
         if !has_fem_cue {
             chime_decoder::apply_unmarked_pronoun_symmetry(&mut full_part, raw_clone.len());
         }
-        promote_top_completion_into_bar(&mut full_part);
-        full_part.extend(partial_part);
+        if !is_single_syl_ctx {
+            promote_top_completion_into_bar(&mut full_part);
+        }
+        full_part.extend(rest_part);
         full_part
     }
 

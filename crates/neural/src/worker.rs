@@ -8,7 +8,7 @@ use std::{
 
 use flume::{Receiver, Sender, TrySendError};
 
-use crate::{LoraMountSpec, ModelConfig, NeuralError, SafetensorsReranker};
+use crate::{LoraMountSpec, ModelConfig, NeuralError, SafetensorsReranker, ScoringMode};
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
 #[derive(Debug, Clone)]
@@ -23,6 +23,8 @@ pub struct RerankJob {
     pub left_context: String,
     /// Candidate surface strings from Stage 1.
     pub candidate_texts: Vec<String>,
+    /// Scoring mode (closed sentence vs mid-sentence open contextual continuation).
+    pub scoring_mode: ScoringMode,
     /// Timestamp when the keystroke arrived.
     pub dispatched_at: Instant,
 }
@@ -50,7 +52,7 @@ enum ActorCmd {
         left_context: String,
         app_bundle_id: String,
         candidate_texts: Vec<String>,
-        open_prefix: bool,
+        scoring_mode: ScoringMode,
         reply_tx: Sender<Vec<f32>>,
     },
 }
@@ -109,10 +111,11 @@ impl AsyncRerankHandle {
                         while let Ok(ActorCmd::Async(newer)) = cmd_rx.try_recv() {
                             job = newer;
                         }
-                        let bonuses = reranker.score_candidates_with_app(
+                        let bonuses = reranker.score_candidates_with_scoring_mode(
                             &job.left_context,
                             &job.app_bundle_id,
                             &job.candidate_texts,
+                            job.scoring_mode,
                         );
                         let elapsed_ms = u64::try_from(job.dispatched_at.elapsed().as_millis())
                             .unwrap_or(u64::MAX);
@@ -124,10 +127,11 @@ impl AsyncRerankHandle {
                         });
                     }
                     ActorCmd::TimedOrAsync { job, sync_reply_tx } => {
-                        let bonuses = reranker.score_candidates_with_app(
+                        let bonuses = reranker.score_candidates_with_scoring_mode(
                             &job.left_context,
                             &job.app_bundle_id,
                             &job.candidate_texts,
+                            job.scoring_mode,
                         );
                         // Deliver synchronously if caller is still within its frame budget;
                         // otherwise seamlessly fall back to async `result_tx`!
@@ -146,14 +150,14 @@ impl AsyncRerankHandle {
                         left_context,
                         app_bundle_id,
                         candidate_texts,
-                        open_prefix,
+                        scoring_mode,
                         reply_tx,
                     } => {
-                        let bonuses = reranker.score_candidates_with_mode(
+                        let bonuses = reranker.score_candidates_with_scoring_mode(
                             &left_context,
                             &app_bundle_id,
                             &candidate_texts,
-                            open_prefix,
+                            scoring_mode,
                         );
                         let _ = reply_tx.send(bonuses);
                     }
@@ -240,6 +244,25 @@ impl AsyncRerankHandle {
         open_prefix: bool,
         timeout: Option<Duration>,
     ) -> Vec<f32> {
+        let mode = if open_prefix {
+            ScoringMode::BeamPrefixGuidance
+        } else {
+            ScoringMode::ClosedSentence
+        };
+        self.score_sync_scoring_mode(left_context, app_bundle_id, candidate_texts, mode, timeout)
+    }
+
+    /// Synchronously scores a candidate batch under an explicit [`ScoringMode`], optionally
+    /// bounded by `timeout`.
+    #[must_use]
+    pub fn score_sync_scoring_mode(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+        scoring_mode: ScoringMode,
+        timeout: Option<Duration>,
+    ) -> Vec<f32> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         if self
             .cmd_tx
@@ -247,7 +270,7 @@ impl AsyncRerankHandle {
                 left_context: left_context.to_string(),
                 app_bundle_id: app_bundle_id.to_string(),
                 candidate_texts: candidate_texts.to_vec(),
-                open_prefix,
+                scoring_mode,
                 reply_tx,
             })
             .is_err()

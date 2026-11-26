@@ -262,6 +262,22 @@ impl NeuralReranker for SyncNeuralAdapter {
         self.inner
             .score_sync_mode_with_timeout(left_context, app_bundle_id, &texts, true, None)
     }
+
+    fn score_contextual_open_batch(
+        &self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidates: &[Candidate],
+    ) -> Vec<f32> {
+        let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        self.inner.score_sync_scoring_mode(
+            left_context,
+            app_bundle_id,
+            &texts,
+            chime_neural::ScoringMode::OpenContextual,
+            None,
+        )
+    }
 }
 
 #[allow(clippy::too_many_lines)]

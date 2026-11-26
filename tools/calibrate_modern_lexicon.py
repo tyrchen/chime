@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import argparse
 import glob
+import gzip
 import math
 import os
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -76,6 +78,56 @@ def annotate_word_pinyin(word: str, overrides: dict[str, str]) -> str | None:
             return None
         cleaned.append(s)
     return " ".join(cleaned)
+
+
+def load_cedict_and_thuocl(cache_dir: Path) -> tuple[set[str], dict[str, int]]:
+    """Loads permissive CC-CEDICT (CC-BY-SA-4.0) & THUOCL domain lexicons from cache."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cedict_path = cache_dir / "cedict.txt.gz"
+    if not cedict_path.exists():
+        try:
+            urllib.request.urlretrieve(
+                "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz",
+                cedict_path,
+            )
+        except Exception as exc:
+            print(f"Warning: could not fetch CC-CEDICT: {exc}", flush=True)
+
+    cedict_words: set[str] = set()
+    if cedict_path.exists():
+        with gzip.open(cedict_path, "rt", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(" ", 2)
+                if len(parts) >= 2 and 2 <= len(parts[1]) <= 6 and is_all_cjk(parts[1]):
+                    cedict_words.add(parts[1])
+
+    thuocl_cats = ("IT", "animal", "caijing", "car", "chengyu", "diming", "food", "law", "lishi", "medical")
+    thuocl_freqs: dict[str, int] = {}
+    for cat in thuocl_cats:
+        p = cache_dir / f"THUOCL_{cat}.txt"
+        if not p.exists():
+            try:
+                urllib.request.urlretrieve(
+                    f"https://raw.githubusercontent.com/thunlp/THUOCL/master/data/THUOCL_{cat}.txt",
+                    p,
+                )
+            except Exception as exc:
+                print(f"Warning: could not fetch THUOCL_{cat}: {exc}", flush=True)
+                continue
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and 2 <= len(parts[0]) <= 6 and is_all_cjk(parts[0]) and parts[1].isdigit():
+                freq = int(parts[1])
+                if freq >= 5:
+                    thuocl_freqs[parts[0]] = max(thuocl_freqs.get(parts[0], 0), freq)
+
+    print(
+        f"Loaded open modern lexicons: CC-CEDICT={len(cedict_words)}, THUOCL(freq>=5)={len(thuocl_freqs)}",
+        flush=True,
+    )
+    return cedict_words, thuocl_freqs
 
 
 def load_jieba_freqs() -> dict[str, int]:
@@ -142,8 +194,8 @@ def score_qwen3_zipf(candidate_words: set[str]) -> tuple[dict[str, float], list[
 
     with torch.no_grad():
         for k_len, items in by_tok_len.items():
-            items = items[:18000]
-            bs = 512
+            items = items[:45000]
+            bs = 1024
             for start in range(0, len(items), bs):
                 chunk = items[start : start + bs]
                 mat = torch.tensor(
@@ -168,7 +220,7 @@ def score_qwen3_zipf(candidate_words: set[str]) -> tuple[dict[str, float], list[
 
 
 def zipf_to_word_lp(z: float) -> float:
-    return max(-5.75, min(-2.15, -5.68 + (z - 2.65) * 0.85))
+    return max(-6.45, min(-2.15, -5.68 + (z - 2.65) * 0.85))
 
 
 def zipf_to_english_lp(z: float) -> float:
@@ -282,6 +334,7 @@ def main() -> None:
     overrides, het_chars = load_polyphone_tables(Path(args.polyphones_yaml))
     wf_dict = wordfreq.get_frequency_dict("zh")
     jieba_freqs = load_jieba_freqs()
+    cedict_words, thuocl_freqs = load_cedict_and_thuocl(Path("dist/raw_lexicon_cache"))
 
     extra_open_surfaces: set[str] = set()
     tech_tsv = Path("dist/tech_pack_lexicon.tsv")
@@ -290,6 +343,12 @@ def main() -> None:
             w = ln.split("\t", 1)[0].strip()
             if 2 <= len(w) <= 5 and is_all_cjk(w):
                 extra_open_surfaces.add(w)
+    for w in cedict_words:
+        if 2 <= len(w) <= 4:
+            extra_open_surfaces.add(w)
+    for w, freq in thuocl_freqs.items():
+        if 2 <= len(w) <= 4 and freq >= 50:
+            extra_open_surfaces.add(w)
     for w, freq in jieba_freqs.items():
         if 2 <= len(w) <= 4 and freq >= 15 and is_all_cjk(w):
             extra_open_surfaces.add(w)
@@ -322,7 +381,12 @@ def main() -> None:
                     -6.40, min(-2.05, -6.30 + (zipf_wf - 2.25) * 0.82)
                 )
         else:
-            if zipf_wf < 2.65:
+            if zipf_wf < 1.50:
+                continue
+            # Exclude low-frequency 2-char pronoun-prefixed (`我结`, `我接`) or particle-suffixed
+            # (`结了`, `解了`, `做的`) segmentation fragments below Zipf 2.65 so compositional
+            # `Pronoun + V + 了/的/着/过` phrases compete symmetrically in the lattice!
+            if clen == 2 and zipf_wf < 2.65 and (word[0] in "我你他她它" or word[1] in "了的地得着过"):
                 continue
             if word in qwen_zipf:
                 # Probability-domain / Zipf-domain weighted geometric mean (65% wordfreq, 35% Qwen3)
@@ -373,9 +437,38 @@ def main() -> None:
                 lex_entries[key] = 0.45 * lex_entries[key] + 0.55 * rescued
             continue
         qz = qwen_zipf[word]
-        if qz < 3.15:
+        if qz < 2.35:
             continue
-        lex_entries[key] = zipf_to_word_lp(qz - 0.25)
+        if clen == 2 and qz < 3.15 and (word[0] in "我你他她它" or word[1] in "了的地得着过"):
+            continue
+        lex_entries[key] = min(-4.25, zipf_to_word_lp(qz - 0.30))
+
+    # Open modern Chinese lexicons (CC-CEDICT + THUOCL domain packs) calibrated on a conservative
+    # tail floor so real modern/domain compounds (`玉桂`, `智能体`, `量子计算`, `充电宝`) are
+    # always reachable in Stage-1 and cross-boundary lookup without displacing high-frequency words!
+    for word in cedict_words | set(thuocl_freqs.keys()):
+        clen = len(word)
+        if not (2 <= clen <= 6) or not is_all_cjk(word):
+            continue
+        if clen == 2 and (word[0] in "我你他她它" or word[1] in "了的地得着过"):
+            continue
+        py = annotate_word_pinyin(word, overrides)
+        if not py or len(py.split()) != clen:
+            continue
+        key = (word, py)
+        if key in lex_entries:
+            continue
+        if word in qwen_zipf and qwen_zipf[word] >= 2.15:
+            lp = min(-4.35, zipf_to_word_lp(qwen_zipf[word] - 0.35))
+        elif thuocl_freqs.get(word, 0) >= 200:
+            lp = -5.65
+        elif word in cedict_words and clen <= 4:
+            lp = -5.95
+        elif thuocl_freqs.get(word, 0) >= 20:
+            lp = -6.05
+        else:
+            lp = -6.30
+        lex_entries[key] = max(lex_entries.get(key, -99.0), lp)
 
     # Curated polyphone compounds (`pypinyin.phrases_dict`)
     for phrase in phrases_dict:

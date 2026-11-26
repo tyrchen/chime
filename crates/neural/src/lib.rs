@@ -20,6 +20,21 @@ pub use crate::{
     worker::{AsyncRerankHandle, RerankJob, RerankResult},
 };
 
+/// Scoring mode controlling right-boundary punctuation closure and logit calibration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScoringMode {
+    /// Complete candidate phrase or sentence: applies right-boundary punctuation closure.
+    #[default]
+    ClosedSentence,
+    /// Mid-sentence single-syllable or OOV stepwise continuation: disables right-boundary
+    /// punctuation closure (`closure_weight = 0.0`) while retaining full contextual scale (`1.18`)
+    /// so verbs, copulas (`是`, `有`, `在`), and cross-boundary characters (`玉` + `桂`) are never
+    /// penalized for not ending a clause.
+    OpenContextual,
+    /// Lightweight mid-beam prefix guidance (`closure_weight = 0.0`, `scale = 0.42`).
+    BeamPrefixGuidance,
+}
+
 /// Errors raised when loading or running a `.safetensors` neural reranker bundle.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -244,6 +259,22 @@ impl SafetensorsReranker {
         candidate_texts: &[String],
         open_prefix: bool,
     ) -> Vec<f32> {
+        let mode = if open_prefix {
+            ScoringMode::BeamPrefixGuidance
+        } else {
+            ScoringMode::ClosedSentence
+        };
+        self.score_candidates_with_scoring_mode(left_context, app_bundle_id, candidate_texts, mode)
+    }
+
+    /// Computes zero-meaned conditional log-likelihood bonuses under an explicit [`ScoringMode`].
+    pub fn score_candidates_with_scoring_mode(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+        mode: ScoringMode,
+    ) -> Vec<f32> {
         if candidate_texts.is_empty() {
             return Vec::new();
         }
@@ -312,10 +343,9 @@ impl SafetensorsReranker {
             return vec![0.0; candidate_texts.len()];
         }
 
-        let eff_closure_weight = if open_prefix {
-            0.0
-        } else {
-            self.closure_weight
+        let eff_closure_weight = match mode {
+            ScoringMode::ClosedSentence => self.closure_weight,
+            ScoringMode::OpenContextual | ScoringMode::BeamPrefixGuidance => 0.0,
         };
         let Ok(joint_lps) = self.mlx_model.score_candidates_with_closure(
             &self.kv_cache,
@@ -335,12 +365,16 @@ impl SafetensorsReranker {
             valid_count,
         );
 
-        let eff_scale = if open_prefix {
-            0.42
-        } else if has_left_ctx {
-            1.18
-        } else {
-            self.weight_scale
+        let eff_scale = match mode {
+            ScoringMode::BeamPrefixGuidance => 0.42,
+            ScoringMode::OpenContextual => 1.18,
+            ScoringMode::ClosedSentence => {
+                if has_left_ctx {
+                    1.18
+                } else {
+                    self.weight_scale
+                }
+            }
         };
 
         norm_scores
