@@ -3,21 +3,28 @@
 
 #![forbid(unsafe_code)]
 
+pub mod beam_decoder;
 pub mod mlx_backend;
+pub mod pinyin_trie;
 pub mod transformer;
 pub mod worker;
 
 use std::{collections::HashMap, path::Path};
 
+use chime_phonetics::{FuzzyConfig, ShuangpinScheme};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::{
-    mlx_backend::{LoraMountSpec, LoraRouting, MlxLoraAdapter, MlxPrefixCache, MlxTransformer},
+    beam_decoder::{NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam},
+    mlx_backend::{
+        LoraMountSpec, LoraRouting, MlxBeamKv, MlxLoraAdapter, MlxPrefixCache, MlxTransformer,
+    },
+    pinyin_trie::{TokenEdge, TokenPinyinIndex},
     transformer::{
         ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
     },
-    worker::{AsyncRerankHandle, RerankJob, RerankResult},
+    worker::{AsyncRerankHandle, RerankJob, RerankResult, RouteADecodeRequest},
 };
 
 /// Scoring mode controlling right-boundary punctuation closure and logit calibration.
@@ -124,6 +131,8 @@ pub struct SafetensorsReranker {
     mlx_model: MlxTransformer,
     vocab: CompactVocab,
     kv_cache: MlxPrefixCache,
+    beam_cache: RouteABeamCache,
+    pinyin_index: Option<TokenPinyinIndex>,
     closure_token_ids: Vec<u32>,
     closure_weight: f32,
     weight_scale: f32,
@@ -172,6 +181,11 @@ impl SafetensorsReranker {
         let vocab_bytes = std::fs::read(model_dir.join("vocab.json"))?;
         let tokens: Vec<String> = serde_json::from_slice(&vocab_bytes)?;
         let vocab = CompactVocab::from_tokens(&tokens);
+        let pinyin_index = if model_dir.join("token_pinyin.json").is_file() {
+            TokenPinyinIndex::load_from_dir(model_dir, tokens).ok()
+        } else {
+            None
+        };
         let closure_token_ids: Vec<u32> = ["。", "，", "？", "！"]
             .into_iter()
             .filter_map(|p| vocab.token_id(p))
@@ -221,10 +235,160 @@ impl SafetensorsReranker {
             mlx_model,
             vocab,
             kv_cache,
+            beam_cache: RouteABeamCache::default(),
+            pinyin_index,
             closure_token_ids,
             closure_weight,
             weight_scale: 1.02,
         })
+    }
+
+    /// Returns true if `token_pinyin.json` was loaded and Route A constrained neural beam
+    /// decoding is available.
+    #[must_use]
+    pub const fn has_constrained_decoder(&self) -> bool {
+        self.pinyin_index.is_some()
+    }
+
+    /// Runs Route A (First-Principles Pinyin-Constrained Autoregressive Neural Beam Search)
+    /// directly inside the 8-layer MLX Transformer + Multi-LoRA!
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_constrained(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+    ) -> Vec<NeuralBeamCandidate> {
+        let Some(pinyin_index) = &self.pinyin_index else {
+            return Vec::new();
+        };
+        let trimmed_ctx = left_context.trim();
+        let has_left_ctx = !trimmed_ctx.is_empty();
+        let bounded_ctx: String = if has_left_ctx {
+            let chars: Vec<char> = trimmed_ctx.chars().collect();
+            let start = chars.len().saturating_sub(96);
+            let slice: String = chars[start..].iter().collect();
+            if slice.starts_with('。') {
+                slice
+            } else {
+                format!("。{slice}")
+            }
+        } else {
+            // 2-token neutral anchor: RoPE position 0 absorbs Qwen3's attention sink while
+            // position 1 produces a crisp, non-degenerate Chinese sentence-start distribution!
+            "。，".to_string()
+        };
+        let unk = self.vocab.unk_token;
+        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
+        prefix_ids.retain(|&id| id != unk);
+        if prefix_ids.is_empty() {
+            prefix_ids.push(self.vocab.bos_token);
+        }
+
+        let lora_scales = self
+            .mlx_model
+            .compute_lora_scales(app_bundle_id, left_context, &[]);
+
+        decode_constrained_beam(
+            &self.mlx_model,
+            &mut self.kv_cache,
+            pinyin_index,
+            left_context,
+            app_bundle_id,
+            &prefix_ids,
+            &lora_scales,
+            &self.closure_token_ids,
+            self.closure_weight,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+            Some(&mut self.beam_cache),
+        )
+    }
+
+    /// Computes exact unnormalized Bayesian log-likelihoods `log P_LM(Y | C) (+ closure)` on the
+    /// exact same `"。，"` / `left_context` manifold as [`Self::decode_constrained`], used to score
+    /// exact-pinyin multi-character lexicon / `.imepack` / custom phrase hypotheses without any
+    /// static unigram or bigram bias!
+    pub fn score_candidates_exact_bayesian(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        candidate_texts: &[String],
+        mode: ScoringMode,
+    ) -> Vec<f32> {
+        if candidate_texts.is_empty() {
+            return Vec::new();
+        }
+        let trimmed_ctx = left_context.trim();
+        let has_left_ctx = !trimmed_ctx.is_empty();
+        let bounded_ctx: String = if has_left_ctx {
+            let chars: Vec<char> = trimmed_ctx.chars().collect();
+            let start = chars.len().saturating_sub(96);
+            let slice: String = chars[start..].iter().collect();
+            if slice.starts_with('。') {
+                slice
+            } else {
+                format!("。{slice}")
+            }
+        } else {
+            "。，".to_string()
+        };
+        let unk = self.vocab.unk_token;
+        let mut prefix_ids = self.vocab.encode(&bounded_ctx, false);
+        prefix_ids.retain(|&id| id != unk);
+        if prefix_ids.is_empty() {
+            prefix_ids.push(self.vocab.bos_token);
+        }
+
+        let lora_scales =
+            self.mlx_model
+                .compute_lora_scales(app_bundle_id, left_context, candidate_texts);
+
+        if self
+            .mlx_model
+            .ensure_prefix_cached_with_scales(&prefix_ids, &lora_scales, &mut self.kv_cache)
+            .is_err()
+        {
+            return vec![f32::NEG_INFINITY; candidate_texts.len()];
+        }
+
+        let mut valid_mask = Vec::with_capacity(candidate_texts.len());
+        let mut encoded = Vec::with_capacity(candidate_texts.len());
+        for text in candidate_texts {
+            let ids = self.vocab.encode(text, false);
+            let valid = !ids.is_empty() && !ids.contains(&unk);
+            valid_mask.push(valid);
+            encoded.push(if valid { ids } else { Vec::new() });
+        }
+
+        let eff_closure_weight = match mode {
+            ScoringMode::ClosedSentence => self.closure_weight,
+            ScoringMode::OpenContextual | ScoringMode::BeamPrefixGuidance => 0.0,
+        };
+        let Ok(joint_lps) = self.mlx_model.score_candidates_with_closure(
+            &self.kv_cache,
+            &encoded,
+            &lora_scales,
+            &self.closure_token_ids,
+            eff_closure_weight,
+        ) else {
+            return vec![f32::NEG_INFINITY; candidate_texts.len()];
+        };
+
+        joint_lps
+            .into_iter()
+            .zip(valid_mask)
+            .map(|(lp, ok)| if ok { lp } else { f32::NEG_INFINITY })
+            .collect()
     }
 
     /// Number of mounted `Multi-LoRA` sidecar adapters.
@@ -679,6 +843,91 @@ mod tests {
         assert!(
             colloq_scale.abs() < 1e-6,
             "expected 0.0 on colloquial prose, got {colloq_scale}"
+        );
+    }
+
+    #[test]
+    fn test_route_a_constrained_beam_and_incremental_kv_cache() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        TinyModelBuilder::write_demo_bundle(dir.path(), &[("今天", "使用"), ("使用", "模型")])
+            .unwrap_or_else(|_| std::process::abort());
+
+        let vocab_bytes =
+            std::fs::read(dir.path().join("vocab.json")).unwrap_or_else(|_| std::process::abort());
+        let vocab_tokens: Vec<String> =
+            serde_json::from_slice(&vocab_bytes).unwrap_or_else(|_| std::process::abort());
+        let tid_of = |s: &str| -> u32 {
+            u32::try_from(vocab_tokens.iter().position(|t| t == s).unwrap_or(0)).unwrap_or(0)
+        };
+        let tp_json = serde_json::json!({
+            "vocab_size": vocab_tokens.len(),
+            "cjk": [
+                [tid_of("今天"), [["jin", "tian"]]],
+                [tid_of("使用"), [["shi", "yong"]]],
+                [tid_of("模型"), [["mo", "xing"]]],
+                [tid_of("端侧"), [["duan", "ce"]]],
+                [tid_of("量化"), [["liang", "hua"]]],
+                [tid_of("亮化"), [["liang", "hua"]]]
+            ],
+            "trad": [],
+            "en": [],
+            "en_multi": []
+        });
+        std::fs::write(
+            dir.path().join("token_pinyin.json"),
+            serde_json::to_string(&tp_json).unwrap_or_else(|_| std::process::abort()),
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        let mut slm_fresh =
+            SafetensorsReranker::load_dir(dir.path()).unwrap_or_else(|_| std::process::abort());
+        assert!(slm_fresh.has_constrained_decoder());
+
+        let fresh = slm_fresh.decode_constrained(
+            "",
+            "md.obsidian",
+            "jintianshiyongmoxing",
+            ShuangpinScheme::Full,
+            FuzzyConfig::default(),
+            true,
+            ScoringMode::ClosedSentence,
+            6,
+        );
+        assert!(
+            fresh.first().is_some_and(|c| c.text == "今天使用模型"),
+            "Route A should decode trained sequence: {fresh:?}"
+        );
+
+        // Incremental keystroke path (`jintianshiyongmo` -> `jintianshiyongmoxing`) must match
+        // fresh decode via `RouteABeamCache`!
+        let mut slm_inc =
+            SafetensorsReranker::load_dir(dir.path()).unwrap_or_else(|_| std::process::abort());
+        let _prefix = slm_inc.decode_constrained(
+            "",
+            "md.obsidian",
+            "jintianshiyongmo",
+            ShuangpinScheme::Full,
+            FuzzyConfig::default(),
+            true,
+            ScoringMode::ClosedSentence,
+            6,
+        );
+        let inc = slm_inc.decode_constrained(
+            "",
+            "md.obsidian",
+            "jintianshiyongmoxing",
+            ShuangpinScheme::Full,
+            FuzzyConfig::default(),
+            true,
+            ScoringMode::ClosedSentence,
+            6,
+        );
+        assert_eq!(inc.first().map(|c| c.text.as_str()), Some("今天使用模型"));
+        assert!(
+            (inc[0].score - fresh[0].score).abs() < 5e-3,
+            "incremental RouteABeamCache score {} != fresh {}",
+            inc[0].score,
+            fresh[0].score
         );
     }
 }

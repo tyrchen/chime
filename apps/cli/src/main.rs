@@ -96,6 +96,12 @@ enum Commands {
         /// Optional neural reranker directory (`dist/base_neural`) for Stage-2 Metal GPU scoring.
         #[arg(long)]
         neural: Option<PathBuf>,
+        /// Use Route A (first-principles Pinyin-constrained autoregressive neural beam search).
+        #[arg(long, default_value_t = false)]
+        route_a: bool,
+        /// Beam width for Route A neural beam search.
+        #[arg(long, default_value_t = 8)]
+        beam_width: usize,
     },
     /// Build the comprehensive permissive base `.imedict` binary lexicon.
     DictBuildBase {
@@ -232,6 +238,12 @@ enum Commands {
         /// Optional run tag recorded in `--record` JSONL (e.g. `v0.8.0-dev` or `v0.8.0-holdout`).
         #[arg(long, default_value = "manual")]
         tag: String,
+        /// Use Route A (first-principles Pinyin-constrained autoregressive neural beam search).
+        #[arg(long, default_value_t = false)]
+        route_a: bool,
+        /// Beam width for Route A neural beam search.
+        #[arg(long, default_value_t = 8)]
+        beam_width: usize,
     },
 }
 
@@ -294,6 +306,8 @@ fn main() -> Result<()> {
             dict,
             pack,
             neural,
+            route_a,
+            beam_width,
         } => {
             let mut lex = if dict.is_some() {
                 Lexicon::with_core_grammar()
@@ -304,39 +318,85 @@ fn main() -> Result<()> {
                 lex.mount_compiled_mmap(&d_path)?;
             }
             let lora_specs = mount_cli_packs(&pack, &mut lex)?;
-            let mut decoder = LatticeDecoder::new();
-            if let Some(np) = neural
-                && np.join("model.safetensors").exists()
-            {
-                let slm = AsyncRerankHandle::spawn_from_dir_with_loras(&np, lora_specs)?;
-                decoder = decoder.with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
-            }
-            let user_store = chime_lexicon::UserStore::new();
-            let ctx = DecodeContext {
-                left_context: &context,
-                app_bundle_id: &app,
-                scheme: scheme.into(),
-                fuzzy: chime_phonetics::FuzzyConfig::default(),
-                pangu_spacing: true,
-                uppercase_triggers_english: true,
-                english_auto_correct: true,
-                now_epoch_secs: 1_000,
-            };
-            let t0 = Instant::now();
-            let cands = decoder.decode(&input, &lex, &user_store, &ctx);
-            let elapsed_us = t0.elapsed().as_micros();
-
-            writeln!(stdout, "Input: {input}  (decoded in {elapsed_us} us)")?;
-            for (idx, cand) in cands.iter().take(9).enumerate() {
+            if route_a {
+                let np = neural
+                    .as_deref()
+                    .context("--route-a requires --neural <model_dir>")?;
+                let mut slm =
+                    chime_neural::SafetensorsReranker::load_dir_with_loras(np, &lora_specs)?;
+                let sch: ShuangpinScheme = scheme.into();
+                let is_single_syl_ctx = !context.trim().is_empty()
+                    && sch == ShuangpinScheme::Full
+                    && !input.contains('\'')
+                    && chime_phonetics::is_valid_syllable(&input.to_ascii_lowercase());
+                let mode = if is_single_syl_ctx {
+                    chime_neural::ScoringMode::OpenContextual
+                } else {
+                    chime_neural::ScoringMode::ClosedSentence
+                };
+                let t0 = Instant::now();
+                let cands = slm.decode_constrained(
+                    &context,
+                    &app,
+                    &input,
+                    sch,
+                    chime_phonetics::FuzzyConfig::default(),
+                    true,
+                    mode,
+                    beam_width,
+                );
+                let elapsed_us = t0.elapsed().as_micros();
                 writeln!(
                     stdout,
-                    "  {}. {}  [score={:.2}, kind={:?}, bytes={}]",
-                    idx + 1,
-                    cand.text,
-                    cand.score,
-                    cand.kind,
-                    cand.consumed_bytes
+                    "Input: {input}  [Route-A beam={beam_width}] (decoded in {elapsed_us} us)"
                 )?;
+                for (idx, cand) in cands.iter().take(9).enumerate() {
+                    writeln!(
+                        stdout,
+                        "  {}. {}  [score={:.2}, lm={:.2}, chan={:.2}, exact={}]",
+                        idx + 1,
+                        cand.text,
+                        cand.score,
+                        cand.lm_log_prob,
+                        cand.channel_cost,
+                        cand.is_exact,
+                    )?;
+                }
+            } else {
+                let mut decoder = LatticeDecoder::new();
+                if let Some(np) = neural
+                    && np.join("model.safetensors").exists()
+                {
+                    let slm = AsyncRerankHandle::spawn_from_dir_with_loras(&np, lora_specs)?;
+                    decoder = decoder.with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
+                }
+                let user_store = chime_lexicon::UserStore::new();
+                let ctx = DecodeContext {
+                    left_context: &context,
+                    app_bundle_id: &app,
+                    scheme: scheme.into(),
+                    fuzzy: chime_phonetics::FuzzyConfig::default(),
+                    pangu_spacing: true,
+                    uppercase_triggers_english: true,
+                    english_auto_correct: true,
+                    now_epoch_secs: 1_000,
+                };
+                let t0 = Instant::now();
+                let cands = decoder.decode(&input, &lex, &user_store, &ctx);
+                let elapsed_us = t0.elapsed().as_micros();
+
+                writeln!(stdout, "Input: {input}  (decoded in {elapsed_us} us)")?;
+                for (idx, cand) in cands.iter().take(9).enumerate() {
+                    writeln!(
+                        stdout,
+                        "  {}. {}  [score={:.2}, kind={:?}, bytes={}]",
+                        idx + 1,
+                        cand.text,
+                        cand.score,
+                        cand.kind,
+                        cand.consumed_bytes
+                    )?;
+                }
             }
         }
         Commands::DictBuildBase {
@@ -577,6 +637,8 @@ fn main() -> Result<()> {
             failures_out,
             record,
             tag,
+            route_a,
+            beam_width,
         } => {
             run_large_bench(
                 &mut stdout,
@@ -587,6 +649,8 @@ fn main() -> Result<()> {
                 failures_out.as_deref(),
                 record.as_deref(),
                 &tag,
+                route_a,
+                beam_width,
             )?;
         }
     }
@@ -1106,6 +1170,8 @@ fn run_golden_eval(
     };
     let cfg = slm.config().clone();
     let active_loras = slm.lora_count();
+    let use_route_a = slm.has_constrained_decoder();
+    let route_a_worker = slm.clone();
     let decoder = LatticeDecoder::new().with_reranker(Box::new(SyncNeuralAdapter { inner: slm }));
     let user_store = chime_lexicon::UserStore::new();
 
@@ -1115,12 +1181,13 @@ fn run_golden_eval(
     writeln!(
         out,
         "Running Chime Complete Benchmark Suite ({} decode + interactive cases | MLX Metal SLM: \
-         layers={}, hidden={}, vocab={}, active_loras={})...",
+         layers={}, hidden={}, vocab={}, active_loras={}, mode={})...",
         cases.len(),
         cfg.num_hidden_layers,
         cfg.hidden_size,
         cfg.vocab_size,
-        active_loras
+        active_loras,
+        if use_route_a { "Route-A" } else { "2-Stage" }
     )?;
     for c in &cases {
         let ctx = DecodeContext {
@@ -1134,11 +1201,70 @@ fn run_golden_eval(
             now_epoch_secs: 1_000,
         };
         let t0 = Instant::now();
-        let cands = decoder.decode(c.keys, &base_lex, &user_store, &ctx);
+        let got_owned: String = if use_route_a
+            && !c.keys.bytes().any(|b| b.is_ascii_uppercase())
+            && !c
+                .keys
+                .bytes()
+                .any(|b| b.is_ascii_digit() || matches!(b, b'.' | b'/' | b'_' | b'-'))
+        {
+            let stage1 = decoder.decode(c.keys, &base_lex, &user_store, &ctx);
+            if let Some(comp) = stage1
+                .first()
+                .filter(|cand| cand.kind == chime_decoder::MatchKind::Completion)
+            {
+                comp.text.clone()
+            } else {
+                let mut extra = Vec::new();
+                if c.keys.len() >= 6 {
+                    for lc in &stage1 {
+                        if lc.consumed_bytes == c.keys.len()
+                            && lc.kind == chime_decoder::MatchKind::Exact
+                            && !extra.contains(&lc.text)
+                        {
+                            extra.push(lc.text.clone());
+                            if extra.len() >= 4 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let is_single_syl_ctx = !c.left_ctx.trim().is_empty()
+                    && c.scheme == ShuangpinScheme::Full
+                    && !c.keys.contains('\'')
+                    && chime_phonetics::is_valid_syllable(&c.keys.to_ascii_lowercase());
+                let req = chime_neural::RouteADecodeRequest {
+                    app_bundle_id: c.app.to_string(),
+                    left_context: c.left_ctx.to_string(),
+                    raw_input: c.keys.to_string(),
+                    scheme: c.scheme,
+                    fuzzy: chime_phonetics::FuzzyConfig::default(),
+                    pangu_spacing: true,
+                    scoring_mode: if is_single_syl_ctx {
+                        chime_neural::ScoringMode::OpenContextual
+                    } else {
+                        chime_neural::ScoringMode::ClosedSentence
+                    },
+                    beam_width: 8,
+                    extra_exact_candidates: extra,
+                };
+                route_a_worker
+                    .decode_route_a_with_budget(req, std::time::Duration::from_millis(250))
+                    .and_then(|v| v.into_iter().next().map(|x| x.text))
+                    .or_else(|| stage1.into_iter().next().map(|cand| cand.text))
+                    .unwrap_or_else(|| "<empty>".to_string())
+            }
+        } else {
+            let cands = decoder.decode(c.keys, &base_lex, &user_store, &ctx);
+            cands
+                .into_iter()
+                .next()
+                .map_or_else(|| "<empty>".to_string(), |cand| cand.text)
+        };
         let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         latencies_us.push(us);
 
-        let got = cands.first().map_or("<empty>", |cand| cand.text.as_str());
+        let got = got_owned.as_str();
         let ok = got == c.expected_top1;
         if ok {
             passed += 1;
@@ -1371,6 +1497,8 @@ fn run_large_bench(
     failures_out: Option<&Path>,
     record_path: Option<&Path>,
     tag: &str,
+    route_a: bool,
+    beam_width: usize,
 ) -> Result<()> {
     let raw_tsv = fs::read_to_string(tsv_path)
         .with_context(|| format!("failed to read benchmark TSV {}", tsv_path.display()))?;
@@ -1384,7 +1512,18 @@ fn run_large_bench(
     };
     let lora_specs = mount_cli_packs(pack_dirs, &mut base_lex)?;
 
-    let decoder = if let Some(np) = neural_path
+    let mut route_a_slm = if route_a {
+        let np = neural_path.context("--route-a requires --neural <model_dir>")?;
+        Some(chime_neural::SafetensorsReranker::load_dir_with_loras(
+            np,
+            &lora_specs,
+        )?)
+    } else {
+        None
+    };
+
+    let decoder = if !route_a
+        && let Some(np) = neural_path
         && np.join("model.safetensors").exists()
     {
         let slm = AsyncRerankHandle::spawn_from_dir_with_loras(np, lora_specs)?;
@@ -1408,7 +1547,7 @@ fn run_large_bench(
     let wall_t0 = Instant::now();
     for (line_no, raw_line) in raw_tsv.lines().enumerate() {
         let line = raw_line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("category\t") {
             continue;
         }
         let cols: Vec<&str> = line.split('\t').collect();
@@ -1429,32 +1568,105 @@ fn run_large_bench(
         let keys = cols[4].trim();
         let expected_alts: Vec<&str> = cols[5].split('|').map(str::trim).collect();
 
-        let ctx = DecodeContext {
-            left_context: left_ctx,
-            app_bundle_id: app,
-            scheme,
-            fuzzy: chime_phonetics::FuzzyConfig::default(),
-            pangu_spacing: true,
-            uppercase_triggers_english: true,
-            english_auto_correct: true,
-            now_epoch_secs: 1_000,
-        };
-
         let t0 = Instant::now();
-        let cands = decoder.decode(keys, &base_lex, &user_store, &ctx);
-        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
-
-        // Evaluate rank among full-span candidates (`consumed_bytes == keys.len()`) so partial
-        // single-character grid fallbacks don't skew sentence rank.
-        let full_cands: Vec<&Candidate> = cands
-            .iter()
-            .filter(|c| c.consumed_bytes == keys.len())
-            .collect();
-        let eval_pool: Vec<&str> = if full_cands.is_empty() {
-            cands.iter().map(|c| c.text.as_str()).collect()
+        let eval_owned: Vec<String> = if let Some(slm) = route_a_slm.as_mut() {
+            let is_single_syl_ctx = !left_ctx.trim().is_empty()
+                && scheme == ShuangpinScheme::Full
+                && !keys.contains('\'')
+                && chime_phonetics::is_valid_syllable(&keys.to_ascii_lowercase());
+            let mode = if is_single_syl_ctx {
+                chime_neural::ScoringMode::OpenContextual
+            } else {
+                chime_neural::ScoringMode::ClosedSentence
+            };
+            let mut ncands = slm.decode_constrained(
+                left_ctx,
+                app,
+                keys,
+                scheme,
+                chime_phonetics::FuzzyConfig::default(),
+                true,
+                mode,
+                beam_width,
+            );
+            // Pure-Bayesian Exact-Lexicon Hypothesis Fusion:
+            // Collect exact-pinyin full-span dictionary/idiom/pack proposals (ZERO static unigram
+            // score!) and score them on the exact same `log P_LM(Y | C) (+ closure)` scale so
+            // rare-start 4-char idioms, classical verses, and `.imepack` terms never suffer beam
+            // horizon pruning!
+            let stage1_ctx = DecodeContext {
+                left_context: left_ctx,
+                app_bundle_id: app,
+                scheme,
+                fuzzy: chime_phonetics::FuzzyConfig::default(),
+                pangu_spacing: true,
+                uppercase_triggers_english: true,
+                english_auto_correct: true,
+                now_epoch_secs: 1_000,
+            };
+            if keys.len() >= 6 && !is_single_syl_ctx {
+                let lex_cands = decoder.decode(keys, &base_lex, &user_store, &stage1_ctx);
+                let mut extra_texts: Vec<String> = Vec::new();
+                for lc in lex_cands {
+                    if lc.consumed_bytes == keys.len()
+                        && lc.kind == chime_decoder::MatchKind::Exact
+                        && !ncands.iter().any(|c| c.text == lc.text)
+                        && !extra_texts.contains(&lc.text)
+                    {
+                        extra_texts.push(lc.text);
+                        if extra_texts.len() >= 4 {
+                            break;
+                        }
+                    }
+                }
+                if !extra_texts.is_empty() {
+                    let eff_mode = if !left_ctx.trim().is_empty() && keys.len() <= 12 {
+                        chime_neural::ScoringMode::OpenContextual
+                    } else {
+                        mode
+                    };
+                    let lps =
+                        slm.score_candidates_exact_bayesian(left_ctx, app, &extra_texts, eff_mode);
+                    for (txt, lp) in extra_texts.into_iter().zip(lps) {
+                        if lp.is_finite() {
+                            ncands.push(chime_neural::NeuralBeamCandidate {
+                                text: txt,
+                                score: lp,
+                                lm_log_prob: lp,
+                                channel_cost: 0.0,
+                                is_exact: true,
+                                consumed_bytes: keys.len(),
+                            });
+                        }
+                    }
+                    ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
+                }
+            }
+            ncands.into_iter().map(|c| c.text).collect()
         } else {
-            full_cands.iter().map(|c| c.text.as_str()).collect()
+            let ctx = DecodeContext {
+                left_context: left_ctx,
+                app_bundle_id: app,
+                scheme,
+                fuzzy: chime_phonetics::FuzzyConfig::default(),
+                pangu_spacing: true,
+                uppercase_triggers_english: true,
+                english_auto_correct: true,
+                now_epoch_secs: 1_000,
+            };
+            let cands = decoder.decode(keys, &base_lex, &user_store, &ctx);
+            let full_cands: Vec<&Candidate> = cands
+                .iter()
+                .filter(|c| c.consumed_bytes == keys.len())
+                .collect();
+            if full_cands.is_empty() {
+                cands.into_iter().map(|c| c.text).collect()
+            } else {
+                full_cands.into_iter().map(|c| c.text.clone()).collect()
+            }
         };
+        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let eval_pool: Vec<&str> = eval_owned.iter().map(String::as_str).collect();
 
         let found_pos = eval_pool
             .iter()

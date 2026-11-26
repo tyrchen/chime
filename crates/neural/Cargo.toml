@@ -10,11 +10,13 @@ description = "Sub-10ms on-device Qwen2.5-arch Safetensors SLM reranker with Pre
 workspace = true
 
 [dependencies]
+chime-phonetics = { workspace = true }
 flume = { workspace = true }
 mlx-rs = { workspace = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

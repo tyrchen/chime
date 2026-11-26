@@ -10,11 +10,13 @@ use std::{
 
 use mlx_rs::{
     Array, Dtype as MlxDtype,
-    fast::{ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention},
+    fast::{
+        ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
+    },
     nn::{log_softmax, silu},
     ops::{
         DequantizeOptions, QuantizedMatmulOptions, broadcast_to, concatenate, dequantize,
-        indexing::TryIndexOp, quantized_matmul,
+        indexing::TryIndexOp, quantized_matmul, zeros,
     },
     transforms::eval,
 };
@@ -482,6 +484,36 @@ impl MlxPrefixCache {
 impl Default for MlxPrefixCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Owned per-beam KV-Cache state (`[1, n_kv, seq_len, head_dim]` per layer) used by Route A
+/// syllable-synchronous autoregressive neural beam search.
+#[derive(Debug, Clone)]
+pub struct MlxBeamKv {
+    /// Per-layer cached keys (`[1, n_kv, seq_len, head_dim]`).
+    pub keys: Vec<Array>,
+    /// Per-layer cached values (`[1, n_kv, seq_len, head_dim]`).
+    pub vals: Vec<Array>,
+    /// Number of cached sequence positions in `keys` / `vals`.
+    pub seq_len: usize,
+}
+
+impl MlxPrefixCache {
+    /// Creates a zero-copy `MlxBeamKv` root handle sharing the prefilled prefix KV tensors.
+    #[must_use]
+    pub fn to_beam_kv(&self) -> MlxBeamKv {
+        MlxBeamKv {
+            keys: self.keys.clone(),
+            vals: self.values.clone(),
+            seq_len: self.cached_tokens.len(),
+        }
+    }
+
+    /// Returns the cached log-probability distribution over the next token after the prefix.
+    #[must_use]
+    pub fn next_token_log_probs(&self) -> &[f32] {
+        &self.next_token_log_probs
     }
 }
 
@@ -1299,6 +1331,362 @@ impl MlxTransformer {
             .map_err(mlx_err)?;
 
         Ok((last_logits, next_keys, next_vals))
+    }
+
+    /// Advances a batch of `B` active beams (supporting **heterogeneous** `seq_len` across beams!)
+    /// by 1 token each in **ONE single `[B, 1]` Metal GPU forward pass** via `rope_dynamic` and
+    /// masked right-padded KV-Cache, returning:
+    /// 1. Exact next-token log-probabilities gathered ONLY for `allowed_next_ids` (`[B * M]`),
+    /// 2. Compact unpadded per-beam `MlxBeamKv` states (`seq_len = parent.seq_len + 1`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if any MLX Metal kernel fails.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::too_many_lines
+    )]
+    pub fn step_beams_gather_lps(
+        &self,
+        beam_parents: &[&MlxBeamKv],
+        step_tokens: &[u32],
+        allowed_next_ids: &[u32],
+        lora_scales: &[f32],
+    ) -> Result<(Vec<f32>, Vec<MlxBeamKv>), NeuralError> {
+        let b_usize = beam_parents.len();
+        if b_usize == 0 || b_usize != step_tokens.len() || allowed_next_ids.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let batch_size = b_usize as i32;
+        let mut min_len = usize::MAX;
+        let mut max_len = 0usize;
+        for p in beam_parents {
+            min_len = min_len.min(p.seq_len);
+            max_len = max_len.max(p.seq_len);
+        }
+        let is_hetero = min_len < max_len;
+        let vocab_max = i32::try_from(self.config.vocab_size.saturating_sub(1)).unwrap_or(0);
+        let d = self.config.hidden_size as i32;
+        let n_heads = self.config.num_attention_heads as i32;
+        let n_kv = self.config.num_key_value_heads as i32;
+        let head_dim = self.config.effective_head_dim() as i32;
+        let q_out_dim = n_heads * head_dim;
+        #[allow(clippy::cast_precision_loss)]
+        let attn_scale = 1.0_f32 / (head_dim as f32).sqrt();
+
+        let input_flat: Vec<i32> = step_tokens
+            .iter()
+            .map(|&id| i32::try_from(id).unwrap_or(0).clamp(0, vocab_max))
+            .collect();
+        let mut hidden = self
+            .embed_tokens
+            .lookup_batch(&input_flat, batch_size, 1, d)?;
+        let act_dtype = hidden.dtype();
+
+        // Build per-row RoPE offset array and `[B, 1, 1, max_len + 1]` attention mask when beams
+        // have heterogeneous past lengths!
+        let (offsets_arr, attn_mask_arr) = if is_hetero {
+            let offs: Vec<i32> = beam_parents.iter().map(|p| p.seq_len as i32).collect();
+            let off_arr = Array::from_slice(&offs, &[batch_size]);
+            let total_k = max_len + 1;
+            let mut mask_vals = vec![0.0_f32; b_usize * total_k];
+            for (b, p) in beam_parents.iter().enumerate() {
+                let row = b * total_k;
+                for j in p.seq_len..max_len {
+                    mask_vals[row + j] = -1e9_f32;
+                }
+            }
+            let m_arr = Array::from_slice(&mask_vals, &[batch_size, 1, 1, total_k as i32])
+                .as_dtype(act_dtype)
+                .map_err(mlx_err)?;
+            (Some(off_arr), Some(m_arr))
+        } else {
+            (None, None)
+        };
+
+        let num_layers = self.config.num_hidden_layers;
+        let mut stacked_keys_out = Vec::with_capacity(num_layers);
+        let mut stacked_vals_out = Vec::with_capacity(num_layers);
+
+        for (l_idx, layer) in self.layers.iter().enumerate() {
+            let past_kv_pair: Option<(Array, Array)> = if max_len > 0 {
+                if b_usize == 1 {
+                    Some((
+                        beam_parents[0].keys[l_idx].clone(),
+                        beam_parents[0].vals[l_idx].clone(),
+                    ))
+                } else if !is_hetero {
+                    let ks: Vec<&Array> = beam_parents.iter().map(|p| &p.keys[l_idx]).collect();
+                    let vs: Vec<&Array> = beam_parents.iter().map(|p| &p.vals[l_idx]).collect();
+                    Some((
+                        concatenate(&ks, 0).map_err(mlx_err)?,
+                        concatenate(&vs, 0).map_err(mlx_err)?,
+                    ))
+                } else {
+                    let kv_dtype = beam_parents[0].keys[l_idx].dtype();
+                    let mut padded_keys: Vec<Array> = Vec::with_capacity(b_usize);
+                    let mut padded_vals: Vec<Array> = Vec::with_capacity(b_usize);
+                    for p in beam_parents {
+                        let pad = max_len - p.seq_len;
+                        if pad == 0 {
+                            padded_keys.push(p.keys[l_idx].clone());
+                            padded_vals.push(p.vals[l_idx].clone());
+                        } else {
+                            let z = zeros::<f32>(&[1, n_kv, pad as i32, head_dim])
+                                .map_err(mlx_err)?
+                                .as_dtype(kv_dtype)
+                                .map_err(mlx_err)?;
+                            padded_keys
+                                .push(concatenate(&[&p.keys[l_idx], &z], 2).map_err(mlx_err)?);
+                            padded_vals
+                                .push(concatenate(&[&p.vals[l_idx], &z], 2).map_err(mlx_err)?);
+                        }
+                    }
+                    let k_refs: Vec<&Array> = padded_keys.iter().collect();
+                    let v_refs: Vec<&Array> = padded_vals.iter().collect();
+                    Some((
+                        concatenate(&k_refs, 0).map_err(mlx_err)?,
+                        concatenate(&v_refs, 0).map_err(mlx_err)?,
+                    ))
+                }
+            } else {
+                None
+            };
+
+            if let Some(off) = offsets_arr.as_ref() {
+                // Heterogeneous single-step layer using `rope_dynamic` + padded attention mask!
+                let normed = rms_norm(&hidden, Some(&layer.input_norm), self.config.rms_norm_eps)
+                    .map_err(mlx_err)?;
+                let st_layer = self.stacked_loras.get(l_idx);
+
+                let mut q_lin = layer.q_proj.forward_with_stacked_lora(
+                    &normed,
+                    st_layer.and_then(|sl| sl.q.as_ref()),
+                    lora_scales,
+                )?;
+                if let Some(b) = &layer.q_bias {
+                    q_lin = q_lin.add(b).map_err(mlx_err)?;
+                }
+                let mut k_lin = layer.k_proj.forward_with_stacked_lora(
+                    &normed,
+                    st_layer.and_then(|sl| sl.k.as_ref()),
+                    lora_scales,
+                )?;
+                if let Some(b) = &layer.k_bias {
+                    k_lin = k_lin.add(b).map_err(mlx_err)?;
+                }
+                let mut v_lin = layer.v_proj.forward_with_stacked_lora(
+                    &normed,
+                    st_layer.and_then(|sl| sl.v.as_ref()),
+                    lora_scales,
+                )?;
+                if let Some(b) = &layer.v_bias {
+                    v_lin = v_lin.add(b).map_err(mlx_err)?;
+                }
+
+                let mut q_reshaped = q_lin
+                    .reshape(&[batch_size, 1, n_heads, head_dim])
+                    .map_err(mlx_err)?;
+                if let Some(qn) = &layer.q_norm {
+                    q_reshaped = rms_norm(&q_reshaped, Some(qn), self.config.rms_norm_eps)
+                        .map_err(mlx_err)?;
+                }
+                let q_heads = q_reshaped.transpose_axes(&[0, 2, 1, 3]).map_err(mlx_err)?;
+
+                let mut k_reshaped = k_lin
+                    .reshape(&[batch_size, 1, n_kv, head_dim])
+                    .map_err(mlx_err)?;
+                if let Some(kn) = &layer.k_norm {
+                    k_reshaped = rms_norm(&k_reshaped, Some(kn), self.config.rms_norm_eps)
+                        .map_err(mlx_err)?;
+                }
+                let k_heads = k_reshaped.transpose_axes(&[0, 2, 1, 3]).map_err(mlx_err)?;
+                let v_heads = v_lin
+                    .reshape(&[batch_size, 1, n_kv, head_dim])
+                    .map_err(mlx_err)?
+                    .transpose_axes(&[0, 2, 1, 3])
+                    .map_err(mlx_err)?;
+
+                let q_rope = rope_dynamic(
+                    &q_heads,
+                    head_dim,
+                    false,
+                    self.config.rope_theta,
+                    1.0,
+                    off,
+                    None,
+                )
+                .map_err(mlx_err)?;
+                let k_rope = rope_dynamic(
+                    &k_heads,
+                    head_dim,
+                    false,
+                    self.config.rope_theta,
+                    1.0,
+                    off,
+                    None,
+                )
+                .map_err(mlx_err)?;
+
+                let (k_full, v_full) = if let Some((pk, pv)) = &past_kv_pair {
+                    (
+                        concatenate(&[pk, &k_rope], 2).map_err(mlx_err)?,
+                        concatenate(&[pv, &v_heads], 2).map_err(mlx_err)?,
+                    )
+                } else {
+                    (k_rope, v_heads)
+                };
+
+                let mask = attn_mask_arr
+                    .as_ref()
+                    .map(ScaledDotProductAttentionMask::Array);
+                let attn =
+                    scaled_dot_product_attention(&q_rope, &k_full, &v_full, attn_scale, mask, None)
+                        .map_err(mlx_err)?;
+                let attn_flat = attn
+                    .transpose_axes(&[0, 2, 1, 3])
+                    .map_err(mlx_err)?
+                    .reshape(&[batch_size, 1, q_out_dim])
+                    .map_err(mlx_err)?;
+                let attn_proj = layer.o_proj.forward_with_stacked_lora(
+                    &attn_flat,
+                    st_layer.and_then(|sl| sl.o.as_ref()),
+                    lora_scales,
+                )?;
+                let after_attn = hidden.add(&attn_proj).map_err(mlx_err)?;
+                let post = rms_norm(
+                    &after_attn,
+                    Some(&layer.post_attn_norm),
+                    self.config.rms_norm_eps,
+                )
+                .map_err(mlx_err)?;
+                let gate_raw = layer.gate_proj.forward_with_stacked_lora(
+                    &post,
+                    st_layer.and_then(|sl| sl.gate.as_ref()),
+                    lora_scales,
+                )?;
+                let gate = silu(&gate_raw).map_err(mlx_err)?;
+                let up = layer.up_proj.forward_with_stacked_lora(
+                    &post,
+                    st_layer.and_then(|sl| sl.up.as_ref()),
+                    lora_scales,
+                )?;
+                let gated = gate.multiply(&up).map_err(mlx_err)?;
+                let down = layer.down_proj.forward_with_stacked_lora(
+                    &gated,
+                    st_layer.and_then(|sl| sl.down.as_ref()),
+                    lora_scales,
+                )?;
+                hidden = after_attn.add(&down).map_err(mlx_err)?;
+                stacked_keys_out.push(k_full);
+                stacked_vals_out.push(v_full);
+            } else {
+                let past_ref = past_kv_pair.as_ref().map(|(k, v)| (k, v));
+                let (h, k_full, v_full) = self.forward_layer(
+                    l_idx,
+                    layer,
+                    &hidden,
+                    batch_size,
+                    1,
+                    max_len as i32,
+                    past_ref,
+                    lora_scales,
+                )?;
+                hidden = h;
+                stacked_keys_out.push(k_full);
+                stacked_vals_out.push(v_full);
+            }
+        }
+
+        let out_norm =
+            rms_norm(&hidden, Some(&self.final_norm), self.config.rms_norm_eps).map_err(mlx_err)?;
+        let logits = self
+            .lm_head
+            .forward(&out_norm)?
+            .reshape(&[batch_size, self.config.vocab_size as i32])
+            .map_err(mlx_err)?
+            .as_dtype(MlxDtype::Float32)
+            .map_err(mlx_err)?;
+        let lps = log_softmax(&logits, -1).map_err(mlx_err)?;
+
+        let m_usize = allowed_next_ids.len();
+        let m_i32 = m_usize as i32;
+        let allowed_row: Vec<i32> = allowed_next_ids
+            .iter()
+            .map(|&id| i32::try_from(id).unwrap_or(0).clamp(0, vocab_max))
+            .collect();
+        let allowed_1d = Array::from_slice(&allowed_row, &[1, m_i32]);
+        let allowed_2d = broadcast_to(&allowed_1d, &[batch_size, m_i32]).map_err(mlx_err)?;
+        let gathered = lps
+            .take_along_axis(&allowed_2d, -1)
+            .map_err(mlx_err)?
+            .reshape(&[batch_size * m_i32])
+            .map_err(mlx_err)?;
+
+        eval(
+            std::iter::once(&gathered)
+                .chain(stacked_keys_out.iter())
+                .chain(stacked_vals_out.iter()),
+        )
+        .map_err(mlx_err)?;
+
+        let gathered_vec = gathered.as_slice::<f32>().to_vec();
+
+        let max_len_i32 = max_len as i32;
+        let mut child_kvs = Vec::with_capacity(b_usize);
+        for (b, parent) in beam_parents.iter().enumerate() {
+            let b_i32 = b as i32;
+            let plen = parent.seq_len;
+            let plen_i32 = plen as i32;
+            let mut ks = Vec::with_capacity(num_layers);
+            let mut vs = Vec::with_capacity(num_layers);
+            for l_idx in 0..num_layers {
+                if b_usize == 1 {
+                    ks.push(stacked_keys_out[l_idx].clone());
+                    vs.push(stacked_vals_out[l_idx].clone());
+                } else if plen == max_len {
+                    ks.push(
+                        stacked_keys_out[l_idx]
+                            .try_index((b_i32..(b_i32 + 1), .., .., ..))
+                            .map_err(mlx_err)?,
+                    );
+                    vs.push(
+                        stacked_vals_out[l_idx]
+                            .try_index((b_i32..(b_i32 + 1), .., .., ..))
+                            .map_err(mlx_err)?,
+                    );
+                } else {
+                    // Compactly strip padding: `[0..plen]` + `[max_len..max_len+1]`
+                    let k_new = stacked_keys_out[l_idx]
+                        .try_index((b_i32..(b_i32 + 1), .., max_len_i32..(max_len_i32 + 1), ..))
+                        .map_err(mlx_err)?;
+                    let v_new = stacked_vals_out[l_idx]
+                        .try_index((b_i32..(b_i32 + 1), .., max_len_i32..(max_len_i32 + 1), ..))
+                        .map_err(mlx_err)?;
+                    if plen == 0 {
+                        ks.push(k_new);
+                        vs.push(v_new);
+                    } else {
+                        let k_old = stacked_keys_out[l_idx]
+                            .try_index((b_i32..(b_i32 + 1), .., ..plen_i32, ..))
+                            .map_err(mlx_err)?;
+                        let v_old = stacked_vals_out[l_idx]
+                            .try_index((b_i32..(b_i32 + 1), .., ..plen_i32, ..))
+                            .map_err(mlx_err)?;
+                        ks.push(concatenate(&[&k_old, &k_new], 2).map_err(mlx_err)?);
+                        vs.push(concatenate(&[&v_old, &v_new], 2).map_err(mlx_err)?);
+                    }
+                }
+            }
+            child_kvs.push(MlxBeamKv {
+                keys: ks,
+                vals: vs,
+                seq_len: plen + 1,
+            });
+        }
+
+        Ok((gathered_vec, child_kvs))
     }
 
     #[allow(

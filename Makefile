@@ -40,7 +40,7 @@ else \
 fi
 endef
 
-.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval bench bench-dev bench-test swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
+.PHONY: build test lint fmt build-models build-classics-corpus build-core-dict build-icons eval bench bench-dev bench-test bench-dev-10k bench-test-10k swift-build macos-bundle build-public-packs release-artifacts release-notarize install-macos paper paper-arxiv clean
 
 build:
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo build --workspace --all-targets
@@ -93,10 +93,16 @@ eval: build-core-dict
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- eval --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)"
 
 bench-dev: build-core-dict
-	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench benchmarks/dev_suite.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-dev"
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench --route-a --beam-width 8 benchmarks/dev_suite.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-route-a-dev"
 
 bench-test: build-core-dict
-	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench benchmarks/test_holdout.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-holdout"
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench --route-a --beam-width 8 benchmarks/test_holdout.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-route-a-holdout"
+
+bench-dev-10k: build-core-dict
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench --route-a --beam-width 8 benchmarks/dev_suite_10k.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-route-a-dev10k"
+
+bench-test-10k: build-core-dict
+	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- bench --route-a --beam-width 8 benchmarks/test_holdout_10k.tsv --dict "$(CORE_DICT)" --neural "$(BASE_NEURAL_DIR)" --record benchmarks/history.jsonl --tag "v$(VERSION)-route-a-holdout10k"
 
 bench: bench-dev bench-test
 

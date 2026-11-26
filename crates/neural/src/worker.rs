@@ -6,9 +6,37 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chime_phonetics::{FuzzyConfig, ShuangpinScheme};
 use flume::{Receiver, Sender, TrySendError};
 
-use crate::{LoraMountSpec, ModelConfig, NeuralError, SafetensorsReranker, ScoringMode};
+use crate::{
+    LoraMountSpec, ModelConfig, NeuralBeamCandidate, NeuralError, SafetensorsReranker, ScoringMode,
+};
+
+/// Request for Route A (Pinyin-constrained autoregressive neural beam search + exact-lexicon
+/// Bayesian fusion) dispatched to the dedicated Metal GPU actor thread.
+#[derive(Debug, Clone)]
+pub struct RouteADecodeRequest {
+    /// Active `macOS` host application bundle identifier (for `Multi-LoRA` dynamic routing).
+    pub app_bundle_id: String,
+    /// Left context string before the cursor.
+    pub left_context: String,
+    /// Raw preedit keystroke buffer.
+    pub raw_input: String,
+    /// Active keyboard scheme (`Full` or Shuangpin).
+    pub scheme: ShuangpinScheme,
+    /// Active fuzzy Pinyin configuration.
+    pub fuzzy: FuzzyConfig,
+    /// Whether to apply Pangu spacing around English tokens.
+    pub pangu_spacing: bool,
+    /// Scoring mode (`ClosedSentence` vs `OpenContextual`).
+    pub scoring_mode: ScoringMode,
+    /// Autoregressive beam width (typically `8`).
+    pub beam_width: usize,
+    /// Optional exact-pinyin full-span lexicon / `.imepack` / user-custom phrase proposals scored
+    /// strictly on the exact same Bayesian `log P_LM(Y | C)` scale (zero static unigram bias).
+    pub extra_exact_candidates: Vec<String>,
+}
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
 #[derive(Debug, Clone)]
@@ -55,6 +83,10 @@ enum ActorCmd {
         scoring_mode: ScoringMode,
         reply_tx: Sender<Vec<f32>>,
     },
+    RouteADecode {
+        req: RouteADecodeRequest,
+        reply_tx: Sender<Vec<NeuralBeamCandidate>>,
+    },
 }
 
 /// Thread-safe (`Send + Sync`) handle to the dedicated MLX Metal GPU actor thread.
@@ -64,6 +96,7 @@ pub struct AsyncRerankHandle {
     result_rx: Receiver<RerankResult>,
     config: ModelConfig,
     lora_count: usize,
+    has_constrained_decoder: bool,
 }
 
 impl AsyncRerankHandle {
@@ -89,14 +122,19 @@ impl AsyncRerankHandle {
         loras: Vec<LoraMountSpec>,
     ) -> Result<Self, NeuralError> {
         let dir_owned = model_dir.to_path_buf();
-        let (init_tx, init_rx) = flume::bounded::<Result<(ModelConfig, usize), NeuralError>>(1);
+        let (init_tx, init_rx) =
+            flume::bounded::<Result<(ModelConfig, usize, bool), NeuralError>>(1);
         let (cmd_tx, cmd_rx) = flume::bounded::<ActorCmd>(16);
         let (result_tx, result_rx) = flume::bounded::<RerankResult>(16);
 
         std::thread::spawn(move || {
             let mut reranker = match SafetensorsReranker::load_dir_with_loras(&dir_owned, &loras) {
                 Ok(r) => {
-                    let _ = init_tx.send(Ok((r.config().clone(), r.lora_count())));
+                    let _ = init_tx.send(Ok((
+                        r.config().clone(),
+                        r.lora_count(),
+                        r.has_constrained_decoder(),
+                    )));
                     r
                 }
                 Err(e) => {
@@ -164,6 +202,10 @@ impl AsyncRerankHandle {
                                     );
                                     let _ = reply_tx.send(bonuses);
                                 }
+                                ActorCmd::RouteADecode { req, reply_tx } => {
+                                    let out = run_route_a_request(&mut reranker, &req);
+                                    let _ = reply_tx.send(out);
+                                }
                             }
                         }
                         let bonuses = reranker.score_candidates_with_scoring_mode(
@@ -200,11 +242,47 @@ impl AsyncRerankHandle {
                         );
                         let _ = reply_tx.send(bonuses);
                     }
+                    ActorCmd::RouteADecode {
+                        mut req,
+                        mut reply_tx,
+                    } => {
+                        // Coalesce burst keystrokes in Route A mode so rapid typing always
+                        // evaluates the latest keystroke immediately with zero FIFO backlog!
+                        while let Ok(next_cmd) = cmd_rx.try_recv() {
+                            match next_cmd {
+                                ActorCmd::RouteADecode {
+                                    req: newer_req,
+                                    reply_tx: newer_tx,
+                                } => {
+                                    req = newer_req;
+                                    reply_tx = newer_tx;
+                                }
+                                ActorCmd::Sync {
+                                    left_context,
+                                    app_bundle_id,
+                                    candidate_texts,
+                                    scoring_mode,
+                                    reply_tx: s_tx,
+                                } => {
+                                    let bonuses = reranker.score_candidates_with_scoring_mode(
+                                        &left_context,
+                                        &app_bundle_id,
+                                        &candidate_texts,
+                                        scoring_mode,
+                                    );
+                                    let _ = s_tx.send(bonuses);
+                                }
+                                ActorCmd::Async(_) | ActorCmd::TimedOrAsync { .. } => {}
+                            }
+                        }
+                        let out = run_route_a_request(&mut reranker, &req);
+                        let _ = reply_tx.send(out);
+                    }
                 }
             }
         });
 
-        let (config, lora_count) = init_rx
+        let (config, lora_count, has_constrained_decoder) = init_rx
             .recv()
             .map_err(|e| NeuralError::Safetensors(format!("worker init channel closed: {e}")))??;
 
@@ -213,7 +291,37 @@ impl AsyncRerankHandle {
             result_rx,
             config,
             lora_count,
+            has_constrained_decoder,
         })
+    }
+
+    /// Returns true if the loaded model bundle includes `token_pinyin.json` and supports Route A
+    /// constrained autoregressive neural beam decoding.
+    #[must_use]
+    pub const fn has_constrained_decoder(&self) -> bool {
+        self.has_constrained_decoder
+    }
+
+    /// Runs Route A constrained autoregressive neural beam search (+ pure-Bayesian exact-lexicon
+    /// hypothesis fusion) on the Metal GPU worker within `budget`.
+    #[must_use]
+    pub fn decode_route_a_with_budget(
+        &self,
+        req: RouteADecodeRequest,
+        budget: Duration,
+    ) -> Option<Vec<NeuralBeamCandidate>> {
+        if !self.has_constrained_decoder {
+            return None;
+        }
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        if matches!(
+            self.cmd_tx
+                .try_send(ActorCmd::RouteADecode { req, reply_tx }),
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
+        ) {
+            return None;
+        }
+        reply_rx.recv_timeout(budget).ok()
     }
 
     /// Returns the loaded model hyperparameters.
@@ -332,4 +440,61 @@ impl AsyncRerankHandle {
     pub fn drain_results(&self) -> Vec<RerankResult> {
         self.result_rx.try_iter().collect()
     }
+}
+
+fn run_route_a_request(
+    reranker: &mut SafetensorsReranker,
+    req: &RouteADecodeRequest,
+) -> Vec<NeuralBeamCandidate> {
+    let mut ncands = reranker.decode_constrained(
+        &req.left_context,
+        &req.app_bundle_id,
+        &req.raw_input,
+        req.scheme,
+        req.fuzzy,
+        req.pangu_spacing,
+        req.scoring_mode,
+        req.beam_width,
+    );
+    if !req.extra_exact_candidates.is_empty() {
+        let mut to_score = Vec::new();
+        for txt in &req.extra_exact_candidates {
+            if !ncands.iter().any(|c| c.text == *txt) && !to_score.contains(txt) {
+                to_score.push(txt.clone());
+            }
+        }
+        if !to_score.is_empty() {
+            let lower_raw = req.raw_input.to_ascii_lowercase();
+            let is_single_syl = req.scheme == ShuangpinScheme::Full
+                && !req.raw_input.contains('\'')
+                && chime_phonetics::is_valid_syllable(&lower_raw);
+            let eff_mode = if is_single_syl
+                || (!req.left_context.trim().is_empty() && req.raw_input.len() <= 12)
+            {
+                ScoringMode::OpenContextual
+            } else {
+                req.scoring_mode
+            };
+            let lps = reranker.score_candidates_exact_bayesian(
+                &req.left_context,
+                &req.app_bundle_id,
+                &to_score,
+                eff_mode,
+            );
+            for (txt, lp) in to_score.into_iter().zip(lps) {
+                if lp.is_finite() {
+                    ncands.push(NeuralBeamCandidate {
+                        text: txt,
+                        score: lp,
+                        lm_log_prob: lp,
+                        channel_cost: 0.0,
+                        is_exact: true,
+                        consumed_bytes: req.raw_input.len(),
+                    });
+                }
+            }
+            ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
+    }
+    ncands
 }

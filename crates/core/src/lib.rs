@@ -24,7 +24,7 @@ use chime_lexicon::{
     import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes,
     parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, ScoringMode};
+use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode};
 use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -1368,19 +1368,193 @@ impl ChimeEngine {
         );
 
         if let Some(worker) = &self.async_reranker {
-            cands = Self::rerank_candidates_with_budget(
+            if let Some(route_a_cands) = self.try_decode_route_a(
                 worker,
-                self.sessions[idx].id,
-                self.sessions[idx].generation_id,
-                app_clone,
-                effective_left,
+                &app_clone,
+                &effective_left,
                 &raw_clone,
-                cands,
-            );
+                now_epoch_secs,
+                &cands,
+            ) {
+                cands = route_a_cands;
+            } else {
+                cands = Self::rerank_candidates_with_budget(
+                    worker,
+                    self.sessions[idx].id,
+                    self.sessions[idx].generation_id,
+                    app_clone,
+                    effective_left,
+                    &raw_clone,
+                    cands,
+                );
+            }
         }
         self.sessions[idx].all_candidates = cands;
 
         self.build_snapshot(idx, true, String::new())
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn try_decode_route_a(
+        &self,
+        worker: &AsyncRerankHandle,
+        app_bundle_id: &str,
+        effective_left: &str,
+        raw_clone: &str,
+        now_epoch_secs: u64,
+        stage1_cands: &[Candidate],
+    ) -> Option<Vec<Candidate>> {
+        if !worker.has_constrained_decoder() || raw_clone.is_empty() {
+            return None;
+        }
+        if (self.config.uppercase_triggers_english
+            && raw_clone.bytes().any(|b| b.is_ascii_uppercase()))
+            || raw_clone
+                .bytes()
+                .any(|b| b.is_ascii_digit() || matches!(b, b'.' | b'/' | b'_' | b'-'))
+        {
+            return None;
+        }
+
+        let lower_raw = raw_clone.to_ascii_lowercase();
+        let has_left_ctx = !effective_left.trim().is_empty();
+        let is_single_syl = self.config.scheme == ShuangpinScheme::Full
+            && !raw_clone.contains('\'')
+            && chime_phonetics::is_valid_syllable(&lower_raw);
+        let is_single_syl_ctx = has_left_ctx && is_single_syl;
+
+        let lead_full_count = stage1_cands
+            .iter()
+            .take_while(|c| {
+                c.consumed_bytes == raw_clone.len()
+                    && !(c.kind == MatchKind::CodeSwitch && c.text == raw_clone)
+            })
+            .count();
+
+        let mut stage1_full: Vec<Candidate> = Vec::new();
+        let mut stage1_completions: Vec<Candidate> = Vec::new();
+        let mut middle_partial: Vec<Candidate> = Vec::new();
+        let mut raw_fallback: Vec<Candidate> = Vec::new();
+        for cand in stage1_cands {
+            if cand.consumed_bytes == raw_clone.len() {
+                if cand.kind == MatchKind::CodeSwitch && cand.text == raw_clone {
+                    raw_fallback.push(cand.clone());
+                } else if cand.kind == MatchKind::Completion {
+                    stage1_completions.push(cand.clone());
+                } else {
+                    stage1_full.push(cand.clone());
+                }
+            } else {
+                middle_partial.push(cand.clone());
+            }
+        }
+
+        // Pure-Bayesian Exact-Lexicon Hypothesis Fusion: forward top-4 exact-pinyin full-span
+        // lexicon / `.imepack` / custom user phrase proposals so rare idioms, poetry, and personal
+        // terms are scored on the exact same neural `log P_LM(Y | C)` scale.
+        let mut extra_exact_candidates: Vec<String> = Vec::new();
+        if raw_clone.len() >= 6 && !is_single_syl {
+            for lc in &stage1_full {
+                if lc.kind == MatchKind::Exact && !extra_exact_candidates.contains(&lc.text) {
+                    extra_exact_candidates.push(lc.text.clone());
+                    if extra_exact_candidates.len() >= 4 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let req = RouteADecodeRequest {
+            app_bundle_id: app_bundle_id.to_string(),
+            left_context: effective_left.to_string(),
+            raw_input: raw_clone.to_string(),
+            scheme: self.config.scheme,
+            fuzzy: self.config.fuzzy,
+            pangu_spacing: self.config.pangu_spacing,
+            scoring_mode: if is_single_syl_ctx {
+                ScoringMode::OpenContextual
+            } else {
+                ScoringMode::ClosedSentence
+            },
+            beam_width: 8,
+            extra_exact_candidates,
+        };
+        let ncands = worker.decode_route_a_with_budget(req, Duration::from_millis(80))?;
+        if ncands.is_empty() {
+            return None;
+        }
+
+        let mut merged_full: Vec<Candidate> = Vec::with_capacity(ncands.len() + stage1_full.len());
+        let mut min_neural_score = f32::INFINITY;
+        for nc in ncands {
+            let habit_bonus = if nc.is_exact && nc.text.chars().count() >= 2 {
+                self.user_store
+                    .score_boost(&lower_raw, &nc.text, app_bundle_id, now_epoch_secs)
+                    .clamp(-0.55, 0.85)
+            } else {
+                0.0
+            };
+            let final_score = nc.score + habit_bonus;
+            min_neural_score = min_neural_score.min(final_score);
+            merged_full.push(Candidate {
+                text: nc.text,
+                score: final_score,
+                consumed_bytes: raw_clone.len(),
+                kind: if nc.is_exact {
+                    MatchKind::Exact
+                } else {
+                    MatchKind::TypoCorrected
+                },
+            });
+        }
+        merged_full.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+        // Append remaining Stage-1 full-span candidates (e.g. full 5x5 single-char homophone grid
+        // or secondary dictionary words) strictly below the Route A neural frontier so no rare
+        // character or fallback word is ever unreachable!
+        let tail_base = if min_neural_score.is_finite() {
+            min_neural_score - 1.0
+        } else {
+            -100.0
+        };
+        let mut tail_step = 0.0_f32;
+        for s1 in stage1_full {
+            if !merged_full.iter().any(|c| c.text == s1.text) {
+                tail_step += 0.01;
+                merged_full.push(Candidate {
+                    text: s1.text,
+                    score: tail_base - tail_step,
+                    consumed_bytes: s1.consumed_bytes,
+                    kind: s1.kind,
+                });
+            }
+        }
+
+        // Preserve `一路 Tab` poetry/idiom/English completions (`MatchKind::Completion`).
+        for comp in stage1_completions {
+            if !merged_full.iter().any(|c| c.text == comp.text) {
+                merged_full.push(comp);
+            }
+        }
+        if !is_single_syl_ctx {
+            promote_top_completion_into_bar(&mut merged_full);
+        }
+
+        let keep_full = if middle_partial.is_empty() {
+            merged_full.len()
+        } else {
+            lead_full_count.max(3).min(merged_full.len())
+        };
+        let mut overflow = if merged_full.len() > keep_full {
+            merged_full.split_off(keep_full)
+        } else {
+            Vec::new()
+        };
+        overflow.truncate(6);
+        merged_full.extend(middle_partial);
+        merged_full.extend(overflow);
+        merged_full.extend(raw_fallback);
+        Some(merged_full)
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2400,5 +2574,71 @@ mod tests {
         }
         let r_term = engine.process_key(term_sid, key(b' ', 0x31), 500);
         assert!(!r_term.handled);
+    }
+
+    #[test]
+    fn test_should_decode_with_route_a_constrained_neural_beam_in_engine() {
+        let support = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let bundle = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let neural_dir = bundle.path().join("neural");
+        chime_neural::TinyModelBuilder::write_demo_bundle(
+            &neural_dir,
+            &[("今天", "使用"), ("使用", "模型")],
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        let vocab_bytes =
+            std::fs::read(neural_dir.join("vocab.json")).unwrap_or_else(|_| std::process::abort());
+        let vocab_tokens: Vec<String> =
+            serde_json::from_slice(&vocab_bytes).unwrap_or_else(|_| std::process::abort());
+        let tid_of = |s: &str| -> u32 {
+            u32::try_from(vocab_tokens.iter().position(|t| t == s).unwrap_or(0)).unwrap_or(0)
+        };
+        let tp_json = serde_json::json!({
+            "vocab_size": vocab_tokens.len(),
+            "cjk": [
+                [tid_of("今天"), [["jin", "tian"]]],
+                [tid_of("使用"), [["shi", "yong"]]],
+                [tid_of("模型"), [["mo", "xing"]]]
+            ],
+            "trad": [],
+            "en": [],
+            "en_multi": []
+        });
+        std::fs::write(
+            neural_dir.join("token_pinyin.json"),
+            serde_json::to_string(&tp_json).unwrap_or_else(|_| std::process::abort()),
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        let mut engine = ChimeEngine::with_data_dir(support.path(), Some(bundle.path()))
+            .unwrap_or_else(|_| std::process::abort());
+        assert!(engine.status().neural_loaded);
+        assert!(
+            engine
+                .async_reranker
+                .as_ref()
+                .is_some_and(AsyncRerankHandle::has_constrained_decoder)
+        );
+
+        let sid = engine.create_session("md.obsidian");
+        let mut resp = EngineResponse::default();
+        for b in *b"jintianshiyongmoxing" {
+            resp = engine.process_key(sid, key(b, 0), 600);
+        }
+        assert_eq!(
+            resp.candidates.first().map(|c| c.text.as_str()),
+            Some("今天使用模型"),
+            "ChimeEngine should route through Route A constrained beam: {:?}",
+            resp.candidates
+        );
+
+        // Verify Backspace shrink still works seamlessly with `RouteABeamCache`!
+        let _ = engine.process_key(sid, key(0, 0x33), 600); // drop 'g' -> jintianshiyongmoxin
+        let resp_back = engine.process_key(sid, key(b'g', 0), 600); // re-type 'g'
+        assert_eq!(
+            resp_back.candidates.first().map(|c| c.text.as_str()),
+            Some("今天使用模型")
+        );
     }
 }
