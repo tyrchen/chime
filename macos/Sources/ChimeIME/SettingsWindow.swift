@@ -257,9 +257,9 @@ struct ChimeSettingsView: View {
                     LabeledContent("已挂载扩展卡带 (.imepack)", value: "\(status.installed_packs ?? 0) 个")
                     LabeledContent("已学习个人习惯词条", value: "\(status.learned_habits) 条")
                     LabeledContent(
-                        "端侧语义重排引擎",
+                        "端侧神经解码引擎",
                         value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded)
-                            ? "Qwen3 6L MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
+                            ? "Qwen3 28L 4-bit MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
                             : "统计双轨模式"
                     )
                 }

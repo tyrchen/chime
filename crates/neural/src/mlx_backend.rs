@@ -265,6 +265,64 @@ impl MlxLinear {
         }
     }
 
+    fn concat_outputs(parts: &[&Self]) -> Result<Self, NeuralError> {
+        let Some(first) = parts.first() else {
+            return Err(NeuralError::Safetensors(
+                "cannot fuse empty MlxLinear list".to_string(),
+            ));
+        };
+        match first {
+            Self::Quantized {
+                group_size, bits, ..
+            } => {
+                let mut ws = Vec::with_capacity(parts.len());
+                let mut ss = Vec::with_capacity(parts.len());
+                let mut bs = Vec::with_capacity(parts.len());
+                for p in parts {
+                    let Self::Quantized {
+                        weight,
+                        scales,
+                        biases,
+                        ..
+                    } = p
+                    else {
+                        return Err(NeuralError::Safetensors(
+                            "mixed quantized/dense MlxLinear fusion".to_string(),
+                        ));
+                    };
+                    ws.push(weight);
+                    ss.push(scales);
+                    bs.push(biases);
+                }
+                let weight = concatenate(&ws, 0).map_err(mlx_err)?;
+                let scales = concatenate(&ss, 0).map_err(mlx_err)?;
+                let biases = concatenate(&bs, 0).map_err(mlx_err)?;
+                eval([&weight, &scales, &biases]).map_err(mlx_err)?;
+                Ok(Self::Quantized {
+                    weight,
+                    scales,
+                    biases,
+                    group_size: *group_size,
+                    bits: *bits,
+                })
+            }
+            Self::Dense { .. } => {
+                let mut wts = Vec::with_capacity(parts.len());
+                for p in parts {
+                    let Self::Dense { weight_t } = p else {
+                        return Err(NeuralError::Safetensors(
+                            "mixed dense/quantized MlxLinear fusion".to_string(),
+                        ));
+                    };
+                    wts.push(weight_t);
+                }
+                let weight_t = concatenate(&wts, 1).map_err(mlx_err)?;
+                eval([&weight_t]).map_err(mlx_err)?;
+                Ok(Self::Dense { weight_t })
+            }
+        }
+    }
+
     fn forward(&self, x: &Array) -> Result<Array, NeuralError> {
         match self {
             Self::Dense { weight_t } => x.matmul(weight_t).map_err(mlx_err),
@@ -290,13 +348,12 @@ impl MlxLinear {
         }
     }
 
-    fn forward_with_stacked_lora(
-        &self,
+    fn apply_stacked_lora(
+        mut out: Array,
         x: &Array,
         stacked: Option<&MlxStackedLoraProj>,
         lora_scales: &[f32],
     ) -> Result<Array, NeuralError> {
-        let mut out = self.forward(x)?;
         let Some(st) = stacked else {
             return Ok(out);
         };
@@ -334,6 +391,16 @@ impl MlxLinear {
         };
         out = out.add(&delta_cast).map_err(mlx_err)?;
         Ok(out)
+    }
+
+    fn forward_with_stacked_lora(
+        &self,
+        x: &Array,
+        stacked: Option<&MlxStackedLoraProj>,
+        lora_scales: &[f32],
+    ) -> Result<Array, NeuralError> {
+        let out = self.forward(x)?;
+        Self::apply_stacked_lora(out, x, stacked, lora_scales)
     }
 }
 
@@ -441,18 +508,17 @@ impl MlxEmbedding {
 #[derive(Debug, Clone)]
 struct MlxLayer {
     input_norm: Array,
-    q_proj: MlxLinear,
+    /// Fused `[q_out + kv_out + kv_out, d_model]` projection (eliminates 2 Metal GEMMs/layer).
+    qkv_proj: MlxLinear,
     q_bias: Option<Array>,
     q_norm: Option<Array>,
-    k_proj: MlxLinear,
     k_bias: Option<Array>,
     k_norm: Option<Array>,
-    v_proj: MlxLinear,
     v_bias: Option<Array>,
     o_proj: MlxLinear,
     post_attn_norm: Array,
-    gate_proj: MlxLinear,
-    up_proj: MlxLinear,
+    /// Fused `[2 * intermediate_size, d_model]` projection (eliminates 1 Metal GEMM/layer).
+    gate_up_proj: MlxLinear,
     down_proj: MlxLinear,
 }
 
@@ -562,27 +628,26 @@ impl MlxTransformer {
             let k_norm = raw.remove(&format!("{p}.self_attn.k_norm.weight"));
             let v_proj = MlxLinear::load(&mut raw, &format!("{p}.self_attn.v_proj"), qcfg)?;
             let v_bias = raw.remove(&format!("{p}.self_attn.v_proj.bias"));
+            let qkv_proj = MlxLinear::concat_outputs(&[&q_proj, &k_proj, &v_proj])?;
             let o_proj = MlxLinear::load(&mut raw, &format!("{p}.self_attn.o_proj"), qcfg)?;
             let post_attn_norm =
                 take_tensor(&mut raw, &format!("{p}.post_attention_layernorm.weight"))?;
             let gate_proj = MlxLinear::load(&mut raw, &format!("{p}.mlp.gate_proj"), qcfg)?;
             let up_proj = MlxLinear::load(&mut raw, &format!("{p}.mlp.up_proj"), qcfg)?;
+            let gate_up_proj = MlxLinear::concat_outputs(&[&gate_proj, &up_proj])?;
             let down_proj = MlxLinear::load(&mut raw, &format!("{p}.mlp.down_proj"), qcfg)?;
 
             layers.push(MlxLayer {
                 input_norm,
-                q_proj,
+                qkv_proj,
                 q_bias,
                 q_norm,
-                k_proj,
                 k_bias,
                 k_norm,
-                v_proj,
                 v_bias,
                 o_proj,
                 post_attn_norm,
-                gate_proj,
-                up_proj,
+                gate_up_proj,
                 down_proj,
             });
         }
@@ -1133,6 +1198,8 @@ impl MlxTransformer {
         let n_kv = self.config.num_key_value_heads as i32;
         let head_dim = self.config.effective_head_dim() as i32;
         let q_out_dim = n_heads * head_dim;
+        let kv_out_dim = n_kv * head_dim;
+        let inter_dim = self.config.intermediate_size as i32;
         #[allow(clippy::cast_precision_loss)]
         let scale = 1.0_f32 / (head_dim as f32).sqrt();
 
@@ -1141,7 +1208,13 @@ impl MlxTransformer {
 
         let st_layer = self.stacked_loras.get(l_idx);
 
-        let mut q_lin = layer.q_proj.forward_with_stacked_lora(
+        // Single fused QKV quantized_matmul instead of 3 separate Metal GEMMs!
+        let qkv = layer.qkv_proj.forward(&normed)?;
+        let q_end = q_out_dim;
+        let k_end = q_end + kv_out_dim;
+        let v_end = k_end + kv_out_dim;
+        let mut q_lin = MlxLinear::apply_stacked_lora(
+            qkv.try_index((.., .., ..q_end)).map_err(mlx_err)?,
             &normed,
             st_layer.and_then(|sl| sl.q.as_ref()),
             lora_scales,
@@ -1150,7 +1223,8 @@ impl MlxTransformer {
             q_lin = q_lin.add(b).map_err(mlx_err)?;
         }
 
-        let mut k_lin = layer.k_proj.forward_with_stacked_lora(
+        let mut k_lin = MlxLinear::apply_stacked_lora(
+            qkv.try_index((.., .., q_end..k_end)).map_err(mlx_err)?,
             &normed,
             st_layer.and_then(|sl| sl.k.as_ref()),
             lora_scales,
@@ -1159,7 +1233,8 @@ impl MlxTransformer {
             k_lin = k_lin.add(b).map_err(mlx_err)?;
         }
 
-        let mut v_lin = layer.v_proj.forward_with_stacked_lora(
+        let mut v_lin = MlxLinear::apply_stacked_lora(
+            qkv.try_index((.., .., k_end..v_end)).map_err(mlx_err)?,
             &normed,
             st_layer.and_then(|sl| sl.v.as_ref()),
             lora_scales,
@@ -1259,13 +1334,18 @@ impl MlxTransformer {
             self.config.rms_norm_eps,
         )
         .map_err(mlx_err)?;
-        let gate_raw = layer.gate_proj.forward_with_stacked_lora(
+        // Single fused Gate+Up quantized_matmul instead of 2 separate Metal GEMMs!
+        let gu = layer.gate_up_proj.forward(&post)?;
+        let gate_raw = MlxLinear::apply_stacked_lora(
+            gu.try_index((.., .., ..inter_dim)).map_err(mlx_err)?,
             &post,
             st_layer.and_then(|sl| sl.gate.as_ref()),
             lora_scales,
         )?;
         let gate = silu(&gate_raw).map_err(mlx_err)?;
-        let up = layer.up_proj.forward_with_stacked_lora(
+        let up = MlxLinear::apply_stacked_lora(
+            gu.try_index((.., .., inter_dim..(inter_dim * 2)))
+                .map_err(mlx_err)?,
             &post,
             st_layer.and_then(|sl| sl.up.as_ref()),
             lora_scales,
@@ -1372,6 +1452,8 @@ impl MlxTransformer {
         let n_kv = self.config.num_key_value_heads as i32;
         let head_dim = self.config.effective_head_dim() as i32;
         let q_out_dim = n_heads * head_dim;
+        let kv_out_dim = n_kv * head_dim;
+        let inter_dim = self.config.intermediate_size as i32;
         #[allow(clippy::cast_precision_loss)]
         let attn_scale = 1.0_f32 / (head_dim as f32).sqrt();
 
@@ -1408,6 +1490,8 @@ impl MlxTransformer {
         let num_layers = self.config.num_hidden_layers;
         let mut stacked_keys_out = Vec::with_capacity(num_layers);
         let mut stacked_vals_out = Vec::with_capacity(num_layers);
+        let mut new_keys_step = Vec::with_capacity(if is_hetero { num_layers } else { 0 });
+        let mut new_vals_step = Vec::with_capacity(if is_hetero { num_layers } else { 0 });
 
         for (l_idx, layer) in self.layers.iter().enumerate() {
             let past_kv_pair: Option<(Array, Array)> = if max_len > 0 {
@@ -1455,12 +1539,18 @@ impl MlxTransformer {
             };
 
             if let Some(off) = offsets_arr.as_ref() {
-                // Heterogeneous single-step layer using `rope_dynamic` + padded attention mask!
+                // Heterogeneous single-step layer using fused QKV + GateUp, `rope_dynamic` &
+                // padded attention mask!
                 let normed = rms_norm(&hidden, Some(&layer.input_norm), self.config.rms_norm_eps)
                     .map_err(mlx_err)?;
                 let st_layer = self.stacked_loras.get(l_idx);
 
-                let mut q_lin = layer.q_proj.forward_with_stacked_lora(
+                let qkv = layer.qkv_proj.forward(&normed)?;
+                let q_end = q_out_dim;
+                let k_end = q_end + kv_out_dim;
+                let v_end = k_end + kv_out_dim;
+                let mut q_lin = MlxLinear::apply_stacked_lora(
+                    qkv.try_index((.., .., ..q_end)).map_err(mlx_err)?,
                     &normed,
                     st_layer.and_then(|sl| sl.q.as_ref()),
                     lora_scales,
@@ -1468,7 +1558,8 @@ impl MlxTransformer {
                 if let Some(b) = &layer.q_bias {
                     q_lin = q_lin.add(b).map_err(mlx_err)?;
                 }
-                let mut k_lin = layer.k_proj.forward_with_stacked_lora(
+                let mut k_lin = MlxLinear::apply_stacked_lora(
+                    qkv.try_index((.., .., q_end..k_end)).map_err(mlx_err)?,
                     &normed,
                     st_layer.and_then(|sl| sl.k.as_ref()),
                     lora_scales,
@@ -1476,7 +1567,8 @@ impl MlxTransformer {
                 if let Some(b) = &layer.k_bias {
                     k_lin = k_lin.add(b).map_err(mlx_err)?;
                 }
-                let mut v_lin = layer.v_proj.forward_with_stacked_lora(
+                let mut v_lin = MlxLinear::apply_stacked_lora(
+                    qkv.try_index((.., .., k_end..v_end)).map_err(mlx_err)?,
                     &normed,
                     st_layer.and_then(|sl| sl.v.as_ref()),
                     lora_scales,
@@ -1535,7 +1627,7 @@ impl MlxTransformer {
                         concatenate(&[pv, &v_heads], 2).map_err(mlx_err)?,
                     )
                 } else {
-                    (k_rope, v_heads)
+                    (k_rope.clone(), v_heads.clone())
                 };
 
                 let mask = attn_mask_arr
@@ -1561,13 +1653,17 @@ impl MlxTransformer {
                     self.config.rms_norm_eps,
                 )
                 .map_err(mlx_err)?;
-                let gate_raw = layer.gate_proj.forward_with_stacked_lora(
+                let gu = layer.gate_up_proj.forward(&post)?;
+                let gate_raw = MlxLinear::apply_stacked_lora(
+                    gu.try_index((.., .., ..inter_dim)).map_err(mlx_err)?,
                     &post,
                     st_layer.and_then(|sl| sl.gate.as_ref()),
                     lora_scales,
                 )?;
                 let gate = silu(&gate_raw).map_err(mlx_err)?;
-                let up = layer.up_proj.forward_with_stacked_lora(
+                let up = MlxLinear::apply_stacked_lora(
+                    gu.try_index((.., .., inter_dim..(inter_dim * 2)))
+                        .map_err(mlx_err)?,
                     &post,
                     st_layer.and_then(|sl| sl.up.as_ref()),
                     lora_scales,
@@ -1579,8 +1675,8 @@ impl MlxTransformer {
                     lora_scales,
                 )?;
                 hidden = after_attn.add(&down).map_err(mlx_err)?;
-                stacked_keys_out.push(k_full);
-                stacked_vals_out.push(v_full);
+                new_keys_step.push(k_rope);
+                new_vals_step.push(v_heads);
             } else {
                 let past_ref = past_kv_pair.as_ref().map(|(k, v)| (k, v));
                 let (h, k_full, v_full) = self.forward_layer(
@@ -1624,68 +1720,75 @@ impl MlxTransformer {
             .reshape(&[batch_size * m_i32])
             .map_err(mlx_err)?;
 
-        eval(
-            std::iter::once(&gathered)
-                .chain(stacked_keys_out.iter())
-                .chain(stacked_vals_out.iter()),
-        )
-        .map_err(mlx_err)?;
-
-        let gathered_vec = gathered.as_slice::<f32>().to_vec();
-
-        let max_len_i32 = max_len as i32;
+        // Build compact unpadded per-beam child KV tensors BEFORE `eval()` so every child cache
+        // is materialized in ONE single GPU sync barrier — completely severing cross-step lazy DAG
+        // chains that otherwise compound across 15-25 syllables!
         let mut child_kvs = Vec::with_capacity(b_usize);
-        for (b, parent) in beam_parents.iter().enumerate() {
-            let b_i32 = b as i32;
-            let plen = parent.seq_len;
-            let plen_i32 = plen as i32;
-            let mut ks = Vec::with_capacity(num_layers);
-            let mut vs = Vec::with_capacity(num_layers);
-            for l_idx in 0..num_layers {
-                if b_usize == 1 {
-                    ks.push(stacked_keys_out[l_idx].clone());
-                    vs.push(stacked_vals_out[l_idx].clone());
-                } else if plen == max_len {
-                    ks.push(
-                        stacked_keys_out[l_idx]
+        if b_usize == 1 && !is_hetero {
+            child_kvs.push(MlxBeamKv {
+                keys: stacked_keys_out,
+                vals: stacked_vals_out,
+                seq_len: beam_parents[0].seq_len + 1,
+            });
+        } else {
+            for (b, parent) in beam_parents.iter().enumerate() {
+                let b_i32 = b as i32;
+                let plen = parent.seq_len;
+                let mut ks = Vec::with_capacity(num_layers);
+                let mut vs = Vec::with_capacity(num_layers);
+                for l_idx in 0..num_layers {
+                    if is_hetero {
+                        let k_new = new_keys_step[l_idx]
                             .try_index((b_i32..(b_i32 + 1), .., .., ..))
-                            .map_err(mlx_err)?,
-                    );
-                    vs.push(
-                        stacked_vals_out[l_idx]
+                            .map_err(mlx_err)?;
+                        let v_new = new_vals_step[l_idx]
                             .try_index((b_i32..(b_i32 + 1), .., .., ..))
-                            .map_err(mlx_err)?,
-                    );
-                } else {
-                    // Compactly strip padding: `[0..plen]` + `[max_len..max_len+1]`
-                    let k_new = stacked_keys_out[l_idx]
-                        .try_index((b_i32..(b_i32 + 1), .., max_len_i32..(max_len_i32 + 1), ..))
-                        .map_err(mlx_err)?;
-                    let v_new = stacked_vals_out[l_idx]
-                        .try_index((b_i32..(b_i32 + 1), .., max_len_i32..(max_len_i32 + 1), ..))
-                        .map_err(mlx_err)?;
-                    if plen == 0 {
-                        ks.push(k_new);
-                        vs.push(v_new);
+                            .map_err(mlx_err)?;
+                        if plen == 0 {
+                            ks.push(k_new);
+                            vs.push(v_new);
+                        } else {
+                            ks.push(
+                                concatenate(&[&parent.keys[l_idx], &k_new], 2).map_err(mlx_err)?,
+                            );
+                            vs.push(
+                                concatenate(&[&parent.vals[l_idx], &v_new], 2).map_err(mlx_err)?,
+                            );
+                        }
                     } else {
-                        let k_old = stacked_keys_out[l_idx]
-                            .try_index((b_i32..(b_i32 + 1), .., ..plen_i32, ..))
-                            .map_err(mlx_err)?;
-                        let v_old = stacked_vals_out[l_idx]
-                            .try_index((b_i32..(b_i32 + 1), .., ..plen_i32, ..))
-                            .map_err(mlx_err)?;
-                        ks.push(concatenate(&[&k_old, &k_new], 2).map_err(mlx_err)?);
-                        vs.push(concatenate(&[&v_old, &v_new], 2).map_err(mlx_err)?);
+                        ks.push(
+                            stacked_keys_out[l_idx]
+                                .try_index((b_i32..(b_i32 + 1), .., .., ..))
+                                .map_err(mlx_err)?,
+                        );
+                        vs.push(
+                            stacked_vals_out[l_idx]
+                                .try_index((b_i32..(b_i32 + 1), .., .., ..))
+                                .map_err(mlx_err)?,
+                        );
                     }
                 }
+                child_kvs.push(MlxBeamKv {
+                    keys: ks,
+                    vals: vs,
+                    seq_len: plen + 1,
+                });
             }
-            child_kvs.push(MlxBeamKv {
-                keys: ks,
-                vals: vs,
-                seq_len: plen + 1,
-            });
         }
 
+        let mut to_eval: Vec<&Array> = Vec::with_capacity(1 + b_usize * num_layers * 2);
+        to_eval.push(&gathered);
+        for kv in &child_kvs {
+            for k in &kv.keys {
+                to_eval.push(k);
+            }
+            for v in &kv.vals {
+                to_eval.push(v);
+            }
+        }
+        eval(to_eval).map_err(mlx_err)?;
+
+        let gathered_vec = gathered.as_slice::<f32>().to_vec();
         Ok((gathered_vec, child_kvs))
     }
 

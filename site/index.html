@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Chime 拼音 — macOS Apple Silicon 端侧神经输入法与 LoRA 卡带中心</title>
-  <meta name="description" content="100% 离线、零遥测的 macOS 15+ Apple Silicon 中文拼音输入法。88 MB 4-bit MLX Qwen3-4B 蒸馏底座（8 层 / 36,864 全中文词表）+ 热插拔 Multi-LoRA 与零拷贝 .imepack 词库卡带。" />
+  <meta name="description" content="100% 离线、零遥测的 macOS 15+ Apple Silicon 中文拼音输入法。28 层 Qwen3-14B 蒸馏底座（256.7 MB 4-bit MLX / 36,864 全中文词表）+ Route A 拼音约束自回归束搜索 + 4x 融合 Metal 提速 + 热插拔 Multi-LoRA 卡带。" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -13,13 +13,14 @@
       <a class="brand" href="#">
         <span class="brand-badge">中</span>
         <span class="brand-text">Chime <span class="brand-sub">拼音</span></span>
-        <span class="version-pill">v0.13.1</span>
+        <span class="version-pill">v0.14.0</span>
       </a>
       <nav class="nav-links">
         <a href="#demo" data-i18n="nav.demo">交互演示</a>
-        <a href="#architecture" data-i18n="nav.arch">基础模型 + LoRA</a>
-        <a href="#packs" data-i18n="nav.packs">预构建 LoRA 下载</a>
-        <a href="#diy" data-i18n="nav.diy">私有卡带训练</a>
+        <a href="#architecture" data-i18n="nav.arch">引擎与架构</a>
+        <a href="#benchmarks" data-i18n="nav.bench">官方基准</a>
+        <a href="#packs" data-i18n="nav.packs">LoRA 卡带</a>
+        <a href="#diy" data-i18n="nav.diy">私有卡带</a>
         <a href="chime-paper.pdf" target="_blank" rel="noopener">Paper (PDF) ↗</a>
         <a class="gh-link" id="repo-link" href="https://github.com/tyrchen/chime" target="_blank" rel="noopener">GitHub ↗</a>
         <button id="lang-toggle" class="lang-btn" type="button" aria-label="Switch language">EN</button>
@@ -32,14 +33,14 @@
       <div class="container hero-grid">
         <div class="hero-copy">
           <p class="eyebrow" data-i18n="hero.eyebrow">macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0</p>
-          <h1 data-i18n="hero.title">把 4B 教师蒸馏进 88 MB 统一内存，按键零联网，卡带随插随用。</h1>
+          <h1 data-i18n="hero.title">完整 28 层 Qwen3 经 14B 蒸馏进统一内存，按键零联网，盲测准确率跃升至 90%。</h1>
           <p class="lead" data-i18n="hero.lead">
-            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法。底层用 Rust 编写零拷贝双轨网格解码器（原生支持 <strong>Shift 中英切换 + 中/英双模式英文拼写自动纠错与退格撤回</strong>），二阶段在本地 Metal GPU 上运行 8 层 4-bit 蒸馏版 Qwen3（<code>Qwen3-4B-Base</code> 教师、<code>36,864</code> 100% 全中文词表），并支持一键在线挂载 <strong>2~3 MB 级别的领域 LoRA 与 .imepack 扩展卡带</strong>及零遥测自动更新。
+            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法（Rust + Swift 6）。<code>v0.14.0</code> 将 <code>Qwen3-14B-Base</code> 的语言知识柔和蒸馏进完整 <strong>28 层 4-bit MLX Qwen3-0.6B（256.7 MB · 36,864 全中文词表）</strong>，通过 <strong>Route A 拼音约束自回归束搜索</strong>与 <strong>4× Metal 融合算子加速</strong>兼顾超高整句准确率与零阻塞按键手感，并支持用户态零密码静默更新与热插拔 Multi-LoRA 卡带。
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg">
               <span class="btn-main" data-i18n="hero.dlPkg">下载 macOS 安装包 (.pkg)</span>
-              <span class="btn-meta">Chime v0.13.1 · Apple Notarized · ~102 MB</span>
+              <span class="btn-meta">Chime v0.14.0 · Apple Notarized · 257 MB · 后续免密更新</span>
             </a>
             <a class="btn btn-secondary" id="dl-zip" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip">
               <span class="btn-main" data-i18n="hero.dlZip">便携版 Chime.app (.zip)</span>
@@ -48,16 +49,16 @@
           </div>
           <div class="metrics-strip">
             <div class="metric">
-              <span class="metric-val">87.8 MB</span>
-              <span class="metric-lbl" data-i18n="m.base">4-bit MLX 基础模型</span>
+              <span class="metric-val">256.7 MB</span>
+              <span class="metric-lbl" data-i18n="m.base">28L 4-bit MLX 底座</span>
             </div>
             <div class="metric">
-              <span class="metric-val">2.06 MB</span>
-              <span class="metric-lbl" data-i18n="m.lora">单个 LoRA 卡带体积</span>
+              <span class="metric-val">90.00%</span>
+              <span class="metric-lbl" data-i18n="m.holdout">严格盲测 Acc@1</span>
             </div>
             <div class="metric">
-              <span class="metric-val">0.86 ms</span>
-              <span class="metric-lbl" data-i18n="m.lat">6 候选批量重排延迟</span>
+              <span class="metric-val">4.07×</span>
+              <span class="metric-lbl" data-i18n="m.speedup">Metal 融合推理提速</span>
             </div>
             <div class="metric">
               <span class="metric-val">0 Bytes</span>
@@ -88,7 +89,7 @@
             <div class="ime-panel" id="ime-panel">
               <div class="ime-candidates" id="ime-candidates"></div>
               <div class="ime-footer">
-                <span id="ime-lora-badge" class="lora-active-pill">LoRA: classics-poetry (1.0x)</span>
+                <span id="ime-lora-badge" class="lora-active-pill">LoRA: classics-poetry (28L Rank-8 · 1.0x)</span>
                 <span class="ime-hint" id="ime-hint">按 Space 上屏首项 · 按 Tab 触发诗词整句续写</span>
               </div>
             </div>
@@ -105,44 +106,105 @@
     <section class="section" id="architecture">
       <div class="container">
         <div class="section-header">
-          <p class="eyebrow" data-i18n="arch.eyebrow">Base Model + Multi-LoRA Sidecar</p>
-          <h2 data-i18n="arch.title">为什么是「一个冻结基础模型 + 一组热插拔卡带」？</h2>
+          <p class="eyebrow" data-i18n="arch.eyebrow">Route A 拼音约束自回归束搜索 + Multi-LoRA 卡带</p>
+          <h2 data-i18n="arch.title">保留完整 28 层世界知识，4× Metal 提速与零跳动原生体验</h2>
           <p data-i18n="arch.desc">
-            纯统计词库不懂语境同音词（如「保障权利」与「滥用权力」），而只挂 LoRA 却缺词条时，一阶段束搜索又无法召回《水调歌头》或《雨霖铃》的词牌领字。Chime 用 <code>.imepack</code> 卡带把<strong>零拷贝词典召回</strong>与<strong>低秩神经重排</strong>合二为一。
+            纯统计词库难以处理跨长句语境同音词与新颖表达，而激进剪层又会损耗预训练世界知识。<code>v0.14.0</code> 保留 <code>Qwen3-0.6B</code> 全部 28 层结构并以 <code>Qwen3-14B-Base</code> 柔和 KL 蒸馏增强，结合底层算子融合与异步增量束搜索，实现端侧输入法的准确率与手感双突破。
           </p>
         </div>
 
         <div class="arch-grid">
           <article class="arch-card">
-            <div class="arch-step">01 · Stage-1 Recall (&lt; 0.8 ms)</div>
-            <h3 data-i18n="arch.c1Title">CHIMED02 零拷贝多层词典栈</h3>
+            <div class="arch-step">01 · 0 ms Fast Path + Async Route A</div>
+            <h3 data-i18n="arch.c1Title">零拷贝词图秒出 + 异步拼音约束神经束搜索</h3>
             <p data-i18n="arch.c1Body">
-              基于 <code>mmap</code> 直接映射 48 字节对齐的二进制词图，无需冷启动反序列化。支持 16 音节长诗整句解码、词牌短逗合并（<code>念去去，千里烟波</code>）、QWERTY 邻键与乱序纠错，以及 <code>O(log C)</code> 哈希续写链。
+              敲击任意键时一阶段 <code>mmap CHIMED02</code> 词图在 <code>&lt; 0.8 ms</code> 内即刻出字不卡手；后台异步 Route A 线程基于确定性 <code>TokenPinyinIndex</code> 前缀树与增量 <code>RouteABeamCache</code> 推进 28 层语言模型，无缝刷新整句最优候选。
             </p>
           </article>
           <article class="arch-card">
-            <div class="arch-step">02 · Frozen 4-bit Base (87.8 MB)</div>
-            <h3 data-i18n="arch.c2Title">8 层蒸馏版 Qwen3 常驻统一内存</h3>
+            <div class="arch-step">02 · 28L Qwen3-14B Distill (256.7 MB)</div>
+            <h3 data-i18n="arch.c2Title">14B 柔和蒸馏底座 + 4.07× Metal 算子融合</h3>
             <p data-i18n="arch.c2Body">
-              从 36 层 <code>Qwen3-4B-Base</code> 经 1024→2560 隐状态投影对齐与同音子空间 KL 蒸馏压缩至 8 层，保留 <code>36,864</code> 个词元（100% 覆盖全部 Qwen3 中文词元）。全系统无论挂载多少个扩展包，基础权重只占一份内存。
+              加载期融合 <code>QKV</code> 与 <code>Gate+Up</code> 量化投影（每步减少 84 次 Metal GEMM 启动），并在单次 <code>eval()</code> 屏障内紧凑物化子束 KV 缓存以切断跨步惰性计算图膨胀——整句评测提速 <strong>4.07×</strong>，语境探针 <code>p50</code> 仅 <strong>6.4 ms</strong>，完整保留 <code>36,864</code> 无损中文词表。
             </p>
           </article>
           <article class="arch-card">
-            <div class="arch-step">03 · Multi-LoRA Sidecar (+0.04 ms)</div>
-            <h3 data-i18n="arch.c3Title">按宿主 App 与上文动态路由权重</h3>
+            <div class="arch-step">03 · Swift 6 Polish + Silent Updates</div>
+            <h3 data-i18n="arch.c3Title">稳如磐石的候选栏、Multi-LoRA 与免密自动更新</h3>
             <p data-i18n="arch.c3Body">
-              前向推理实时叠加 <code>Δy = ∑ γₖ (x · Aₖᵀ) · Bₖᵀ</code>。在 Ghostty / VS Code 中自动放大 <code>tech-developer</code> 权重；检测到古文虚词或诗词韵律时自动唤醒 <code>classics-poetry</code>。
+              会话级垂直锚点锁与等高单行设计彻底消除候选栏上下跳动；<code>deviceIndependentFlagsMask</code> 去重根治 Shift 双浮窗；新版 <code>.pkg</code> 自动迁移至用户可写的 <code>~/Library/Input Methods/Chime.app</code>，此后所有升级无需密码/指纹、不再弹出 macOS 15+ 重复启用确认窗。
             </p>
           </article>
         </div>
       </div>
     </section>
 
-    <section class="section section-alt" id="packs">
+    <section class="section section-alt" id="benchmarks">
+      <div class="container">
+        <div class="section-header">
+          <p class="eyebrow" data-i18n="bench.eyebrow">零泄露官方评测基准（22,328 条真实用例）</p>
+          <h2 data-i18n="bench.title">端到端首项准确率演进（v0.10.0 → v0.14.0）</h2>
+          <p data-i18n="bench.desc">
+            覆盖 5 套官方测试集，包含两套严格盲测集（<code>test_holdout</code> 1,010 条 + <code>test_holdout_10k</code> 10,000 条开放域长短句），全程从未查阅单条样本或用于任何训练。
+          </p>
+        </div>
+
+        <div class="bench-table-wrap">
+          <table class="bench-table">
+            <thead>
+              <tr>
+                <th>版本与模型架构</th>
+                <th class="num">模型体积</th>
+                <th class="num">dev_suite (1,258)</th>
+                <th class="num">盲测 holdout (1,010)</th>
+                <th class="num">dev_10k (10,000)</th>
+                <th class="num">盲测 holdout_10k (10,000)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>v0.10.0</code> · 6L Qwen3-0.6B Rerank (24K 词表)</td>
+                <td class="num">64.2 MB</td>
+                <td class="num">86.01%</td>
+                <td class="num">70.89%</td>
+                <td class="num">—</td>
+                <td class="num">—</td>
+              </tr>
+              <tr>
+                <td><code>v0.12.2</code> · 8L Qwen3-4B 蒸馏 Rerank (36K 词表)</td>
+                <td class="num">87.8 MB</td>
+                <td class="num">89.51%</td>
+                <td class="num">75.84%</td>
+                <td class="num">—</td>
+                <td class="num">66.45%</td>
+              </tr>
+              <tr>
+                <td><code>v0.13.0</code> · 8L Qwen3-4B 蒸馏 + Route A 束搜索</td>
+                <td class="num">87.8 MB</td>
+                <td class="num">91.49%</td>
+                <td class="num">83.66%</td>
+                <td class="num">77.00%</td>
+                <td class="num">75.31%</td>
+              </tr>
+              <tr class="highlight">
+                <td><code>v0.14.0</code> · 28L Qwen3-14B 柔和蒸馏 + 4× 融合 Route A</td>
+                <td class="num">256.7 MB</td>
+                <td class="num">93.16% (Hit@5 97.9%)</td>
+                <td class="num">90.00% (+6.34%)</td>
+                <td class="num">81.34% (+4.34%)</td>
+                <td class="num">79.70% (+4.39%)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="packs">
       <div class="container">
         <div class="section-header">
           <p class="eyebrow" data-i18n="packs.eyebrow">Prebuilt .imepack Hub</p>
-          <h2 data-i18n="packs.title">官方预构建卡带下载（LoRA + 零拷贝词库）</h2>
+          <h2 data-i18n="packs.title">官方 28L 预构建卡带下载（Rank-8 LoRA + 零拷贝词库）</h2>
           <p data-i18n="packs.desc">
             推荐直接在「菜单栏 Chime → 偏好设置… → 词库与 AI」中点击<strong>一键安装 / 更新</strong>自动校验并热挂载；也可下载 <code>.imepack.zip</code> 本地导入或通过 CLI 安装，全程无需重启输入法。
           </p>
@@ -156,14 +218,14 @@
                 <h3>classics-poetry.imepack</h3>
                 <p class="pack-subtitle" data-i18n="p1.sub">古典诗词曲赋、四书古文与成语歇后语全库</p>
               </div>
-              <span class="pack-version">v0.13.1</span>
+              <span class="pack-version">v0.14.0 · 24 MB</span>
             </div>
             <p class="pack-body" data-i18n="p1.body">
               完整收录《唐诗三百首》《宋词三百首》、苏辛柳李词集、《诗经》《楚辞》《论语》《孟子》《庄子·逍遥游》《滕王阁序》《岳阳楼记》《赤壁赋》《将进酒》《琵琶行》《长恨歌》《春江花月夜》及 3 万条新华成语、1.4 万条歇后语。支持全篇逐句「一路 Tab」背诵续写与重首句上下文消歧。
             </p>
             <ul class="pack-specs">
               <li><strong>pack.imedict</strong>: 266,816 词条 + 231,593 条续写链</li>
-              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (2.06 MB · 6L Qwen3)</li>
+              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (9.66 MB · 28L Qwen3)</li>
               <li><strong>SHA-256</strong>: <code id="sha-classics">见发布页 SHA256SUMS.txt</code></li>
             </ul>
             <div class="pack-footer">
@@ -181,14 +243,14 @@
                 <h3>tech-developer.imepack</h3>
                 <p class="pack-subtitle" data-i18n="p2.sub">系统编程、AI 推理与云原生中英双语增强包</p>
               </div>
-              <span class="pack-version">v0.13.1</span>
+              <span class="pack-version">v0.14.0 · 8.9 MB</span>
             </div>
             <p class="pack-body" data-i18n="p2.body">
-              针对程序员日常输入调优：涵盖 Rust、Swift 6、Apple Silicon、MLX、CoreML、Kubernetes、分布式存储与大模型工程中英术语，强化精确驼峰大小写（<code>macOS</code>、<code>GitHub</code>、<code>ChatGPT</code>、<code>PostgreSQL</code>）与中英混输连贯度。在终端与 IDE 中自动满权激活，在微信等聊天软件中自动收敛至 0.25x。
+              针对程序员日常输入调优：涵盖 Rust、Swift 6、Apple Silicon、MLX、CoreML、Kubernetes、分布式存储与大模型工程中英术语，强化精确驼峰大小写（<code>macOS</code>、<code>GitHub</code>、<code>ChatGPT</code>、<code>PostgreSQL</code>）与中英混输连贯度。在终端与 IDE 中自动满权激活，在聊天软件中自动收敛权重。
             </p>
             <ul class="pack-specs">
               <li><strong>pack.imedict</strong>: 双语技术词条 + 精确大小写词典</li>
-              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (2.06 MB · 6L Qwen3)</li>
+              <li><strong>lora.safetensors</strong>: Rank-8 FP16 (9.66 MB · 28L Qwen3)</li>
               <li><strong>SHA-256</strong>: <code id="sha-tech">见发布页 SHA256SUMS.txt</code></li>
             </ul>
             <div class="pack-footer">
@@ -202,30 +264,35 @@
       </div>
     </section>
 
-    <section class="section" id="diy">
+    <section class="section section-alt" id="diy">
       <div class="container">
         <div class="diy-box">
           <div class="diy-copy">
             <p class="eyebrow" data-i18n="diy.eyebrow">Bring Your Own Private LoRA</p>
             <h2 data-i18n="diy.title">用你过去的博客与笔记，训练只属于本机的私有文风卡带</h2>
             <p data-i18n="diy.desc">
-              每个人的书面表达都有独特的用词习惯。Chime 内置本地隐私清洗器（自动剔除 API Key、邮箱、手机号与私密链接），只需三步即可把你自己的历史文章微调成 <code>private_pack: true</code> 的私有卡带，仅挂载于本机 <code>~/Library/Application Support/Chime/packs/</code>。
+              每个人的书面表达都有独特的用词习惯。Chime 内置本地隐私清洗器（自动剔除 API Key、邮箱、手机号与私密链接），只需三步即可把你自己的历史文章微调成 28L Rank-8 <code>private_pack: true</code> 私有卡带，仅挂载于本机 <code>~/Library/Application Support/Chime/packs/</code>。
             </p>
           </div>
-          <pre class="code-block"><code># 1. 在本地扫描并脱敏你的历史 Markdown 笔记，生成训练语料
-chime corpus-export ~/Notes/**/*.md -o /tmp/my_clean_corpus.jsonl
+          <pre class="code-block"><code># 1. 在本地扫描并脱敏你的历史 Markdown 笔记，生成训练语料与词频表
+uv run --python 3.12 --no-project --with jieba --with pypinyin \
+  python tools/prepare_pack_corpora.py \
+  --personal-posts ~/Notes/essays --private-out /tmp/chime_private
 
-# 2. 使用 tools/colab_train_loras.py 训练 2 MB Rank-8 LoRA 后打包私有卡带
-chime pack build /tmp/personal-style.imepack \
-  --id personal-style \
-  --name "个人文风私有包" \
-  --routing always \
-  --tsv /tmp/personal_words.tsv \
-  --lora /tmp/personal_lora.safetensors \
-  --private
+# 2. 在本机 Apple Silicon GPU 上基于 28L Q4 流形训练 9.66 MB Rank-8 LoRA
+uv run --python 3.12 --no-project --with torch --with safetensors \
+  --with transformers --with mlx --with numpy \
+  python tools/colab_train_loras.py \
+  --q4-model-dir dist/base_neural --vocab dist/base_neural/vocab.json \
+  --private-txt /tmp/chime_private/personal_lora_corpus.txt \
+  --private-out-lora /tmp/chime_private/personal_lora.safetensors --steps 320
 
-# 3. 安装至本机 Chime 扩展目录并热重载生效
-chime pack install /tmp/personal-style.imepack</code></pre>
+# 3. 打包并热安装至本机 Chime 扩展目录
+chime pack build /tmp/chime_private/personal-style.imepack \
+  --id personal-style --name "个人文风私有包" --routing always --private \
+  --tsv /tmp/chime_private/personal_lexicon.tsv \
+  --lora /tmp/chime_private/personal_lora.safetensors
+chime pack install /tmp/chime_private/personal-style.imepack</code></pre>
         </div>
       </div>
     </section>
@@ -233,7 +300,7 @@ chime pack install /tmp/personal-style.imepack</code></pre>
 
   <footer class="footer">
     <div class="container footer-inner">
-      <p>Chime 拼音 v0.13.1 · Dual-licensed under MIT OR Apache-2.0 · Built with Rust, Swift 6 &amp; MLX Metal.</p>
+      <p>Chime 拼音 v0.14.0 · Dual-licensed under MIT OR Apache-2.0 · Built with Rust, Swift 6 &amp; MLX Metal.</p>
       <p class="footer-links">
         <a href="https://github.com/tyrchen/chime/releases" target="_blank" rel="noopener">GitHub Releases</a>
         <span>·</span>

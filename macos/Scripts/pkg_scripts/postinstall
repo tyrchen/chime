@@ -1,35 +1,94 @@
 #!/bin/sh
 
-APP_PATH="/Library/Input Methods/Chime.app"
-APP_BIN="$APP_PATH/Contents/MacOS/Chime"
+STAGE_DIR="/Library/Application Support/ChimeInstaller"
+STAGE_APP="$STAGE_DIR/Chime.app"
+LEGACY_SYS_APP="/Library/Input Methods/Chime.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall v0.8.0 started at $(date) ==="
-    if [ -d "$APP_PATH" ]; then
-        chown -R root:wheel "$APP_PATH" 2>&1 || true
-        chmod -R u+rwX,go+rX "$APP_PATH" 2>&1 || true
-        chmod +x "$APP_BIN" 2>&1 || true
-        xattr -dr com.apple.quarantine "$APP_PATH" 2>&1 || true
+    echo "=== Chime postinstall v0.14.0 started at $(date) ==="
 
-        # Update directory mtime so HIToolbox TISFileInterrogator sees /Library/Input Methods changed
-        /usr/bin/touch "/Library/Input Methods" 2>&1 || true
+    CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
+    CONSOLE_UID=""
+    USER_HOME=""
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
+        CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+        USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+    fi
+    echo "Detected console user='$CONSOLE_USER' uid='$CONSOLE_UID' home='$USER_HOME'"
 
-        "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
+    # Install into the user's writable ~/Library/Input Methods/Chime.app whenever an interactive
+    # user home is present, AND cleanly remove any legacy root-owned /Library/Input Methods/Chime.app.
+    # This gives every user silent, zero-password, zero-Touch-ID in-app hot updates forever after!
+    TARGET_APP="$LEGACY_SYS_APP"
+    IS_USER_SPACE=0
+    if [ -n "$CONSOLE_USER" ] && [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
+        TARGET_DIR="$USER_HOME/Library/Input Methods"
+        TARGET_APP="$TARGET_DIR/Chime.app"
+        IS_USER_SPACE=1
+    fi
+    echo "Target install path='$TARGET_APP' (user_space=$IS_USER_SPACE)"
 
-        CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
-        CONSOLE_UID=""
-        if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ] && [ "$CONSOLE_USER" != "_mbsetupuser" ]; then
-            CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER" 2>/dev/null || true)"
+    if [ ! -d "$STAGE_APP" ]; then
+        echo "ERROR: staged bundle $STAGE_APP not found!"
+        exit 0
+    fi
+
+    # Detect whether Chime is ALREADY enabled for the active console user.
+    ALREADY_ENABLED=0
+    if [ -n "$USER_HOME" ] && /usr/bin/plutil -p "$USER_HOME/Library/Preferences/com.apple.HIToolbox.plist" 2>/dev/null | /usr/bin/grep -q "app.tyrchen.inputmethod.Chime"; then
+        ALREADY_ENABLED=1
+    fi
+    echo "ALREADY_ENABLED=$ALREADY_ENABLED"
+
+    # Stop any running Chime process before replacing the bundle
+    pkill -x Chime 2>&1 || true
+
+    if [ "$IS_USER_SPACE" -eq 1 ]; then
+        mkdir -p "$USER_HOME/Library/Input Methods" 2>&1 || true
+        chown "$CONSOLE_USER:staff" "$USER_HOME/Library/Input Methods" 2>&1 || true
+
+        rm -rf "$TARGET_APP" 2>&1 || true
+        /bin/mv "$STAGE_APP" "$TARGET_APP" 2>&1 || /usr/bin/ditto "$STAGE_APP" "$TARGET_APP" 2>&1 || true
+        chown -R "$CONSOLE_USER:staff" "$TARGET_APP" 2>&1 || true
+        chmod -R u+rwX,go+rX "$TARGET_APP" 2>&1 || true
+        chmod +x "$TARGET_APP/Contents/MacOS/Chime" 2>&1 || true
+        xattr -dr com.apple.quarantine "$TARGET_APP" 2>&1 || true
+
+        # Remove legacy root-owned system copy so macOS never sees duplicate Chime bundles
+        if [ -d "$LEGACY_SYS_APP" ]; then
+            echo "Migrated to user-writable ~/Library/Input Methods/Chime.app; removing legacy $LEGACY_SYS_APP"
+            rm -rf "$LEGACY_SYS_APP" 2>&1 || true
+            /usr/bin/touch "/Library/Input Methods" 2>&1 || true
         fi
-        echo "Detected console user='$CONSOLE_USER' uid='$CONSOLE_UID'"
+        /usr/bin/touch "$USER_HOME/Library/Input Methods" 2>&1 || true
+    else
+        mkdir -p "/Library/Input Methods" 2>&1 || true
+        rm -rf "$LEGACY_SYS_APP" 2>&1 || true
+        /bin/mv "$STAGE_APP" "$LEGACY_SYS_APP" 2>&1 || /usr/bin/ditto "$STAGE_APP" "$LEGACY_SYS_APP" 2>&1 || true
+        chown -R root:wheel "$LEGACY_SYS_APP" 2>&1 || true
+        chmod -R u+rwX,go+rX "$LEGACY_SYS_APP" 2>&1 || true
+        chmod +x "$LEGACY_SYS_APP/Contents/MacOS/Chime" 2>&1 || true
+        xattr -dr com.apple.quarantine "$LEGACY_SYS_APP" 2>&1 || true
+        /usr/bin/touch "/Library/Input Methods" 2>&1 || true
+    fi
+    rm -rf "$STAGE_DIR" 2>&1 || true
 
-        # 1. If System Settings is open, quit it gracefully FIRST so killing idle KeyboardSettings XPC
-        # never triggers a "Settings Error: Extension process Keyboard exited" popup.
-        WAS_SETTINGS_OPEN=0
+    APP_BIN="$TARGET_APP/Contents/MacOS/Chime"
+    "$LSREGISTER" -f -R -trusted "$TARGET_APP" 2>&1 || true
+
+    if [ "$ALREADY_ENABLED" -eq 1 ]; then
+        echo "Smooth upgrade path: gently restarting Chime without disturbing TIS registration"
+        if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$TARGET_APP" 2>&1 || true
+            sleep 0.3
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$TARGET_APP" 2>&1 || true
+        fi
+    else
+        echo "Fresh install path: registering Chime with HIToolbox and opening Input Sources"
+
         if [ -n "$CONSOLE_UID" ] && /usr/bin/pgrep -u "$CONSOLE_UID" -x "System Settings" >/dev/null 2>&1; then
-            WAS_SETTINGS_OPEN=1
             /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/osascript -e 'tell application id "com.apple.systempreferences" to quit' 2>&1 || true
             for _ in 1 2 3 4 5; do
                 /usr/bin/pgrep -u "$CONSOLE_UID" -x "System Settings" >/dev/null 2>&1 || break
@@ -37,32 +96,23 @@ LOG_FILE="/tmp/chime-install.log"
             done
         fi
 
-        # 2. Stop old Chime and idle KeyboardSettings / input method agents BEFORE wiping IntlDataCache
-        pkill -x Chime 2>&1 || true
         killall KeyboardSettings "Keyboard-Settings.extension" 2>&1 || true
 
-        # 3. Purge stale HIToolbox TISFileInterrogator caches (`com.apple.IntlDataCache.le*` & `.kbdx`)
-        # across system caches AND all per-user / per-XPC-sandbox (`/private/var/folders/*/*/C/...`) dirs!
-        # HIToolbox sets `updateSystemInputSources = false` whenever an old `.kbdx` file exists on disk;
-        # removing `.kbdx` forces `TISFileInterrogator` to rescan `/Library/Input Methods/` immediately.
         rm -f /System/Library/Caches/com.apple.IntlDataCache.le* \
               /Library/Caches/com.apple.IntlDataCache.le* \
               /private/var/folders/*/*/C/com.apple.IntlDataCache.le* \
               /private/var/folders/*/*/C/*/com.apple.IntlDataCache.le* 2>&1 || true
 
-        # Rebuild system-level IntlDataCache as root if /System/Library/Caches is on writable Data volume
         if [ -x "$APP_BIN" ]; then
-            "$APP_BIN" --register "$APP_PATH" 2>&1 || true
+            "$APP_BIN" --register "$TARGET_APP" 2>&1 || true
             chmod 644 /System/Library/Caches/com.apple.IntlDataCache.le* 2>/dev/null || true
         fi
 
-        # Restart input method menu agents so they rebuild their TIS table with Chime included
         killall imklaunchagent TextInputMenuAgent TextInputSwitcher CursorUIViewService 2>&1 || true
         sleep 1
 
-        # 4. Register & launch persistent Chime IMKServer inside the active GUI user's Aqua session
         if [ -n "$CONSOLE_UID" ] && [ -x "$APP_BIN" ]; then
-            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$APP_PATH" 2>&1 || true
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$LSREGISTER" -f -R -trusted "$TARGET_APP" 2>&1 || true
 
             USER_CACHE_DIR="$(/bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
             if [ -n "$USER_CACHE_DIR" ] && [ -d "$USER_CACHE_DIR" ]; then
@@ -70,7 +120,7 @@ LOG_FILE="/tmp/chime-install.log"
                       "$USER_CACHE_DIR"/com.apple.Keyboard-Settings.extension/com.apple.IntlDataCache.le* 2>&1 || true
             fi
 
-            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$APP_PATH" --args --activate-on-install 2>&1 || true
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open -n -g -a "$TARGET_APP" --args --activate-on-install 2>&1 || true
 
             for _ in 1 2 3 4 5 6; do
                 if /usr/bin/pgrep -u "$CONSOLE_UID" -x Chime >/dev/null 2>&1; then
@@ -81,23 +131,11 @@ LOG_FILE="/tmp/chime-install.log"
             done
             sleep 1.0
 
-            # 5. Reopen System Settings -> Keyboard -> Input Sources cleanly if needed
-            USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
-            NEED_OPEN_SETTINGS=0
-            if [ "$WAS_SETTINGS_OPEN" -eq 1 ]; then
-                NEED_OPEN_SETTINGS=1
-            elif [ -n "$USER_HOME" ] && ! /usr/bin/plutil -p "$USER_HOME/Library/Preferences/com.apple.HIToolbox.plist" 2>/dev/null | /usr/bin/grep -q "app.tyrchen.inputmethod.Chime"; then
-                NEED_OPEN_SETTINGS=1
-            fi
-
-            if [ "$NEED_OPEN_SETTINGS" -eq 1 ]; then
-                /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?InputSources" 2>&1 || true
-            fi
+            /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?InputSources" 2>&1 || true
         fi
-    else
-        echo "ERROR: $APP_PATH not found!"
     fi
-    echo "=== Chime postinstall v0.8.0 finished at $(date) ==="
+
+    echo "=== Chime postinstall v0.14.0 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true

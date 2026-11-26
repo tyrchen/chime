@@ -138,7 +138,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	else \
 		codesign --force --deep --sign - "$(APP_BUNDLE)"; \
 	fi
-	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 6L 4-bit MLX Metal)"
+	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 28L 4-bit MLX Metal)"
 
 build-public-packs: build-classics-corpus
 	@mkdir -p "$(PACKS_BUILD_DIR)" "$(RELEASE_DIR)"
@@ -150,7 +150,7 @@ build-public-packs: build-classics-corpus
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/classics-poetry.imepack" \
 		--id classics-poetry \
 		--name "古典诗词曲赋与成语全库" \
-		--description "收录唐诗、宋词、元曲、诗经、楚辞、四书、古文名篇及新华成语歇后语共 26.6 万词条与 23.1 万条全篇 Tab 续写链，含 Rank-8 古汉语 LoRA" \
+		--description "收录唐诗、宋词、元曲、诗经、楚辞、四书、古文名篇及新华成语歇后语共 26.6 万词条与 23.1 万条全篇 Tab 续写链，含 28L Rank-8 古汉语 LoRA" \
 		--routing classical \
 		--lora-scale 1.0 \
 		--tsv "$(DIST_DIR)/classics_pack_lexicon.tsv" \
@@ -159,7 +159,7 @@ build-public-packs: build-classics-corpus
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/tech-developer.imepack" \
 		--id tech-developer \
 		--name "开发者中英技术双语包" \
-		--description "面向系统编程、Rust/Swift、端侧 AI 与云原生的中英双语术语库及 Rank-8 技术语境 LoRA，在终端与 IDE 中自动满权激活" \
+		--description "面向系统编程、Rust/Swift、端侧 AI 与云原生的中英双语术语库及 28L Rank-8 技术语境 LoRA，在终端与 IDE 中自动满权激活" \
 		--routing developer \
 		--lora-scale 1.0 \
 		--tsv "$(DIST_DIR)/tech_pack_lexicon.tsv" \
@@ -169,8 +169,8 @@ build-public-packs: build-classics-corpus
 
 define build-installer-pkg
 @rm -rf "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist" "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"
-@mkdir -p "$(DIST_DIR)/pkg-root/Library/Input Methods" "$(RELEASE_DIR)"
-@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(DIST_DIR)/pkg-root/Library/Input Methods/Chime.app"
+@mkdir -p "$(DIST_DIR)/pkg-root/Library/Application Support/ChimeInstaller" "$(RELEASE_DIR)"
+@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(DIST_DIR)/pkg-root/Library/Application Support/ChimeInstaller/Chime.app"
 @chmod +x macos/Scripts/pkg_scripts/postinstall
 @COPYFILE_DISABLE=1 /usr/bin/pkgbuild --analyze --root "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist"
 @/usr/bin/plutil -replace 0.BundleIsRelocatable -bool NO "$(DIST_DIR)/component.plist"

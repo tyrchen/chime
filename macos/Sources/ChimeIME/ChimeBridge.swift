@@ -239,12 +239,14 @@ public final class ChimeEngineBridge {
     public var activeControllerKey: ObjectIdentifier?
 
     // Engine-wide modifier tap & English mode state (shared across windows like Sogou / Doubao)
+    private var cachedConfig: ChimeConfigDTO = .default
     private var inlineEnglishModeGlobal: Bool = false
     private var shiftDownUptime: TimeInterval?
     private var shiftDownSide: UInt16? // 0x38 = left, 0x3C = right, 0 = generic
     private var keyOrMouseDuringShift: Bool = false
     private var lastProcessedFlagsUptime: TimeInterval = 0
-    private var lastProcessedFlagsRaw: UInt = 0
+    private var lastProcessedFlagsMask: UInt = 0
+    private var lastModeToggleUptime: TimeInterval = 0
     private var enStatusItem: NSStatusItem?
 
     private init() {
@@ -259,6 +261,9 @@ public final class ChimeEngineBridge {
             bundleRes.withCString { resCStr in
                 chime_engine_new_with_dirs(supCStr, resCStr)
             }
+        }
+        if let cfg = self.getConfig() {
+            self.cachedConfig = cfg
         }
 
         CandidatePanel.shared.onSelectCandidate = { [weak self] pageRelIdx in
@@ -278,7 +283,7 @@ public final class ChimeEngineBridge {
             let resp = self.togglePunctuation(controllerKey: key)
             self.applyResponseToStoredClient(controllerKey: key, resp: resp)
             if resp.show_status_toast {
-                let caret = self.slots[key]?.lastCaretRect ?? NSRect(x: 480, y: 360, width: 1, height: 18)
+                let caret = self.liveCaretOrMouseRect(for: key)
                 StatusToastPanel.shared.show(
                     badge: resp.chinese_punctuation ? "中。" : "英.",
                     caretRect: caret
@@ -381,26 +386,80 @@ public final class ChimeEngineBridge {
         presentModeChangeFeedback(resp: resp, controllerKey: activeControllerKey)
     }
 
-    public func presentModeChangeFeedback(resp: ChimeResponse, controllerKey: ObjectIdentifier?) {
+    public func presentModeChangeFeedback(
+        resp: ChimeResponse,
+        controllerKey: ObjectIdentifier?,
+        preferredRect: NSRect? = nil
+    ) {
         syncMenuBarEnBadge()
         guard resp.show_status_toast else { return }
-        let rect = liveCaretOrMouseRect(for: controllerKey)
+        let rect = preferredRect
+            ?? CandidatePanel.shared.activeAnchorCaret
+            ?? liveCaretOrMouseRect(for: controllerKey)
         StatusToastPanel.shared.show(
             badge: resp.inline_english_mode ? "En" : "中",
             caretRect: rect
         )
     }
 
-    public func liveCaretOrMouseRect(for controllerKey: ObjectIdentifier?) -> NSRect {
-        if let key = controllerKey ?? activeControllerKey, let slot = slots[key] {
-            if let client = slot.lastClientObject as? IMKTextInput {
-                var lineRect = NSRect.zero
-                client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
-                if lineRect.origin.x != 0 || lineRect.origin.y != 0 {
-                    return lineRect
-                }
+    /// Queries a validated screen-space caret rectangle from an `IMKTextInput` client, preferring
+    /// the start of the active marked preedit (so multi-line wrapping & Electron editors stay rock
+    /// solid) and rejecting degenerate `(0, 0)` or out-of-bounds heights.
+    public nonisolated static func queryValidatedCaretRect(from client: IMKTextInput) -> NSRect? {
+        var indices: [Int] = []
+        let marked = client.markedRange()
+        if marked.location != NSNotFound && marked.length > 0 {
+            indices.append(marked.location)
+        }
+        let sel = client.selectedRange()
+        if sel.location != NSNotFound {
+            indices.append(sel.location)
+        }
+        if !indices.contains(0) {
+            indices.append(0)
+        }
+
+        for idx in indices {
+            var lineRect = NSRect.zero
+            client.attributes(forCharacterIndex: idx, lineHeightRectangle: &lineRect)
+            let ok = MainActor.assumeIsolated {
+                Self.isPlausibleCaretRect(lineRect)
             }
-            if slot.hasObservedCaret {
+            if ok {
+                return lineRect
+            }
+        }
+        return nil
+    }
+
+    private static func isPlausibleCaretRect(_ rect: NSRect) -> Bool {
+        guard rect.origin.x.isFinite && rect.origin.y.isFinite
+            && rect.size.width.isFinite && rect.size.height.isFinite
+        else {
+            return false
+        }
+        if rect.origin.x == 0 && rect.origin.y == 0 {
+            return false
+        }
+        if rect.size.height < 4.0 || rect.size.height > 120.0 {
+            return false
+        }
+        return NSScreen.screens.contains(where: { screen in
+            screen.frame.insetBy(dx: -40, dy: -40).contains(rect.origin)
+        })
+    }
+
+    public func liveCaretOrMouseRect(for controllerKey: ObjectIdentifier?) -> NSRect {
+        if let activeAnchor = CandidatePanel.shared.activeAnchorCaret {
+            return activeAnchor
+        }
+        if let key = controllerKey ?? activeControllerKey, let slot = slots[key] {
+            if let client = slot.lastClientObject as? IMKTextInput,
+               let live = Self.queryValidatedCaretRect(from: client)
+            {
+                return live
+            }
+            if slot.hasObservedCaret && Self.isPlausibleCaretRect(slot.lastCaretRect) {
                 return slot.lastCaretRect
             }
         }
@@ -463,6 +522,7 @@ public final class ChimeEngineBridge {
     }
 
     public func deactivate(controllerKey: ObjectIdentifier) {
+        pollTasks.removeValue(forKey: controllerKey)?.cancel()
         if activeControllerKey == controllerKey {
             activeControllerKey = nil
         }
@@ -517,14 +577,16 @@ public final class ChimeEngineBridge {
         guard let handle else { return nil }
         let now = ProcessInfo.processInfo.systemUptime
         let rawFlags = flags.rawValue
-        // Deduplicate if both IMKInputController and global monitor deliver the exact same event
-        if (now - lastProcessedFlagsUptime) < 0.025 && rawFlags == lastProcessedFlagsRaw {
+        let cleanMask = flags.intersection(.deviceIndependentFlagsMask).rawValue
+        // Deduplicate if both IMKInputController and global monitor deliver the same event
+        // (comparing device-independent flags because IMK IPC often strips low device bits).
+        if (now - lastProcessedFlagsUptime) < 0.055 && cleanMask == lastProcessedFlagsMask {
             return nil
         }
         lastProcessedFlagsUptime = now
-        lastProcessedFlagsRaw = rawFlags
+        lastProcessedFlagsMask = cleanMask
 
-        let toggleRule = getConfig()?.english_toggle_key ?? "both_shift"
+        let toggleRule = cachedConfig.english_toggle_key
         if toggleRule == "none" {
             shiftDownUptime = nil
             return nil
@@ -541,6 +603,8 @@ public final class ChimeEngineBridge {
 
         if toggleRule == "caps_lock" {
             guard keyCode == 0x39 else { return nil }
+            if (now - lastModeToggleUptime) < 0.15 { return nil }
+            lastModeToggleUptime = now
             let resp = decodeAndFree(chime_toggle_english(handle, sid))
             inlineEnglishModeGlobal = resp.inline_english_mode
             return resp
@@ -598,6 +662,9 @@ public final class ChimeEngineBridge {
 
         let cleanTap = !keyOrMouseDuringShift && (now - downTs) < 0.35
         guard cleanTap else { return nil }
+        // Hard 150ms toggle cooldown prevents double-firing across IMK + GlobalMonitor IPC.
+        guard (now - lastModeToggleUptime) >= 0.15 else { return nil }
+        lastModeToggleUptime = now
 
         let resp = decodeAndFree(chime_toggle_english(handle, sid))
         inlineEnglishModeGlobal = resp.inline_english_mode
@@ -692,6 +759,7 @@ public final class ChimeEngineBridge {
         if var slot = slots[controllerKey] {
             if let observedCaretRect {
                 slot.lastCaretRect = observedCaretRect
+                slot.hasObservedCaret = true
                 slots[controllerKey] = slot
             }
             caret = slot.lastCaretRect
@@ -751,9 +819,13 @@ public final class ChimeEngineBridge {
         else {
             return false
         }
-        return jsonStr.withCString { cStr in
+        let ok = jsonStr.withCString { cStr in
             chime_set_config_json(handle, cStr)
         }
+        if ok {
+            cachedConfig = config
+        }
+        return ok
     }
 
     public func getStatus() -> ChimeStatusDTO? {
@@ -780,6 +852,9 @@ public final class ChimeEngineBridge {
     public func reloadAssets() {
         guard let handle else { return }
         chime_reload_assets(handle)
+        if let cfg = getConfig() {
+            cachedConfig = cfg
+        }
     }
 
     public func clearUserHabits() {
@@ -799,7 +874,11 @@ public final class ChimeEngineBridge {
                 if let rawPtr = chime_poll_async_rerank(handle, sessionId) {
                     let updated = self.decodeAndFree(rawPtr)
                     if !updated.candidates.isEmpty || !updated.ghost_text.isEmpty {
-                        CandidatePanel.shared.update(response: updated, caretRect: slot.lastCaretRect)
+                        CandidatePanel.shared.update(
+                            response: updated,
+                            caretRect: slot.lastCaretRect,
+                            preservePosition: true
+                        )
                     }
                     return
                 }

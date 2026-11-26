@@ -647,7 +647,8 @@ fn decode_constrained_beam_single(
         active.truncate(pos_beam_cap);
         if pos < n && active.len() > 2 {
             let best_active = active[0].total_score();
-            active.retain(|h| h.total_score() >= best_active - 11.5);
+            let prune_margin = if pos > 6 { 9.0 } else { 11.5 };
+            active.retain(|h| h.total_score() >= best_active - prune_margin);
         }
 
         if let Some(ref mut snap) = next_saved_buckets {
@@ -655,7 +656,11 @@ fn decode_constrained_beam_single(
         }
 
         if pos == n {
-            if eff_closure_weight > 0.0 && !closure_token_ids.is_empty() && !active.is_empty() {
+            let need_closure = eff_closure_weight > 0.0
+                && !closure_token_ids.is_empty()
+                && active.len() >= 2
+                && (active[0].total_score() - active[1].total_score()) < 6.0;
+            if need_closure {
                 apply_closure_bonus(
                     mlx_model,
                     &root_kv,

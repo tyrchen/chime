@@ -1,6 +1,6 @@
 const PRESETS = {
   shuidiao: {
-    lora: "LoRA: classics-poetry (1.0x)",
+    lora: "LoRA: classics-poetry (28L Rank-8 · 1.0x)",
     initialCommitted: "",
     preedit: "ming'yue'ji'shi'you",
     candidates: [
@@ -25,7 +25,7 @@ const PRESETS = {
     ]
   },
   jiangjinjiu: {
-    lora: "LoRA: classics-poetry (1.0x · 防重复消歧)",
+    lora: "LoRA: classics-poetry (28L Rank-8 · 防重复消歧)",
     initialCommitted: "君不见黄河之水天上来，奔流到海不复回。",
     preedit: "jun'bu'jian",
     candidates: [
@@ -44,7 +44,7 @@ const PRESETS = {
     ]
   },
   yulinling: {
-    lora: "LoRA: classics-poetry (1.0x · 乱序纠错 uq→qu)",
+    lora: "LoRA: classics-poetry (28L Rank-8 · 乱序纠错 uq→qu)",
     initialCommitted: "执手相看泪眼，竟无语凝噎。",
     preedit: "nian'qu'uq'qian'li'yan'bo",
     candidates: [
@@ -60,7 +60,7 @@ const PRESETS = {
     ]
   },
   codeswitch: {
-    lora: "LoRA: tech-developer (中/En 双模式英文拼写自动纠错 · ⌫ 一键撤回)",
+    lora: "LoRA: tech-developer (28L Rank-8 · 中/En 双模式英文纠错)",
     initialCommitted: "",
     preedit: "bang'wo'reivew'zhe'ge'pr",
     candidates: [
@@ -70,7 +70,7 @@ const PRESETS = {
     chain: []
   },
   singlegen: {
-    lora: "Base Qwen3-8L (4-bit MLX · 87.8 MB · 36K Vocab)",
+    lora: "Route A · Qwen3-28L 4-bit MLX (256.7 MB · 36K Full-CJK)",
     initialCommitted: "",
     preedit: "gen",
     candidates: [
@@ -86,31 +86,46 @@ const PRESETS = {
 
 const I18N_EN = {
   "nav.demo": "Live Demo",
-  "nav.arch": "Base + Multi-LoRA",
-  "nav.packs": "LoRA Pack Hub",
+  "nav.arch": "Architecture",
+  "nav.bench": "Benchmarks",
+  "nav.packs": "LoRA Packs",
   "nav.diy": "Private LoRA",
   "hero.eyebrow": "macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0",
-  "hero.title": "An 88 MB local neural IME distilled from Qwen3-4B on Unified Memory, with hot-swappable LoRA cartridges.",
-  "hero.lead": "Chime is an offline-first Chinese Pinyin IME for Apple Silicon. Written in Rust and Swift 6, it pairs a fast zero-copy mmap lattice decoder (with Shift En mode, dual-mode English spelling auto-correction & 1-key Backspace undo) with an 8-layer 4-bit MLX Qwen3 reranker (36,864 full-CJK vocab), 1-click Multi-LoRA .imepack cartridges, and verified zero-telemetry updates.",
+  "hero.title": "Full 28-layer Qwen3 distilled from 14B on Apple Silicon — zero telemetry, 90% blind accuracy.",
+  "hero.lead": "Chime is an offline-first neural Chinese Pinyin IME for macOS written in Rust and Swift 6. It combines a zero-copy mmap lattice fast path with Route A Pinyin-constrained autoregressive beam search over an intact 28-layer 4-bit MLX Qwen3-0.6B distilled from Qwen3-14B-Base (256.7 MB, 36,864 full-CJK vocab), fused 4× faster Metal inference, rock-solid Swift 6 UI, hot-swappable Multi-LoRA cartridges, and silent passwordless updates.",
   "hero.dlPkg": "Download macOS Installer (.pkg)",
   "hero.dlZip": "Portable Chime.app (.zip)",
-  "hero.dlZipSub": "Drag into ~/Library/Input Methods",
-  "m.base": "4-bit MLX Base Model",
-  "m.lora": "Per Rank-8 LoRA Pack",
-  "m.lat": "End-to-End p50 Latency",
+  "hero.dlZipSub": "Unzip into ~/Library/Input Methods",
+  "m.base": "28L 4-bit MLX Model",
+  "m.holdout": "Blind Holdout Acc@1",
+  "m.speedup": "Fused Metal Speedup",
   "m.net": "Network & Telemetry",
   "demo.winTitle": "Interactive Candidate Bar & Full-Poem Tab Chaining",
   "demo.reset": "Reset Demo",
-  "arch.eyebrow": "Base Model + Multi-LoRA Sidecar",
-  "arch.title": "Why One Frozen Base Model + Pluggable .imepack Cartridges?",
-  "arch.desc": "Pure statistical dictionaries miss contextual homophones, while a LoRA alone cannot recall verses missing from Stage 1. Each .imepack bundles zero-copy CHIMED02 recall + continuation chains alongside a 2 MB Rank-8 Metal LoRA.",
+  "arch.eyebrow": "Route A Autoregressive Neural Beam Search + Multi-LoRA",
+  "arch.title": "Intact 28-Layer World Knowledge, 4× Faster Metal Inference & Zero-Jitter UX",
+  "arch.desc": "Pure statistical dictionaries stall on long-range homophones and novel prose, while aggressive layer pruning erodes pretrained world knowledge. Chime v0.14.0 keeps all 28 layers of Qwen3-0.6B gently soft-KL distilled from Qwen3-14B-Base, fused for 4× faster Metal execution alongside hot-swappable .imepack cartridges.",
+  "arch.c1Title": "0 ms Fast Path + Async Route A Neural Beam Search",
+  "arch.c1Body": "Stage-1 zero-copy CHIMED02 lattice renders instant candidates in < 0.8 ms on every keystroke, while background Route A beam search incrementally advances an intact 28L Qwen3-0.6B over a deterministic TokenPinyinIndex Trie with zero UI blocking.",
+  "arch.c2Title": "28L Qwen3-14B Soft-KL Base + 4× Fused Metal Kernels",
+  "arch.c2Body": "Fused QKV and Gate+Up quantized projections cut 84 Metal GEMM launches per step, while single-barrier unpadded KV materialization eliminates cross-step lazy DAG blowup — delivering a 4.07× end-to-end speedup (p50 6.4 ms on contextual probes) with lossless 36,864 CJK vocabulary.",
+  "arch.c3Title": "Multi-LoRA Cartridges, Zero-Jitter UI & Silent Updates",
+  "arch.c3Body": "Session-anchored candidate bar eliminates vertical jumping; deviceIndependentFlagsMask dedup kills duplicate Shift toasts; and the v0.14.0 .pkg migrates Chime into ~/Library/Input Methods/Chime.app so all future updates run silently without password prompts or redundant macOS enable popups.",
+  "bench.eyebrow": "Strict Zero-Leakage Official Benchmarks",
+  "bench.title": "Measured Accuracy Progression (v0.10.0 → v0.14.0)",
+  "bench.desc": "Evaluated across five suites totaling 22,328 prompts — including two strictly blind holdouts (1,010 curated + 10,000 open-domain sentences) never inspected or used in training.",
   "packs.eyebrow": "Prebuilt .imepack Hub",
-  "packs.title": "Official Prebuilt Cartridges (LoRA + Zero-Copy Lexicon)",
+  "packs.title": "Official 28L Cartridges (Rank-8 LoRA + Zero-Copy Lexicon)",
   "packs.desc": "Install or update with 1 click directly inside Settings → Lexicon & AI (SHA-256 verified), or import any downloaded .imepack.zip locally / via CLI with zero restart.",
+  "p1.sub": "Classical Poetry, Ci, Prose & Idioms Full Collection",
+  "p1.body": "Includes Tang/Song poetry, Shijing, Chuci, Four Books, classic prose masterpieces, 30K idioms, and 14K allegorical sayings, paired with 231,593 stateful Tab verse continuation chains and a 28L Rank-8 classical Chinese LoRA.",
+  "p2.sub": "Systems Programming, AI & Cloud-Native Bilingual Pack",
+  "p2.body": "Tuned for daily engineering workflows across Rust, Swift 6, Apple Silicon, MLX, Kubernetes, and distributed systems — preserving exact casing (macOS, GitHub, PostgreSQL) with a 28L Rank-8 developer LoRA auto-activated in terminals and IDEs.",
   "packs.dlClassics": "Download classics-poetry.imepack.zip",
   "packs.dlTech": "Download tech-developer.imepack.zip",
   "diy.eyebrow": "Bring Your Own Private LoRA",
-  "diy.title": "Train a Strictly Private Personal Style Pack from Your Own Notes"
+  "diy.title": "Train a Strictly Private Personal Style Pack from Your Own Notes",
+  "diy.desc": "Everyone writes with a distinct vocabulary. Chime ships with a local privacy scrubber (stripping API keys, emails, phone numbers, and private URLs) so you can train a 28L Rank-8 private_pack cartridge from your Markdown notes and mount it solely on your Mac."
 };
 
 const I18N_ZH = {};

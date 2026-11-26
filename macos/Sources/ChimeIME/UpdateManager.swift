@@ -24,15 +24,15 @@ public struct OfficialPackCatalogItem: Identifiable, Sendable {
             id: "classics-poetry",
             title: "古典诗词曲赋与成语全库",
             routingBadge: "古汉语语境自动激活",
-            summary: "26.6 万古典词条 + 23.1 万条全篇逐句 Tab 续写链 + Q4 对齐 Rank-8 古文 LoRA",
-            approxSize: "~16.8 MB"
+            summary: "26.6 万古典词条 + 23.1 万条全篇逐句 Tab 续写链 + 28L Rank-8 古文 LoRA",
+            approxSize: "~24 MB"
         ),
         OfficialPackCatalogItem(
             id: "tech-developer",
             title: "开发者中英技术双语包",
             routingBadge: "终端 / IDE 自动激活",
-            summary: "Rust / Swift / AI / 云原生双语术语与精确驼峰大小写 + Q4 对齐 Rank-8 技术 LoRA",
-            approxSize: "~1.9 MB"
+            summary: "Rust / Swift / AI / 云原生双语术语与精确驼峰大小写 + 28L Rank-8 技术 LoRA",
+            approxSize: "~8.9 MB"
         )
     ]
 }
@@ -168,7 +168,7 @@ public final class ChimeUpdateManager: ObservableObject {
                 statusMessage = "当前已是最新版本（v\(currentVersion)）。"
             }
             // Automatically hot-update any installed official `.imepack` cartridge whose version
-            // lags the active app release (e.g. migrating 6L LoRAs to the 8L/36K base).
+            // lags the active app release (e.g. migrating older LoRAs to the 28L/36K base).
             await autoUpdateOutdatedOfficialPacks(manifest: manifest)
         }
     }
@@ -291,11 +291,12 @@ public final class ChimeUpdateManager: ObservableObject {
             let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
             _ = Self.runProcess(lsregister, ["-f", "-R", "-trusted", targetBundleURL.path])
 
-            // Spawn a detached relauncher after 0.35s and exit cleanly so IMKServer reconnects!
+            // Spawn a detached relauncher after 0.35s and exit cleanly so IMKServer reconnects
+            // WITHOUT passing `--activate-on-install` (prevents macOS 15+ redundant enable sheets!).
             let relaunch = Process()
             relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
             let escaped = targetBundleURL.path.replacingOccurrences(of: "'", with: "'\\''")
-            relaunch.arguments = ["-c", "sleep 0.35 && /usr/bin/open -n -g -a '\(escaped)' --args --activate-on-install"]
+            relaunch.arguments = ["-c", "sleep 0.35 && /usr/bin/open -n -g -a '\(escaped)'"]
             try? relaunch.run()
             exit(0)
         } catch {
@@ -341,27 +342,13 @@ public final class ChimeUpdateManager: ObservableObject {
                 return
             }
 
-            statusMessage = "请在系统授权弹窗中验证 Touch ID / 密码以完成升级…"
-            let pkgPath = pkgURL.path
-            let ok = await Task.detached(priority: .userInitiated) {
-                let shellEscaped = pkgPath.replacingOccurrences(of: "'", with: "'\\''")
-                let appleScript = "do shell script \"/usr/sbin/installer -pkg '\(shellEscaped)' -target /\" with administrator privileges"
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                proc.arguments = ["-e", appleScript]
-                do {
-                    try proc.run()
-                    proc.waitUntilExit()
-                    return proc.terminationStatus == 0
-                } catch {
-                    return false
-                }
-            }.value
-
-            if !ok {
-                // Fallback: open verified .pkg in macOS GUI Installer.app if user cancelled osascript
-                NSWorkspace.shared.open(pkgURL)
-                statusMessage = "已打开 macOS 安装器，请按提示完成安装。"
+            // Open the SHA-256 + Developer ID verified `.pkg` in macOS native Installer.app, which
+            // natively supports Touch ID / Apple Watch authentication (unlike legacy AppleScript
+            // `osascript ... with administrator privileges` which only accepts typed passwords!).
+            statusMessage = "已通过安全校验，正在打开 macOS 安装器（支持 Touch ID 指纹授权）…"
+            let opened = NSWorkspace.shared.open(pkgURL)
+            if !opened {
+                statusMessage = "无法自动打开安装器，请手动双击：\(pkgURL.path)"
             }
         } catch {
             try? FileManager.default.removeItem(at: workDir)

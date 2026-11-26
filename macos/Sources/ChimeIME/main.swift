@@ -41,19 +41,26 @@ enum ChimeInputSourceRegistrar {
         }
 
         var parentEnabled = isSourceEnabled(parent)
+        let modeEnabled = isSourceEnabled(mode)
+        if parentEnabled && modeEnabled {
+            // Already enabled by the user: never re-call `TISEnableInputSource` (on macOS 15+,
+            // even redundant calls trigger an intrusive "Allow Chime to enable Chime?" sheet!).
+            return true
+        }
+
         if !parentEnabled && tryAutoEnable {
             _ = TISEnableInputSource(parent)
             parentEnabled = isSourceEnabled(parent)
         }
 
         if parentEnabled {
-            if !isSourceEnabled(mode) || tryAutoEnable {
+            if !modeEnabled {
                 _ = TISEnableInputSource(mode)
             }
             if tryAutoEnable {
                 _ = TISSelectInputSource(mode)
             }
-        } else if isSourceEnabled(mode) {
+        } else if modeEnabled {
             // Heal half-enabled zombie state from any prior failed programmatic enablement so
             // System Settings -> Keyboard -> Input Sources -> + -> Simplified Chinese shows
             // Chime 拼音 cleanly (`enabled=0, grayOut=0, allow=1`) without requiring logout.
@@ -69,6 +76,19 @@ enum ChimeInputSourceRegistrar {
         return true
     }
 
+    static func isAlreadyRegisteredAndEnabled() -> Bool {
+        let parentFilter = [kTISPropertyInputSourceID as String: bundleId] as CFDictionary
+        let modeFilter = [kTISPropertyInputSourceID as String: canonicalModeId] as CFDictionary
+        guard let parents = TISCreateInputSourceList(parentFilter, true)?.takeRetainedValue() as? [TISInputSource],
+              let parent = parents.first,
+              let modes = TISCreateInputSourceList(modeFilter, true)?.takeRetainedValue() as? [TISInputSource],
+              let mode = modes.first
+        else {
+            return false
+        }
+        return isSourceEnabled(parent) && isSourceEnabled(mode)
+    }
+
     @discardableResult
     static func registerBlockingCLI(bundleURL: URL, selectMode: Bool) -> Bool {
         for _ in 0..<15 {
@@ -82,13 +102,18 @@ enum ChimeInputSourceRegistrar {
 
     @MainActor
     static func scheduleDaemonRegistration(tryAutoEnable: Bool) {
+        if isAlreadyRegisteredAndEnabled() {
+            return
+        }
         let bundleURL = Bundle.main.bundleURL
         _ = registerStep(bundleURL: bundleURL, tryAutoEnable: tryAutoEnable)
 
         let delays: [TimeInterval] = [0.3, 1.0, 2.2]
         for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                _ = registerStep(bundleURL: bundleURL, tryAutoEnable: tryAutoEnable)
+                if !isAlreadyRegisteredAndEnabled() {
+                    _ = registerStep(bundleURL: bundleURL, tryAutoEnable: tryAutoEnable)
+                }
             }
         }
     }

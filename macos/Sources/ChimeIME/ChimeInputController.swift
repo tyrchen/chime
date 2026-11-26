@@ -302,7 +302,11 @@ public final class ChimeInputController: IMKInputController {
 
         if isModeToggleToast {
             MainActor.assumeIsolated {
-                ChimeEngineBridge.shared.presentModeChangeFeedback(resp: resp, controllerKey: key)
+                ChimeEngineBridge.shared.presentModeChangeFeedback(
+                    resp: resp,
+                    controllerKey: key,
+                    preferredRect: validRect
+                )
             }
         } else if resp.show_status_toast && !resp.toast_override.isEmpty {
             MainActor.assumeIsolated {
@@ -353,10 +357,6 @@ public final class ChimeInputController: IMKInputController {
             }
         }
 
-        var lineRect = NSRect.zero
-        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
-        let validRect = (lineRect.origin.x != 0 || lineRect.origin.y != 0) ? lineRect : nil
-
         if resp.preedit_text.isEmpty {
             let shouldClearMarked = MainActor.assumeIsolated {
                 let prev = ChimeEngineBridge.shared.hadMarkedPreedit(for: controllerKey)
@@ -370,6 +370,7 @@ public final class ChimeInputController: IMKInputController {
                     replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
                 )
             }
+            let validRect = ChimeEngineBridge.queryValidatedCaretRect(from: client)
             MainActor.assumeIsolated {
                 ChimeEngineBridge.shared.recordObservedCaretRect(controllerKey: controllerKey, rect: validRect)
                 if resp.ghost_text.isEmpty {
@@ -385,12 +386,15 @@ public final class ChimeInputController: IMKInputController {
             return validRect
         }
 
+        // Update marked preedit BEFORE querying `lineHeightRectangle` so Electron, browsers, and
+        // terminals report the current line's rect rather than the stale pre-keystroke position!
         let nsPreedit = resp.preedit_text as NSString
         client.setMarkedText(
             resp.preedit_text,
             selectionRange: NSRange(location: nsPreedit.length, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
         )
+        let validRect = ChimeEngineBridge.queryValidatedCaretRect(from: client)
 
         MainActor.assumeIsolated {
             ChimeEngineBridge.shared.setHadMarkedPreedit(for: controllerKey, value: true)

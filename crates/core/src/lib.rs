@@ -1525,7 +1525,12 @@ impl ChimeEngine {
             } else {
                 ScoringMode::ClosedSentence
             },
-            beam_width: if worker.is_pinyin_conditioned() { 4 } else { 5 },
+            beam_width: if worker.is_pinyin_conditioned() || worker.config().num_hidden_layers >= 20
+            {
+                4
+            } else {
+                5
+            },
             extra_exact_candidates,
         };
         let Some(ncands) =

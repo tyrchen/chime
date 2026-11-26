@@ -634,6 +634,53 @@ code {
   color: inherit;
 }
 
+.bench-table-wrap {
+  margin-top: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.bench-table th,
+.bench-table td {
+  padding: 13px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.bench-table th {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--surface-alt);
+  white-space: nowrap;
+}
+
+.bench-table td.num,
+.bench-table th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.bench-table tr.highlight td {
+  background: var(--accent-soft);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bench-table tr:last-child td {
+  border-bottom: none;
+}
+
 .footer {
   border-top: 1px solid var(--border);
   padding: 28px 0;

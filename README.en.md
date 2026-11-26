@@ -10,29 +10,31 @@
 [![Paper](https://img.shields.io/badge/Paper-PDF%20Preprint-be123c)](https://tyrchen.github.io/chime/chime-paper.pdf)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
-**Chime** is a 100% offline, zero-telemetry, sub-millisecond neural Chinese Pinyin Input Method Editor (IME) for **macOS 15+ on Apple Silicon**, written in **Rust** and **Swift 6**.
+**Chime** is a 100% offline, zero-telemetry neural Chinese Pinyin Input Method Editor (IME) for **macOS 15+ on Apple Silicon**, written in **Rust** and **Swift 6**.
 
-It combines a **$< 0.8\text{ ms}$ zero-copy `mmap` dual-track lattice decoder (`CHIMED02`)** with a **manifold-distilled `64.17 MB` 6-layer 4-bit MLX `Qwen3` parallel rescorer** and hot-swappable **Multi-LoRA `.imepack` cartridges** in Apple Silicon Unified Memory.
+In **`v0.14.0`**, Chime combines a **$< 0.8\text{ ms}$ zero-copy `mmap` lattice fast path (`CHIMED02`)** with **asynchronous Route A Pinyin-constrained autoregressive beam search** over an intact **28-layer 4-bit MLX `Qwen3-0.6B` softly KL-distilled from `Qwen3-14B-Base`** (`256.7 MB`, lossless `36,864` full-CJK vocab), accelerated **4.07×** on Metal with fused projections and paired with hot-swappable **28L Rank-8 Multi-LoRA `.imepack` cartridges** — achieving **`90.00%`** Acc@1 on the strictly blind 1,010-case holdout and **`79.70%`** on the strictly blind 10,000-sentence holdout.
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.10.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.14.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.10.0`)
+## Download & Installation (`v0.14.0`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.10.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `~75 MB` | Installs to `/Library/Input Methods/Chime.app`, registers TIS without logout & opens Input Sources |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.10.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `~75 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
-| **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `16.8 MB` | `266,816` classical entries + `231,593` `Tab` chains + Q4 Rank-8 LoRA |
-| **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `1.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + Q4 Rank-8 LoRA |
-| **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `377 B` | Release integrity checksums |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.14.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | Installs & migrates Chime into user-writable `~/Library/Input Methods/Chime.app` (cleaning legacy `/Library` copy) so all future in-app updates run **silently with zero passwords** |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.14.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
+| **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `24 MB` | `266,816` classical entries + `231,593` `Tab` chains + 28L Rank-8 LoRA (`9.66 MB`) |
+| **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `8.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + 28L Rank-8 LoRA (`9.66 MB`) |
+| **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | Release integrity checksums |
 
-> **Apple Signed, Notarized & Built-In Verified Auto-Update**: Both the `.pkg` installer and `.zip` app bundle are signed with **Apple Developer ID (Hardened Runtime + Secure Timestamp), notarized by Apple Notary Service, and offline-stapled**, paired with a built-in zero-telemetry updater (`SHA-256` + `Developer ID` signature verification, user-configurable in Preferences).
+> **Apple Notarized + Seamless Passwordless Future Upgrades (`v0.14.0`)**:
+> - Both `.pkg` and `.zip` are signed with **Apple Developer ID (Hardened Runtime + Secure Timestamp), notarized by Apple Notary Service, and offline-stapled**, paired with a built-in zero-telemetry updater (`SHA-256` + `Developer ID` verification, toggleable in Preferences).
+> - Upgrading from legacy `/Library/Input Methods/Chime.app` launches macOS native `Installer.app` (**Touch ID / Apple Watch** supported), migrates Chime to `~/Library/Input Methods/Chime.app`, and skips redundant `TISEnableInputSource` calls — eliminating both future password prompts and macOS 15+ `"Allow Chime 拼音 to enable Chime 拼音?"` popups.
 
 ### Installing `.imepack` Cartridges
 
@@ -45,81 +47,81 @@ You can hot-mount `.imepack` cartridges with **zero restart**:
   chime pack install ~/Downloads/tech-developer.imepack.zip
   chime pack list
   ```
-  Cartridges are installed into `~/Library/Application Support/Chime/packs/` and shared across the single `64.17 MB` base model in Unified Memory.
+  Cartridges live in `~/Library/Application Support/Chime/packs/` and share the single `256.7 MB` 28L base model in Unified Memory.
 
 ---
 
 ## Key Capabilities
 
-1. **Full Pinyin, Shuangpin, Skeletons & 4-Operator Motor-Slip Recovery**:
-   - Full Pinyin, initial abbreviations (`wsm` -> `为什么`, `rgzn` -> `人工智能`), and **Xiaohe / Ziranma / Microsoft Shuangpin**.
-   - Zero-bloat algebraic fuzzy Pinyin (`z/zh`, `c/ch`, `s/sh`, `n/l`, `f/h`, `r/l`, `an/ang`, `en/eng`, `in/ing`, `ian/iang`, `uan/uang`) evaluated dynamically without dictionary explosion.
-   - Four 1-edit motor-slip operators: **adjacent swap** (`shaungpin -> 双拼`, `nianquuqqianliyanbo -> 念去去，千里烟波`), **QWERTY Euclidean neighbor** (`shuruga -> 输入法`), **accidental key-repeat** (`mohuyign -> 模糊音`), and **geminate boundary consonant elision** (`chunuanhuakai -> 春暖花开`, `bujinchangjiangungunlai -> 不尽长江滚滚来`).
-   - Clean single-syllable Top-5 curation (`gen -> 1. 跟 2. 根 3. 根据 4. 根本 5. 更`) with `35+` single-character fallbacks accessible via the expandable `5x5` grid (`↓`).
-2. **Mainstream IME Ergonomics, Dual-Mode English Auto-Correction & Auto-Spacing**:
-   - **Modeless Code-Switching + Configurable Inline `Shift` Mode**: Supports both seamless modeless mixed decoding (`woshiyongmacoshegithub` -> `我使用 macOS 和 GitHub`, `bangworeviewzhegepr` -> `帮我 review 这个 PR`, leading-uppercase direct English `Mac` -> `Mac` / `MacBook`, `kubern` -> `Kubernetes`) and Sogou/Doubao-compatible internal Chinese/English toggling (**Left/Right `Shift` by default**, live menu-bar **`En`** status indicator, and cursor-side `中 / En` HUD toast).
-   - **Dual-Mode English Spelling Auto-Correction (1-Key `Backspace` Undo)**: Zero-RAM `mmap` binary-search recovery over Zipf-calibrated English vocabulary corrects transpositions, missing/duplicate letters, QWERTY slips, and vowel confusions across both Chinese/mixed mode (`bangworeivewzhegepr` -> `帮我 review 这个 PR`, `kubernets` -> `Kubernetes`) and inline `En` mode (`teh` -> `the`, `definately` -> `definitely`, `recieve` -> `receive`), automatically exempting terminals, URLs, and code identifiers, with instant single-`Backspace` rollback and toggle in Settings.
-   - **Configurable Symmetric Auto-Spacing (Default ON, User-Toggleable)**: Automatically inserts half-width spaces across Chinese↔English and Chinese↔number boundaries (`我有 100 个`, `使用 Rust 开发`), and can be toggled off anytime in Settings or the menu bar.
-   - **Smart Punctuation & Paging Customization**: `⌃.` full/half-width punctuation toggle with automatic numeric decimal (`3.14`) and time colon (`12:30`) exemptions, customizable `- / =`, `[ / ]`, and `, / .` page keys, optional `; / '` 2nd/3rd candidate quick-select, and adjustable candidate font size (`14–19 pt`).
-3. **Zero-Copy `CHIMED02` Lexicon & Full-Poem `Tab` Chaining**:
-   - `660,000+` core Mandarin & English entries + sorted 16-byte FNV-1a continuation table mapped via `mmap` in `< 0.8 ms`.
-   - Stateful `Tab` verse chaining across Tang poetry, Song Ci, and classical prose (e.g., typing `junbujianhuanghe` + `Tab` chains through all 24 clauses of Li Bai's *Qiang Jin Jiu* 《将进酒》, Su Shi's 《水调歌头》, Liu Yong's 《雨霖铃》), with context-guided next-verse promotion and verbatim anti-repeat scoring (`...奔流到海不复回。` + `junbujian` -> `#1 君不见高堂明镜悲白发`).
-   - Native pure-Rust importers for **Sogou `.scel`**, **Baidu `.bdict`**, **Rime `.dict.yaml`**, **TSV**, and **macOS System Text Replacements**, backed by a `SQLite` (`WAL`) online habit & backspace negative-feedback store.
-4. **Sub-Millisecond Batched Metal SLM + Q4-Aligned Multi-LoRA Sidecar**:
-   - **Manifold-Aligned 6-Layer Student (`64.17 MB`)**: Distilled from 28-layer `Qwen/Qwen3-0.6B-Base` (`1.19 GB` FP16 -> `64.17 MB` 4-bit MLX, $18.6\times$ smaller) via dual-temperature KL, layer trajectory alignment, and pre-head cosine alignment ($\cos(\mathbf{u}_S, \mathbf{u}_T) = 0.853$), disambiguating semantic homophones (`依法保障` + `quanli` -> `权利` vs. `严禁滥用` + `quanli` -> `权力`; `4/5究竟有` + `duoda` -> `多大`).
-   - **Batched Broadcast KV-Gather + Rank-Stacked GEMM Fusion**: Evaluates all multi-token candidates in a single right-padded `[B, L_max]` Metal pass over zero-copy broadcast `MlxPrefixCache` with on-GPU `take_along_axis` target gathering (`<= 128 B` GPU->CPU readout) and rank-concatenated LoRA projections $\Delta\mathbf{y} = ((\mathbf{x}\mathbf{A}_{\text{cat}}^\top)\odot\mathbf{g})\mathbf{B}_{\text{cat}}^\top$.
-   - **Q4-Manifold Aligned LoRA & Couplet-Aware Simplex Router**: Adapters (`2.07 MB` Rank-8 FP16) are trained directly on the dequantized 4-bit runtime manifold and dynamically gated by host bundle ID, lexical cues, and symmetric `5+5` / `7+7` regulated-verse couplet cadence under $\sum_k \gamma_k \le 0.90$.
+1. **Intact 28-Layer `Qwen3-14B` Soft-KL Base + Route A Pinyin-Constrained Neural Beam Search**:
+   - Retains all 28 layers of `Qwen/Qwen3-0.6B-Base` gently distilled from `Qwen/Qwen3-14B-Base` on 65M zero-contamination Chinese tokens (`256.7 MB` 4-bit MLX, lossless `36,864` full-CJK vocab).
+   - Route A advances an incremental autoregressive beam (`RouteABeamCache`) over a deterministic `TokenPinyinIndex` Trie, natively handling long-range homophone disambiguation, out-of-vocabulary compounds, and contextual single-character selection.
+   - **4.07× Fused Metal Speedup**: Fuses `q/k/v -> qkv_proj` and `gate/up -> gate_up_proj` at load time (`-84` Metal GEMM launches/step on 28L, Multi-LoRA preserved) and materializes compact child KV caches inside a single `eval()` barrier to sever cross-step lazy DAG blowup; mid-syllable fast path responds in `0 ms` while Route A refines asynchronously without blocking typing.
+2. **Zero-Jitter Swift 6 Native UX (`v0.14.0` Overhaul)**:
+   - **Rock-Solid Candidate Bar**: Composition-session vertical anchor & above/below orientation lock, constant compact row height, disabled implicit `CATransaction` animations, and position preservation during async neural refreshes completely eliminate vertical panel jumping.
+   - **Zero Duplicate `Shift` Toasts**: `deviceIndependentFlagsMask` deduplication + `150 ms` toggle cooldown + post-`setMarkedText` validated caret geometry ensure the `中 / En` indicator appears once at the true caret; includes hover highlights and 4-edge multi-monitor clamping.
+   - **Full Pinyin, Shuangpin, Skeletons & 4-Operator Motor-Slip Recovery**: Full Pinyin, initial abbreviations (`wsm -> 为什么`), **Xiaohe / Ziranma / Microsoft Shuangpin**, zero-bloat algebraic fuzzy Pinyin, and 4 single-step error operators (adjacent swap `shaungpin -> 双拼`, QWERTY neighbor `shuruga -> 输入法`, key repeat `mohuyign -> 模糊音`, geminate boundary elision `chunuanhuakai -> 春暖花开`).
+3. **Mainstream IME Ergonomics, Dual-Mode English Auto-Correction & Auto-Spacing**:
+   - **Modeless Code-Switching + Configurable Inline `Shift` Mode**: Seamless mixed decoding (`woshiyongmacoshegithub -> 我使用 macOS 和 GitHub`, `bangworeviewzhegepr -> 帮我 review 这个 PR`, leading-uppercase English) plus Sogou/Doubao-compatible Left/Right `Shift` English toggling (`En` menu bar indicator).
+   - **Dual-Mode English Spelling Auto-Correction (1-Key `Backspace` Undo)**: Zero-RAM `mmap` binary-search recovery across Chinese mixed mode and inline `En` mode (`reivew -> review`, `kubernets -> Kubernetes`, `definately -> definitely`), exempting terminals and camelCase identifiers.
+   - **Smart Spacing & Punctuation**: Configurable Chinese↔English/number auto-spacing, `⌃.` full/half-width punctuation with decimal (`3.14`) and time (`12:30`) exemptions, customizable `- / =`, `[ / ]`, `, / .` paging, and `; / '` 2nd/3rd candidate quick-select.
+4. **Zero-Copy `CHIMED02` Lexicon, Full-Poem `Tab` Chaining & Multi-LoRA Cartridges**:
+   - `660,000+` core entries + sorted 16-byte FNV-1a continuation table mapped via `mmap` in `< 0.8 ms`, enabling stateful `Tab` verse chaining across classical poetry and prose with anti-repeat disambiguation.
+   - Native pure-Rust importers for **Sogou `.scel`**, **Baidu `.bdict`**, **Rime `.dict.yaml`**, **TSV**, and **macOS Text Replacements**, backed by `SQLite` (`WAL`) online habit learning.
+   - **Rank-Stacked Multi-LoRA + Couplet-Aware Simplex Router**: Dynamically gates 28L Rank-8 FP16 LoRAs by host app Bundle ID, lexical cues, and regulated-verse cadence.
 
 ---
 
-## Architecture & Measured Performance
+## Architecture & Official Benchmarks
 
 ```text
 Keystrokes + Sliding 96-Char Context + Host Bundle ID
                        │
-                       ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│ Stage 1 · Zero-Copy Dual-Track Lattice (< 0.8 ms · mmap CHIMED02)     │
-│  • Base core.imedict + mounted pack.imedict slices + SQLite WAL store │
-│  • Dynamic fuzzy algebra + swap / neighbor / repeat / geminate edges  │
-│  • Probability-Space Separation: Exact pool C_n vs. Completions C_cmp │
-└──────────────────────┬────────────────────────────────────────────────┘
-                       │ Top-6 equal-span homophone candidates
-                       ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│ Stage 2 · Batched Metal SLM + Multi-LoRA (0.86–1.45 ms · mlx-rs 0.34) │
-│  • Frozen 6-layer 4-bit Qwen3-6L-Chime (64.17 MB, 24,576 BPE vocab)   │
-│  • [B, L_max] broadcast MlxPrefixCache + on-GPU take_along_axis       │
-│  • Rank-Stacked Q4-Aligned LoRA sidecars + Couplet Simplex Router     │
-└──────────────────────┬────────────────────────────────────────────────┘
-                       ▼
-         60 ms Anti-Jitter Freeze Window & Swift 6 IMK Panel
+                       ├────────────────────────────────────────────────┐
+                       ▼                                                ▼
+┌─────────────────────────────────────────────┐  ┌─────────────────────────────────────────────┐
+│ Fast Path · Zero-Copy Lattice (< 0.8 ms)    │  │ Async Route A · Constrained Neural Beam     │
+│  • mmap CHIMED02 core + mounted pack dicts  │  │  • 28L 4-bit MLX Qwen3 (14B Distilled, 36K) │
+│  • Fuzzy algebra + 4-op typo + SQLite store │  │  • Fused QKV/Gate+Up + 1-Barrier KV (4.07×) │
+│  • Instant non-blocking keystroke feedback  │  │  • Deterministic TokenPinyinIndex + Cache   │
+└──────────────────────┬──────────────────────┘  │  • Rank-Stacked 28L Rank-8 Multi-LoRA       │
+                       │                         └──────────────────────┬──────────────────────┘
+                       └───────────────────────┬────────────────────────┘
+                                               ▼
+                     Session-Anchored Zero-Jitter Swift 6 IMK Panel
 ```
 
-| Configuration (Apple Silicon Metal · `T=16` Prefix + 6 Candidates) | Model / Sidecar Size | Stress Probes | Chime 44-Case Suite | Rerank-6 `p50` | Speedup |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| `Qwen3-0.6B-Base` (28L, 152K vocab, FP16) | `1,191.5 MB` | `93.8% (15/16)` | — | `~14.2 ms` | `1.0x` |
-| `Qwen3-28L` (24K vocab, 4-bit MLX) | `249.95 MB` | `93.8% (15/16)` | `100% (44/44)` | `5.29 ms` | `2.7x` |
-| `Qwen3-6L-NaiveSkip` (4-bit, unaligned) | `64.15 MB` | `43.8% (7/16)` | — | `2.33 ms` | — |
-| **`Qwen3-6L-Chime` (4-bit, Batched KV-Gather, `K=0`)** | **`64.17 MB`** | **`93.8% (15/16)`** | **`100% (44/44)`** | **`0.86 ms`** | **`16.5x`** |
-| **+ `K=3` Concurrent Rank-8 `.imepack` LoRAs (Fused + Batched)** | **`+2.07 MB` / pack** | **`93.8% (15/16)`** | **`100% (44/44)`** | **`1.45 ms`** | **`4.21x` vs unfused** |
-| **+ `K=6` Concurrent Rank-8 `.imepack` LoRAs (Fused + Batched)** | **`+2.07 MB` / pack** | **`93.8% (15/16)`** | **`100% (44/44)`** | **`1.45 ms`** | **`7.46x` vs unfused** |
+### Measured End-to-End Accuracy Progression (5 Official Suites · 22,328 Prompts)
+
+> Strict zero-leakage protocol: `test_holdout.tsv` (1,010 cases) and `test_holdout_10k.tsv` (10,000 open-domain sentences) are strictly blind holdouts — individual rows have never been inspected or used in training or hyperparameter tuning.
+
+| Release & Architecture | Model Size | `contextual_open` (60) | `dev_suite` (1,258) | Blind `test_holdout` (1,010) | `dev_suite_10k` (10,000) | Blind `test_holdout_10k` (10,000) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `v0.10.0` · 6L `Qwen3-0.6B` Rerank (24K) | `64.2 MB` | — | `86.01%` | `70.89%` | — | — |
+| `v0.12.2` · 8L `Qwen3-4B` Distill Rerank (36K) | `87.8 MB` | — | `89.51%` | `75.84%` | — | `66.45%` |
+| `v0.13.0` · 8L `Qwen3-4B` Distill + Route A | `87.8 MB` | — | `91.49%` | `83.66%` | `77.00%` | `75.31%` |
+| **`v0.14.0` · 28L `Qwen3-14B` Distill + 4× Fused Route A** | **`256.7 MB`** | **`93.33%`** (`Hit@3 98.3%`) | **`93.16%`** (`Hit@5 97.9%`) | **`90.00%`** (`+6.34%`) | **`81.34%`** (`+4.34%`) | **`79.70%`** (`+4.39%`) |
+
+- **`v0.14.0` Highlights**:
+  - `test_holdout.tsv` (1,010 blind): Science/Medical/Legal `100%`, Finance/Business `100%`, Idioms/Classics `100%`, all 3 Shuangpin schemes `100%`, Fuzzy/Dialect `97.50%`, Contextual Dialogue `95.00%`, `MRR 0.9100`.
+  - `test_holdout_10k.tsv` (10,000 blind): Contextual Sentences `89.53%`, Tech/Developer Prose `85.58%`, Contextual Single-Char `85.14%`, `Hit@5 87.36%`, `MRR 0.8303`.
+  - **4.07× Metal Inference Speedup**: Same 28L model on `dev_suite` dropped from `351.8 s -> 86.5 s` (`p50 278 ms -> 71.1 ms`); `contextual_open` `p50` dropped from `21.2 ms -> 6.44 ms`.
 
 ---
 
 ## Train an Air-Gapped Private Personal Style `.imepack`
 
-You can fine-tune a strictly local personal style cartridge (`private_pack: true`) from your own historical Markdown essays or notes **100% locally on your Mac's Apple Silicon GPU (`mps`)** without uploading a single byte anywhere:
+Fine-tune a strictly local 28L Rank-8 personal style cartridge (`private_pack: true`) from your Markdown essays or notes **100% locally on Apple Silicon GPU (`mps`)** without uploading a single byte:
 
 ```bash
-# 1. Extract sanitized paragraphs, personal words, and bigrams into an ephemeral local folder
+# 1. Extract sanitized paragraphs, personal words, and bigrams into an ephemeral folder
 #    (automatically strips URLs, emails, API tokens, code blocks, and YAML frontmatter)
 uv run --python 3.12 --no-project --with jieba --with pypinyin \
   python tools/prepare_pack_corpora.py \
   --personal-posts ~/Notes/essays \
   --private-out /tmp/chime_private_personal
 
-# 2. Train a 2.07 MB Q4-Manifold Aligned Rank-8 LoRA directly on Apple Silicon Metal (~45s)
+# 2. Train a 9.66 MB 28L Q4-Manifold Aligned Rank-8 LoRA on Apple Silicon Metal
 uv run --python 3.12 --no-project --with torch --with safetensors --with transformers \
   --with datasets --with huggingface_hub --with mlx --with numpy \
   python tools/colab_train_loras.py \
@@ -152,26 +154,28 @@ rm -rf /tmp/chime_private_personal
 | :--- | :--- |
 | `crates/phonetics` | Mandarin syllable algebra, Xiaohe/Ziranma/MS Shuangpin, dynamic fuzzy expansion, 4-operator motor-slip model, and code-switch phonotactics |
 | `crates/lexicon` | Zero-copy `mmap` `CHIMED02` binary dictionary, $O(\log C)$ FNV-1a verse continuations, `.scel`/`.bdict`/Rime importers, and `SQLite` (`WAL`) user habit store |
-| `crates/decoder` | Dual-track beam lattice decoder, probability-space separation, context next-verse promotion, and 60 ms anti-jitter freeze window |
-| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit `Qwen3` transformer, batched `[B, L_max]` `MlxPrefixCache` + `take_along_axis`, Rank-Stacked Multi-LoRA, and Couplet-Aware Simplex Router |
-| `crates/core` | 32-slot LRU session state machine, smart punctuation, PII/secret sanitizer, and `.imepack` v2 cartridge manager |
+| `crates/decoder` | Dual-track beam lattice decoder, probability-space separation, context next-verse promotion, and anti-jitter freeze window |
+| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` transformer, fused `QKV`/`Gate+Up`, Route A constrained neural beam search, Rank-Stacked Multi-LoRA, and Couplet Simplex Router |
+| `crates/core` | 32-slot LRU session state machine, async Route A scheduler, smart punctuation, PII/secret sanitizer, and `.imepack` v2 cartridge manager |
 | `crates/ffi` | Stateless C ABI boundary bridging Rust engine and Swift 6 host |
-| `apps/cli` | `chime` CLI (`decode`, `dict-build-base`, `dict-compile`, `pack`, `corpus-export`, and 44-case `eval` suite) |
-| `macos/` | Swift 6 `@MainActor` `InputMethodKit` app bundle (`Chime.app`), `5x5` candidate grid, and Settings UI |
-| `paper/` | Research paper in Typst (`chime-paper.typ`, `figures.typ`), reproducible Metal ablation results (`experiment_results.json`), and arXiv LaTeX bundle (`paper/arxiv/`) |
-| `site/` | Static GitHub Pages landing page, interactive `Tab` poetry demo, and `.imepack` download hub |
+| `apps/cli` | `chime` CLI (`decode`, `dict-build-base`, `dict-compile`, `pack`, `corpus-export`, `eval`, and `bench` suites) |
+| `macos/` | Swift 6 `@MainActor` `InputMethodKit` app bundle (`Chime.app`), session-anchored candidate bar, `5x5` grid, verified zero-telemetry updater, and Settings UI |
+| `tools/` | `Qwen3-14B` Soft-KL distillation (`modal_distill_qwen3.py`), 28L Multi-LoRA training (`modal_train_loras.py` / `colab_train_loras.py`), and 4-bit MLX quantization |
+| `paper/` | Research paper in Typst (`chime-paper.typ`, `figures.typ`), reproducible Metal ablation results, and arXiv LaTeX bundle (`paper/arxiv/`) |
+| `site/` | Static GitHub Pages landing page, interactive `Tab` poetry demo, benchmark table, and `.imepack` download hub |
 
 ```bash
 # Format check, strict clippy pedantic lints (-D warnings), and all unit + doc tests
 make fmt && make lint && make test
 
-# Run the 44-case end-to-end accuracy & Metal GPU latency benchmark suite
-cargo run --release -p chime-cli -- eval --dict dist/core.imedict --neural dist/base_neural
+# Run official Route A accuracy & Metal latency benchmarks
+make bench-dev
+make bench-test
 
-# Build, ad-hoc sign, and install ~/Library/Input Methods/Chime.app
+# Build, sign, and install ~/Library/Input Methods/Chime.app
 make install-macos
 
-# Build release .pkg, .zip, public .imepack.zip cartridges, and SHA256SUMS.txt
+# Build release .pkg, .zip, public 28L .imepack.zip cartridges, and SHA256SUMS.txt
 make release-artifacts
 
 # Compile research paper PDF (Typst) and arXiv pdflatex tarball
@@ -182,7 +186,7 @@ make paper-arxiv
 
 ## Privacy & Security
 
-- **Zero Network Access**: `Chime.app` requests zero network entitlements and links zero HTTP/telemetry SDKs. Every keystroke, `SQLite` user habit, and `.imepack` adapter stays strictly on your Mac.
+- **Zero Keystroke Network Access**: Typing never triggers any network call, device fingerprint, or telemetry upload; every keystroke, `SQLite` user habit, and `.imepack` adapter stays strictly on your Mac. (The optional 24-hour update check performs an ephemeral cookie-free read-only GET of `releases-manifest.json` and can be disabled anytime in Settings.)
 - **Hardware Password Bypass**: Automatically checks macOS `IsSecureEventInputEnabled()` and yields immediately whenever a password field, SSH passphrase prompt, or 1Password/Keychain dialog is focused.
 - **Memory Safety**: `#![forbid(unsafe_code)]` enforced across all pure-logic Rust crates (`phonetics`, `decoder`, `neural`, `core`, `cli`), isolating `unsafe` solely to a read-only `mmap` wrapper in `lexicon` and the thin C FFI shim in `ffi`.
 
@@ -190,7 +194,7 @@ make paper-arxiv
 
 ## Citation
 
-If you find Chime, its manifold-aligned SLM distillation, or its Rank-Stacked Multi-LoRA `.imepack` design useful in your research or systems work, please cite:
+If you find Chime, its Route A Pinyin-constrained neural decoder, distillation pipeline, or Rank-Stacked Multi-LoRA `.imepack` design useful in your research or systems work, please cite:
 
 ```bibtex
 @article{chen2026chime,

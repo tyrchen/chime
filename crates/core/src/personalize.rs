@@ -71,7 +71,7 @@ pub struct ImePackManifest {
     /// Semantic version of the cartridge.
     #[serde(default = "default_pack_version")]
     pub version: String,
-    /// Base architecture identifier (e.g. `"chime-qwen3-6l-24k"`).
+    /// Base architecture identifier (e.g. `"chime-qwen3-28l-36k"`).
     pub base_model: String,
     /// Dynamic context/app routing mode for `lora.safetensors`.
     #[serde(default)]
@@ -409,7 +409,7 @@ pub fn build_imepack_v2(
         name: opts.name.to_string(),
         description: opts.description.to_string(),
         version: opts.version.to_string(),
-        base_model: "chime-qwen3-6l-24k".to_string(),
+        base_model: "chime-qwen3-28l-36k".to_string(),
         routing: opts.routing,
         lora_scale: opts.lora_scale,
         has_lora,
