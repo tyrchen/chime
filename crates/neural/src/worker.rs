@@ -83,6 +83,7 @@ impl AsyncRerankHandle {
     /// # Errors
     ///
     /// Returns [`NeuralError`] if loading the base model fails.
+    #[allow(clippy::too_many_lines)]
     pub fn spawn_from_dir_with_loras(
         model_dir: &Path,
         loras: Vec<LoraMountSpec>,
@@ -126,7 +127,45 @@ impl AsyncRerankHandle {
                             elapsed_ms,
                         });
                     }
-                    ActorCmd::TimedOrAsync { job, sync_reply_tx } => {
+                    ActorCmd::TimedOrAsync {
+                        mut job,
+                        mut sync_reply_tx,
+                    } => {
+                        // Coalesce burst keystrokes in `TimedOrAsync` mode: if newer keystrokes
+                        // are already queued, skip superseded jobs so the Metal GPU thread never
+                        // builds a FIFO backlog that causes the final keystroke to miss its frame
+                        // budget!
+                        while let Ok(next_cmd) = cmd_rx.try_recv() {
+                            match next_cmd {
+                                ActorCmd::TimedOrAsync {
+                                    job: newer_job,
+                                    sync_reply_tx: newer_tx,
+                                } => {
+                                    job = newer_job;
+                                    sync_reply_tx = newer_tx;
+                                }
+                                ActorCmd::Async(newer_job) => {
+                                    job = newer_job;
+                                    let (dead_tx, _) = flume::bounded(0);
+                                    sync_reply_tx = dead_tx;
+                                }
+                                ActorCmd::Sync {
+                                    left_context,
+                                    app_bundle_id,
+                                    candidate_texts,
+                                    scoring_mode,
+                                    reply_tx,
+                                } => {
+                                    let bonuses = reranker.score_candidates_with_scoring_mode(
+                                        &left_context,
+                                        &app_bundle_id,
+                                        &candidate_texts,
+                                        scoring_mode,
+                                    );
+                                    let _ = reply_tx.send(bonuses);
+                                }
+                            }
+                        }
                         let bonuses = reranker.score_candidates_with_scoring_mode(
                             &job.left_context,
                             &job.app_bundle_id,

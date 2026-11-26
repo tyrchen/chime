@@ -1677,9 +1677,16 @@ impl LatticeDecoder {
                     } else {
                         0.0
                     };
-                    // Scope single-character personal habits strictly to 1-syllable queries so a
-                    // single-char pick (`成`, `和`, `补`) never corrupts multi-syllable words!
-                    let user_bonus = if is_single_char && !(start == 0 && cur_end == n) {
+                    // Scope personal habits carefully:
+                    // - Single-character habits apply ONLY to 1-syllable queries (`[-1.5, 1.35]`).
+                    // - Multi-character habits on internal sub-edges of a longer sentence are
+                    //   tightly bounded (`[-0.60, 0.65]`) so an everyday 2-char habit (`几个`) can
+                    //   never tear apart a valid 3-char word (`这几个`) or drown out LM scores!
+                    // - Exact full-span matches (`start == 0 && cur_end == n`) are capped at
+                    //   `[-1.50, 2.20]` so habits promote preferred words without pushing valid
+                    //   homophones outside Stage-2's neural reranking window.
+                    let is_full_span_edge = start == 0 && cur_end == n;
+                    let user_bonus = if is_single_char && !is_full_span_edge {
                         0.0
                     } else {
                         let raw_boost = user_store.score_boost(
@@ -1690,8 +1697,10 @@ impl LatticeDecoder {
                         );
                         if is_single_char {
                             raw_boost.clamp(-1.5, 1.35)
+                        } else if is_full_span_edge {
+                            raw_boost.clamp(-1.5, 2.20)
                         } else {
-                            raw_boost
+                            raw_boost.clamp(-0.60, 0.65)
                         }
                     };
                     // Information-theoretic frequency-calibrated lexical cohesion bonus:
@@ -2609,7 +2618,36 @@ fn syntactic_transition_penalty(
     total_bytes: usize,
 ) -> f32 {
     let mut pen = 0.0_f32;
-    if is_numeral_or_dem_classifier(prev_word) && is_non_nominal_functor(next_word) {
+    if is_numeral_or_dem_classifier(prev_word)
+        && is_non_nominal_functor(next_word)
+        // Demonstrative / anaphoric classifier NPs (`这个`, `那个`, `几个`, `每个`, `两个`, `三个`)
+        // freely take predicate adverbs (`都`, `也`, `就`, `才`, `还`, `又`, `再`, `很`, `太`, `最`,
+        // `更`, `挺`, `没`, `不`), prepositions (`把`, `被`, `给`, `让`, `对`), and coordinators
+        // (`和`, `与`), e.g. `这几个都放在一起`, `两个都不行`, `这个很好用`.
+        && !matches!(
+            next_word,
+            "都" | "也"
+                | "就"
+                | "才"
+                | "还"
+                | "又"
+                | "再"
+                | "很"
+                | "太"
+                | "最"
+                | "更"
+                | "挺"
+                | "没"
+                | "不"
+                | "把"
+                | "被"
+                | "给"
+                | "让"
+                | "对"
+                | "和"
+                | "与"
+        )
+    {
         pen -= 3.20;
     }
     // Productive Mandarin `A不A` (`忙不忙`, `累不累`, `好不好`) and `X一X` (`看一看`, `试一试`)
