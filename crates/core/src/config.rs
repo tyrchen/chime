@@ -126,6 +126,16 @@ pub struct ChimeConfig {
     /// (read-only HTTPS GET, zero telemetry or device identifiers).
     #[serde(default = "default_true")]
     pub auto_check_updates: bool,
+    /// Surface offline Unicode Emoji suggestions in the candidate bar.
+    #[serde(default = "default_true")]
+    pub emoji_suggestions: bool,
+    /// Surface offline Kaomoji (颜文字) suggestions in the candidate bar.
+    #[serde(default = "default_true")]
+    pub kaomoji_suggestions: bool,
+    /// Suppress automatic word-triggered Emoji/Kaomoji suggestions inside terminals & IDEs
+    /// (explicit browse keywords such as `emoji` / `yanwenzi` still work).
+    #[serde(default)]
+    pub suppress_emoji_in_ide: bool,
 }
 
 const fn default_true() -> bool {
@@ -166,6 +176,9 @@ impl Default for ChimeConfig {
             candidate_font_size: 15,
             candidate_layout: CandidateLayout::Horizontal,
             auto_check_updates: true,
+            emoji_suggestions: true,
+            kaomoji_suggestions: true,
+            suppress_emoji_in_ide: false,
         }
     }
 }

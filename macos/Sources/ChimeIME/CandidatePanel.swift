@@ -249,14 +249,14 @@ public final class CandidatePanel: NSPanel {
             bar.addArrangedSubview(pill)
         }
 
-        let controls = NSStackView()
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.spacing = 5
-        controls.translatesAutoresizingMaskIntoConstraints = false
-        controls.heightAnchor.constraint(equalToConstant: cellHeight).isActive = true
-
         if response.total_pages > 1 {
+            let controls = NSStackView()
+            controls.orientation = .horizontal
+            controls.alignment = .centerY
+            controls.spacing = 5
+            controls.translatesAutoresizingMaskIntoConstraints = false
+            controls.heightAnchor.constraint(equalToConstant: cellHeight).isActive = true
+
             let expandBtn = buildSmallButton(
                 title: "⌄",
                 tooltip: "按下键 ↓ 展开 5×5 候选面板"
@@ -264,25 +264,8 @@ public final class CandidatePanel: NSPanel {
                 self?.onToggleGrid?()
             }
             controls.addArrangedSubview(expandBtn)
+            bar.addArrangedSubview(controls)
         }
-
-        let modeBtn = buildSmallButton(
-            title: response.inline_english_mode ? "英" : "中",
-            tooltip: "点击或按 Shift 切换中英文输入模式"
-        ) { [weak self] in
-            self?.onToggleEnglish?()
-        }
-        controls.addArrangedSubview(modeBtn)
-
-        let punctBtn = buildSmallButton(
-            title: response.chinese_punctuation ? "中。" : "英.",
-            tooltip: "点击或按 Ctrl+. 切换中英文标点"
-        ) { [weak self] in
-            self?.onTogglePunctuation?()
-        }
-        controls.addArrangedSubview(punctBtn)
-
-        bar.addArrangedSubview(controls)
         rootStack.addArrangedSubview(bar)
     }
 

@@ -242,15 +242,16 @@ release-notarize: macos-bundle build-public-packs
 
 install-macos: macos-bundle
 	@mkdir -p "$(HOME)/Library/Input Methods"
-	@-pkill -x Chime 2>/dev/null || true
-	@rm -rf "$(HOME)/Library/Input Methods/Chime.app"
-	@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app"
+	@rm -rf "$(HOME)/Library/Input Methods/Chime.app.new" "$(HOME)/Library/Input Methods/Chime.app.old"
+	@COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc --noextattr "$(APP_BUNDLE)" "$(HOME)/Library/Input Methods/Chime.app.new"
+	@if [ -d "$(HOME)/Library/Input Methods/Chime.app" ]; then mv "$(HOME)/Library/Input Methods/Chime.app" "$(HOME)/Library/Input Methods/Chime.app.old"; fi
+	@mv "$(HOME)/Library/Input Methods/Chime.app.new" "$(HOME)/Library/Input Methods/Chime.app"
+	@rm -rf "$(HOME)/Library/Input Methods/Chime.app.old"
 	@-"$(LSREGISTER)" -f -R -trusted "$(HOME)/Library/Input Methods/Chime.app"
-	@-killall TextInputMenuAgent imklaunchagent 2>/dev/null || true
-	@-killall -9 "Keyboard-Settings.extension" TextInputSwitcher CursorUIViewService 2>/dev/null || true
-	@sleep 1
-	@/usr/bin/open -n -g -a "$(HOME)/Library/Input Methods/Chime.app" --args --activate-on-install
-	@echo "Installed and activated Chime 拼音 v$(VERSION) at ~/Library/Input Methods/Chime.app"
+	@-pkill -x Chime 2>/dev/null || true
+	@sleep 0.4
+	@/usr/bin/open -g -a "$(HOME)/Library/Input Methods/Chime.app"
+	@echo "Installed and restarted Chime 拼音 v$(VERSION) at ~/Library/Input Methods/Chime.app"
 
 paper:
 	@typst compile paper/chime-paper.typ paper/chime-paper.pdf

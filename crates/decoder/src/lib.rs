@@ -30,6 +30,8 @@ pub enum MatchKind {
     /// Prefix verse, idiom, proverb, or English auto-completion (`tianshengwocai` ->
     /// `天生我材必有用`).
     Completion,
+    /// Offline Unicode Emoji or Kaomoji suggestion (never steals `#1`, never pollutes LM context).
+    Emoji,
 }
 
 /// Decoded candidate returned to the UI layer.

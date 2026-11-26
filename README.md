@@ -16,18 +16,18 @@
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.14.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **最新发布版本（`v0.14.1`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.14.0`）
+## 下载与安装（`v0.14.1`）
 
 系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.14.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.14.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.14.1-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.14.1-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
 | **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `24 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + 28L Rank-8 古文 LoRA（`9.66 MB`） |
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `8.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + 28L Rank-8 技术 LoRA（`9.66 MB`） |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | 安装包与卡带完整性哈希校验值 |
@@ -59,6 +59,7 @@
 2. **原生 Swift 6 极致顺滑交互（v0.14.0 全面打磨）**：
    - **候选栏零跳动**：引入会话级垂直锚点与上下方向锁、紧凑单行等高布局，并在异步神经候选刷新时锁定窗口位置、关闭隐式 `CATransaction` 动画，彻底解决长句输入时候选栏上下乱跳问题。
    - **中英切换零重复浮窗**：使用 `deviceIndependentFlagsMask` 精确去重与 150 ms 防抖冷却，配合 `setMarkedText` 后的光标矩形有效性校验，根治 `Shift` 切换时 `中 / En` 徽章在屏幕两个位置重复闪现的问题；支持鼠标悬停高亮与四边多屏安全夹紧。
+   - **清爽零冗余单行栏 + 离线 Emoji / 颜文字联想（v0.14.1 新增）**：紧凑横排候选栏仅保留极简 `⌄` 展开按钮；内置 100% 离线 Unicode Emoji 与颜文字联想（如 `笑哭 -> 😂`、`开心 -> 😄 / ヽ(✿ﾟ▽ﾟ)ノ`、`赞 -> 👍`，输入 `biaoqing` / `yanwenzi` 浏览全部），绝不抢占 `#1` 首选、不污染语言模型上文，偏好设置支持独立开关及「终端/IDE 静默」策略。
    - **全拼、双拼、简拼与四类盲打容错**：支持全拼、首字母简拼（`wsm -> 为什么`）、**小鹤 / 自然码 / 微软双拼**、零膨胀动态模糊音，以及邻键乱序（`shaungpin -> 双拼`）、QWERTY 邻键误触（`shuruga -> 输入法`）、连击重键剔除（`mohuyign -> 模糊音`）与跨音节吞音恢复（`chunuanhuakai -> 春暖花开`）。
 3. **对齐主流输入法习惯的中英混输、双模式英文纠错与智能空格**：
    - **免切换同轨混输 + 可配置 `Shift` 内联切换**：既支持免切换同轨解码（`woshiyongmacoshegithub -> 我使用 macOS 和 GitHub`、`bangworeviewzhegepr -> 帮我 review 这个 PR`、大写开头直输英文），也支持左/右 `Shift` 切换内联英文模式（菜单栏实时显示 **`En`**）。

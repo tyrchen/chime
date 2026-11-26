@@ -173,6 +173,9 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var candidate_font_size: Int
     public var candidate_layout: String
     public var auto_check_updates: Bool
+    public var emoji_suggestions: Bool
+    public var kaomoji_suggestions: Bool
+    public var suppress_emoji_in_ide: Bool
 
     public static let `default` = ChimeConfigDTO(
         scheme: "full",
@@ -193,8 +196,85 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         page_size: 5,
         candidate_font_size: 15,
         candidate_layout: "horizontal",
-        auto_check_updates: true
+        auto_check_updates: true,
+        emoji_suggestions: true,
+        kaomoji_suggestions: true,
+        suppress_emoji_in_ide: false
     )
+
+    public init(
+        scheme: String,
+        fuzzy: ChimeFuzzyDTO,
+        pangu_spacing: Bool,
+        chinese_punctuation: Bool,
+        english_toggle_key: String,
+        shift_commit_mode: String,
+        uppercase_triggers_english: Bool,
+        english_auto_correct: Bool,
+        show_status_toast: Bool,
+        minus_equal_paging: Bool,
+        bracket_paging: Bool,
+        comma_period_paging: Bool,
+        semicolon_apostrophe_select: Bool,
+        record_training_samples: Bool,
+        anti_jitter_ms: UInt64,
+        page_size: Int,
+        candidate_font_size: Int,
+        candidate_layout: String,
+        auto_check_updates: Bool,
+        emoji_suggestions: Bool,
+        kaomoji_suggestions: Bool,
+        suppress_emoji_in_ide: Bool
+    ) {
+        self.scheme = scheme
+        self.fuzzy = fuzzy
+        self.pangu_spacing = pangu_spacing
+        self.chinese_punctuation = chinese_punctuation
+        self.english_toggle_key = english_toggle_key
+        self.shift_commit_mode = shift_commit_mode
+        self.uppercase_triggers_english = uppercase_triggers_english
+        self.english_auto_correct = english_auto_correct
+        self.show_status_toast = show_status_toast
+        self.minus_equal_paging = minus_equal_paging
+        self.bracket_paging = bracket_paging
+        self.comma_period_paging = comma_period_paging
+        self.semicolon_apostrophe_select = semicolon_apostrophe_select
+        self.record_training_samples = record_training_samples
+        self.anti_jitter_ms = anti_jitter_ms
+        self.page_size = page_size
+        self.candidate_font_size = candidate_font_size
+        self.candidate_layout = candidate_layout
+        self.auto_check_updates = auto_check_updates
+        self.emoji_suggestions = emoji_suggestions
+        self.kaomoji_suggestions = kaomoji_suggestions
+        self.suppress_emoji_in_ide = suppress_emoji_in_ide
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.scheme = try c.decodeIfPresent(String.self, forKey: .scheme) ?? "full"
+        self.fuzzy = try c.decodeIfPresent(ChimeFuzzyDTO.self, forKey: .fuzzy) ?? .default
+        self.pangu_spacing = try c.decodeIfPresent(Bool.self, forKey: .pangu_spacing) ?? true
+        self.chinese_punctuation = try c.decodeIfPresent(Bool.self, forKey: .chinese_punctuation) ?? true
+        self.english_toggle_key = try c.decodeIfPresent(String.self, forKey: .english_toggle_key) ?? "both_shift"
+        self.shift_commit_mode = try c.decodeIfPresent(String.self, forKey: .shift_commit_mode) ?? "commit_and_toggle"
+        self.uppercase_triggers_english = try c.decodeIfPresent(Bool.self, forKey: .uppercase_triggers_english) ?? true
+        self.english_auto_correct = try c.decodeIfPresent(Bool.self, forKey: .english_auto_correct) ?? true
+        self.show_status_toast = try c.decodeIfPresent(Bool.self, forKey: .show_status_toast) ?? true
+        self.minus_equal_paging = try c.decodeIfPresent(Bool.self, forKey: .minus_equal_paging) ?? true
+        self.bracket_paging = try c.decodeIfPresent(Bool.self, forKey: .bracket_paging) ?? false
+        self.comma_period_paging = try c.decodeIfPresent(Bool.self, forKey: .comma_period_paging) ?? false
+        self.semicolon_apostrophe_select = try c.decodeIfPresent(Bool.self, forKey: .semicolon_apostrophe_select) ?? false
+        self.record_training_samples = try c.decodeIfPresent(Bool.self, forKey: .record_training_samples) ?? false
+        self.anti_jitter_ms = try c.decodeIfPresent(UInt64.self, forKey: .anti_jitter_ms) ?? 60
+        self.page_size = try c.decodeIfPresent(Int.self, forKey: .page_size) ?? 5
+        self.candidate_font_size = try c.decodeIfPresent(Int.self, forKey: .candidate_font_size) ?? 15
+        self.candidate_layout = try c.decodeIfPresent(String.self, forKey: .candidate_layout) ?? "horizontal"
+        self.auto_check_updates = try c.decodeIfPresent(Bool.self, forKey: .auto_check_updates) ?? true
+        self.emoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .emoji_suggestions) ?? true
+        self.kaomoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .kaomoji_suggestions) ?? true
+        self.suppress_emoji_in_ide = try c.decodeIfPresent(Bool.self, forKey: .suppress_emoji_in_ide) ?? false
+    }
 }
 
 /// Summary of a mounted `.imepack` cartridge reported by `chime_get_status_json`.

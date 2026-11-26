@@ -7,7 +7,7 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall v0.14.0 started at $(date) ==="
+    echo "=== Chime postinstall v0.14.1 started at $(date) ==="
 
     CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
     CONSOLE_UID=""
@@ -42,15 +42,19 @@ LOG_FILE="/tmp/chime-install.log"
     fi
     echo "ALREADY_ENABLED=$ALREADY_ENABLED"
 
-    # Stop any running Chime process before replacing the bundle
-    pkill -x Chime 2>&1 || true
-
+    # Atomically swap the new bundle onto disk FIRST (before stopping the old Chime process)
+    # so macOS imklaunchagent can never race us and respawn the old binary!
     if [ "$IS_USER_SPACE" -eq 1 ]; then
         mkdir -p "$USER_HOME/Library/Input Methods" 2>&1 || true
         chown "$CONSOLE_USER:staff" "$USER_HOME/Library/Input Methods" 2>&1 || true
 
-        rm -rf "$TARGET_APP" 2>&1 || true
+        OLD_BAK="$TARGET_APP.old.$$"
+        rm -rf "$OLD_BAK" 2>&1 || true
+        if [ -d "$TARGET_APP" ]; then
+            /bin/mv "$TARGET_APP" "$OLD_BAK" 2>&1 || true
+        fi
         /bin/mv "$STAGE_APP" "$TARGET_APP" 2>&1 || /usr/bin/ditto "$STAGE_APP" "$TARGET_APP" 2>&1 || true
+        rm -rf "$OLD_BAK" 2>&1 || true
         chown -R "$CONSOLE_USER:staff" "$TARGET_APP" 2>&1 || true
         chmod -R u+rwX,go+rX "$TARGET_APP" 2>&1 || true
         chmod +x "$TARGET_APP/Contents/MacOS/Chime" 2>&1 || true
@@ -65,8 +69,13 @@ LOG_FILE="/tmp/chime-install.log"
         /usr/bin/touch "$USER_HOME/Library/Input Methods" 2>&1 || true
     else
         mkdir -p "/Library/Input Methods" 2>&1 || true
-        rm -rf "$LEGACY_SYS_APP" 2>&1 || true
+        OLD_BAK="$LEGACY_SYS_APP.old.$$"
+        rm -rf "$OLD_BAK" 2>&1 || true
+        if [ -d "$LEGACY_SYS_APP" ]; then
+            /bin/mv "$LEGACY_SYS_APP" "$OLD_BAK" 2>&1 || true
+        fi
         /bin/mv "$STAGE_APP" "$LEGACY_SYS_APP" 2>&1 || /usr/bin/ditto "$STAGE_APP" "$LEGACY_SYS_APP" 2>&1 || true
+        rm -rf "$OLD_BAK" 2>&1 || true
         chown -R root:wheel "$LEGACY_SYS_APP" 2>&1 || true
         chmod -R u+rwX,go+rX "$LEGACY_SYS_APP" 2>&1 || true
         chmod +x "$LEGACY_SYS_APP/Contents/MacOS/Chime" 2>&1 || true
@@ -74,6 +83,9 @@ LOG_FILE="/tmp/chime-install.log"
         /usr/bin/touch "/Library/Input Methods" 2>&1 || true
     fi
     rm -rf "$STAGE_DIR" 2>&1 || true
+
+    # Now stop the old running Chime process so launch/respawn strictly loads the new bundle
+    pkill -x Chime 2>&1 || true
 
     APP_BIN="$TARGET_APP/Contents/MacOS/Chime"
     "$LSREGISTER" -f -R -trusted "$TARGET_APP" 2>&1 || true
@@ -135,7 +147,7 @@ LOG_FILE="/tmp/chime-install.log"
         fi
     fi
 
-    echo "=== Chime postinstall v0.14.0 finished at $(date) ==="
+    echo "=== Chime postinstall v0.14.1 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true

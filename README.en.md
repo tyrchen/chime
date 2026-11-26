@@ -16,18 +16,18 @@ In **`v0.14.0`**, Chime combines a **$< 0.8\text{ ms}$ zero-copy `mmap` lattice 
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.14.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.14.1`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.14.0`)
+## Download & Installation (`v0.14.1`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.14.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | Installs & migrates Chime into user-writable `~/Library/Input Methods/Chime.app` (cleaning legacy `/Library` copy) so all future in-app updates run **silently with zero passwords** |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.14.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.14.1-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | Installs & migrates Chime into user-writable `~/Library/Input Methods/Chime.app` (cleaning legacy `/Library` copy) so all future in-app updates run **silently with zero passwords** |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.14.1-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
 | **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `24 MB` | `266,816` classical entries + `231,593` `Tab` chains + 28L Rank-8 LoRA (`9.66 MB`) |
 | **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `8.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + 28L Rank-8 LoRA (`9.66 MB`) |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | Release integrity checksums |
@@ -60,6 +60,7 @@ You can hot-mount `.imepack` cartridges with **zero restart**:
 2. **Zero-Jitter Swift 6 Native UX (`v0.14.0` Overhaul)**:
    - **Rock-Solid Candidate Bar**: Composition-session vertical anchor & above/below orientation lock, constant compact row height, disabled implicit `CATransaction` animations, and position preservation during async neural refreshes completely eliminate vertical panel jumping.
    - **Zero Duplicate `Shift` Toasts**: `deviceIndependentFlagsMask` deduplication + `150 ms` toggle cooldown + post-`setMarkedText` validated caret geometry ensure the `中 / En` indicator appears once at the true caret; includes hover highlights and 4-edge multi-monitor clamping.
+   - **Minimal Compact Bar + Offline Emoji & Kaomoji (`v0.14.1`)**: Decluttered compact bar keeps only a clean `⌄` expand control; 100% offline Unicode Emoji & Kaomoji suggestions (`笑哭 -> 😂`, `开心 -> 😄 / ヽ(✿ﾟ▽ﾟ)ノ`, browse via `biaoqing` / `yanwenzi`) work across all schemes, never steal `#1` or pollute LM context, and offer independent Preferences toggles (including optional IDE quiet mode).
    - **Full Pinyin, Shuangpin, Skeletons & 4-Operator Motor-Slip Recovery**: Full Pinyin, initial abbreviations (`wsm -> 为什么`), **Xiaohe / Ziranma / Microsoft Shuangpin**, zero-bloat algebraic fuzzy Pinyin, and 4 single-step error operators (adjacent swap `shaungpin -> 双拼`, QWERTY neighbor `shuruga -> 输入法`, key repeat `mohuyign -> 模糊音`, geminate boundary elision `chunuanhuakai -> 春暖花开`).
 3. **Mainstream IME Ergonomics, Dual-Mode English Auto-Correction & Auto-Spacing**:
    - **Modeless Code-Switching + Configurable Inline `Shift` Mode**: Seamless mixed decoding (`woshiyongmacoshegithub -> 我使用 macOS 和 GitHub`, `bangworeviewzhegepr -> 帮我 review 这个 PR`, leading-uppercase English) plus Sogou/Doubao-compatible Left/Right `Shift` English toggling (`En` menu bar indicator).

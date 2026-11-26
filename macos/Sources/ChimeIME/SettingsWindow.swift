@@ -21,13 +21,15 @@ public final class ChimeSettingsWindowController {
 
         let hosting = NSHostingController(rootView: ChimeSettingsView())
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 740),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         win.title = "Chime 输入法偏好设置"
         win.contentViewController = hosting
+        win.minSize = NSSize(width: 660, height: 700)
+        win.setContentSize(NSSize(width: 680, height: 740))
         win.center()
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
@@ -49,35 +51,52 @@ public final class ChimeSettingsWindowController {
     }
 }
 
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "常规与按键"
+    case appearance = "排版与外观"
+    case fuzzy = "模糊音"
+    case lexicon = "词库与 AI"
+
+    var id: String { rawValue }
+}
+
 struct ChimeSettingsView: View {
+    @State private var selectedTab: SettingsTab = .general
     @State private var config: ChimeConfigDTO = ChimeEngineBridge.shared.getConfig() ?? .default
     @State private var status: ChimeStatusDTO? = ChimeEngineBridge.shared.getStatus()
     @State private var confirmClearHabits = false
     @ObservedObject private var updater = ChimeUpdateManager.shared
 
     var body: some View {
-        TabView {
-            generalAndShortcutsTab
-                .tabItem {
-                    Label("常规与按键", systemImage: "keyboard")
+        VStack(spacing: 0) {
+            Picker("", selection: $selectedTab) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
                 }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
 
-            typographyAndAppearanceTab
-                .tabItem {
-                    Label("排版与外观", systemImage: "textformat.size")
-                }
+            Divider()
 
-            fuzzyPinyinTab
-                .tabItem {
-                    Label("模糊音", systemImage: "waveform")
+            Group {
+                switch selectedTab {
+                case .general:
+                    generalAndShortcutsTab
+                case .appearance:
+                    typographyAndAppearanceTab
+                case .fuzzy:
+                    fuzzyPinyinTab
+                case .lexicon:
+                    lexiconAndModelTab
                 }
-
-            lexiconAndModelTab
-                .tabItem {
-                    Label("词库与 AI", systemImage: "cpu")
-                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 590, minHeight: 540)
+        .frame(minWidth: 660, idealWidth: 680, minHeight: 700, idealHeight: 740)
         .onAppear {
             status = ChimeEngineBridge.shared.getStatus()
             updater.ensureManifestLoadedQuietly()
@@ -126,10 +145,16 @@ struct ChimeSettingsView: View {
             }
 
             Section("翻页与快速选词热键") {
-                Toggle("使用减号 / 等号（- / =）翻页", isOn: $config.minus_equal_paging)
-                Toggle("使用左 / 右方括号（[ / ]）翻页", isOn: $config.bracket_paging)
-                Toggle("使用逗号 / 句号（, / .）翻页（多页候选时生效）", isOn: $config.comma_period_paging)
-                Toggle("使用分号 / 单引号（; / '）快速选择第 2 / 第 3 候选词", isOn: $config.semicolon_apostrophe_select)
+                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {
+                    GridRow {
+                        Toggle("减号 / 等号（- / =）翻页", isOn: $config.minus_equal_paging)
+                        Toggle("方括号（[ / ]）翻页", isOn: $config.bracket_paging)
+                    }
+                    GridRow {
+                        Toggle("逗号 / 句号（, / .）翻页（多页时）", isOn: $config.comma_period_paging)
+                        Toggle("分号 / 单引号（; / '）选第 2 / 3 词", isOn: $config.semicolon_apostrophe_select)
+                    }
+                }
             }
 
             Section("版本与自动更新（零遥测 · SHA-256 + Apple 公证校验）") {
@@ -170,6 +195,13 @@ struct ChimeSettingsView: View {
             Section("智能排版与标点") {
                 Toggle("中英文与数字前后自动插入半角空格（如：我有 100 个、使用 Rust 开发）", isOn: $config.pangu_spacing)
                 Toggle("中文状态下使用全角标点（自动豁免 3.14 小数点与 12:30 时间冒号，Ctrl+. 快速切换）", isOn: $config.chinese_punctuation)
+            }
+
+            Section("表情与颜文字联想（100% 离线 · 绝不抢占首选）") {
+                Toggle("候选栏联想 Emoji 表情（如：笑哭 → 😂、赞 → 👍，输入 biaoqing 浏览常用表情）", isOn: $config.emoji_suggestions)
+                Toggle("候选栏联想颜文字（如：开心 → ヽ(✿ﾟ▽ﾟ)ノ，输入 yanwenzi 浏览全部）", isOn: $config.kaomoji_suggestions)
+                Toggle("在终端与 IDE 中静默自动联想（手动输入 biaoqing / yanwenzi 仍可呼出）", isOn: $config.suppress_emoji_in_ide)
+                    .disabled(!config.emoji_suggestions && !config.kaomoji_suggestions)
             }
 
             Section("候选栏外观") {

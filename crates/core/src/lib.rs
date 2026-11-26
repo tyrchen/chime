@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod emoji;
 pub mod personalize;
 pub mod punctuation;
 pub mod sanitize;
@@ -787,7 +788,8 @@ impl ChimeEngine {
             if sess.generation_id != res.generation_id || sess.all_candidates.is_empty() {
                 continue;
             }
-            let displayed = sess.all_candidates.clone();
+            let mut displayed = sess.all_candidates.clone();
+            emoji::strip_emoji_candidates(&mut displayed);
             let mut rescored = displayed.clone();
             let best_non_comp = displayed
                 .iter()
@@ -822,6 +824,18 @@ impl ChimeEngine {
 
             sess.all_candidates =
                 apply_anti_jitter_freeze_window(&displayed, full_part, res.elapsed_ms, freeze_ms);
+            let is_dev = UserStore::is_developer_app(&sess.app_bundle_id);
+            let raw_buf = sess.raw_buffer.clone();
+            emoji::inject_emoji_and_kaomoji(
+                &mut sess.all_candidates,
+                &raw_buf,
+                emoji::EmojiSuggestionOptions {
+                    emoji_enabled: self.config.emoji_suggestions,
+                    kaomoji_enabled: self.config.kaomoji_suggestions,
+                    suppress_in_ide: self.config.suppress_emoji_in_ide,
+                    is_developer_app: is_dev,
+                },
+            );
             if res.session_id == session_id {
                 updated_for_target = true;
             }
@@ -844,7 +858,8 @@ impl ChimeEngine {
             let mut effective_left = self.sessions[pos].left_context.clone();
             effective_left.push_str(&self.sessions[pos].partial_prefix);
             let raw_clone = self.sessions[pos].raw_buffer.clone();
-            let displayed = self.sessions[pos].all_candidates.clone();
+            let mut displayed = self.sessions[pos].all_candidates.clone();
+            emoji::strip_emoji_candidates(&mut displayed);
 
             let merged = self.merge_route_a_candidates(
                 &app_bundle_id,
@@ -863,6 +878,7 @@ impl ChimeEngine {
                 ra.elapsed_ms,
                 freeze_ms.max(150),
             );
+            self.apply_emoji_suggestions(pos);
             if ra.session_id == session_id {
                 updated_for_target = true;
             }
@@ -1444,8 +1460,24 @@ impl ChimeEngine {
             }
         }
         self.sessions[idx].all_candidates = cands;
+        self.apply_emoji_suggestions(idx);
 
         self.build_snapshot(idx, true, String::new())
+    }
+
+    fn apply_emoji_suggestions(&mut self, idx: usize) {
+        let raw = self.sessions[idx].raw_buffer.clone();
+        let is_dev = UserStore::is_developer_app(&self.sessions[idx].app_bundle_id);
+        emoji::inject_emoji_and_kaomoji(
+            &mut self.sessions[idx].all_candidates,
+            &raw,
+            emoji::EmojiSuggestionOptions {
+                emoji_enabled: self.config.emoji_suggestions,
+                kaomoji_enabled: self.config.kaomoji_suggestions,
+                suppress_in_ide: self.config.suppress_emoji_in_ide,
+                is_developer_app: is_dev,
+            },
+        );
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1906,7 +1938,28 @@ impl ChimeEngine {
         // Full completion of the sentence!
         let tail_reading = std::mem::take(&mut self.sessions[idx].raw_buffer);
         let full_keys = std::mem::take(&mut self.sessions[idx].full_sentence_keys);
-        let mut final_text = std::mem::take(&mut self.sessions[idx].partial_prefix);
+        let partial_prefix = std::mem::take(&mut self.sessions[idx].partial_prefix);
+
+        // Emoji & Kaomoji commits stay 100% clean: never penalize #1 Chinese word, never record
+        // SQLite habits/bigrams, and never pollute the neural LM left context!
+        if chosen.kind == MatchKind::Emoji {
+            let mut output = String::new();
+            if !partial_prefix.is_empty() {
+                let spaced_prefix = apply_boundary_pangu_spacing(
+                    &self.sessions[idx].left_context,
+                    &partial_prefix,
+                    self.config.pangu_spacing,
+                );
+                self.sessions[idx].record_emitted_text(&spaced_prefix);
+                output.push_str(&spaced_prefix);
+            }
+            output.push_str(&chosen.text);
+            self.sessions[idx].clear_composing();
+            self.sessions[idx].ghost_suggestion = None;
+            return self.build_snapshot(idx, true, output);
+        }
+
+        let mut final_text = partial_prefix;
         final_text.push_str(&chosen.text);
         let app_id = self.sessions[idx].app_bundle_id.clone();
 
@@ -2755,6 +2808,117 @@ mod tests {
         assert_eq!(
             resp_back.candidates.first().map(|c| c.text.as_str()),
             Some("今天使用模型")
+        );
+    }
+
+    #[test]
+    fn test_should_suggest_offline_emoji_and_kaomoji_cleanly() {
+        let mut engine = ChimeEngine::new(ChimeConfig::default());
+        let chat_sid = engine.create_session("com.tencent.xinWeChat");
+
+        // 1. Explicit browse keyword (`biaoqing` -> Emoji palette right after #1)
+        let mut resp = EngineResponse::default();
+        for b in *b"biaoqing" {
+            resp = engine.process_key(chat_sid, key(b, 0), 700);
+        }
+        assert!(
+            resp.candidates.len() >= 2,
+            "biaoqing should surface emoji candidates: {:?}",
+            resp.candidates
+        );
+        assert_ne!(
+            resp.candidates[0].kind,
+            MatchKind::Emoji,
+            "Emoji must never steal candidate #1"
+        );
+        let emoji_idx = resp
+            .candidates
+            .iter()
+            .position(|c| c.kind == MatchKind::Emoji)
+            .unwrap_or_else(|| std::process::abort());
+        let emoji_text = resp.candidates[emoji_idx].text.clone();
+
+        // Committing an emoji must emit the emoji without polluting left_context or learned habits
+        let habits_before = engine.status().learned_habits;
+        let commit_resp = engine.select_candidate(chat_sid, emoji_idx, 701);
+        assert_eq!(commit_resp.committed_text, emoji_text);
+        assert_eq!(engine.status().learned_habits, habits_before);
+        let pos = engine
+            .sessions
+            .iter()
+            .position(|s| s.id == chat_sid)
+            .unwrap_or_else(|| std::process::abort());
+        assert!(
+            !engine.sessions[pos].left_context.contains(&emoji_text),
+            "Emoji commit must not pollute neural LM left_context"
+        );
+
+        // 2. By default (`suppress_emoji_in_ide = false`), emojis work inside terminals too; when
+        //    the user enables `suppress_emoji_in_ide`, auto-emojis are suppressed in IDEs while
+        //    explicit `yanwenzi` still works.
+        let ide_sid = engine.create_session("com.mitchellh.ghostty");
+        let mut ide_haha_default = EngineResponse::default();
+        for b in *b"haha" {
+            ide_haha_default = engine.process_key(ide_sid, key(b, 0), 702);
+        }
+        assert!(
+            ide_haha_default
+                .candidates
+                .iter()
+                .skip(1)
+                .any(|c| c.kind == MatchKind::Emoji),
+            "Default config should allow emojis in terminals: {:?}",
+            ide_haha_default.candidates
+        );
+
+        let mut cfg_quiet = engine.config().clone();
+        cfg_quiet.suppress_emoji_in_ide = true;
+        let _ = engine.update_config(cfg_quiet);
+        let _ = engine.process_key(ide_sid, key(0, 0x35), 702);
+        let mut ide_haha = EngineResponse::default();
+        for b in *b"haha" {
+            ide_haha = engine.process_key(ide_sid, key(b, 0), 702);
+        }
+        assert!(
+            ide_haha
+                .candidates
+                .iter()
+                .all(|c| c.kind != MatchKind::Emoji),
+            "suppress_emoji_in_ide=true should suppress auto-emojis in IDE: {:?}",
+            ide_haha.candidates
+        );
+
+        let _ = engine.process_key(ide_sid, key(0, 0x35), 703); // Esc
+        let mut ide_ywz = EngineResponse::default();
+        for b in *b"yanwenzi" {
+            ide_ywz = engine.process_key(ide_sid, key(b, 0), 704);
+        }
+        assert!(
+            ide_ywz
+                .candidates
+                .iter()
+                .any(|c| c.kind == MatchKind::Emoji),
+            "Explicit yanwenzi browse should still work in IDE: {:?}",
+            ide_ywz.candidates
+        );
+
+        // 3. Disabling both toggles removes all emoji/kaomoji candidates immediately
+        let mut cfg = engine.config().clone();
+        cfg.emoji_suggestions = false;
+        cfg.kaomoji_suggestions = false;
+        let _ = engine.update_config(cfg);
+        let _ = engine.process_key(chat_sid, key(0, 0x35), 705);
+        let mut disabled = EngineResponse::default();
+        for b in *b"biaoqing" {
+            disabled = engine.process_key(chat_sid, key(b, 0), 706);
+        }
+        assert!(
+            disabled
+                .candidates
+                .iter()
+                .all(|c| c.kind != MatchKind::Emoji),
+            "Disabled config must not inject emojis: {:?}",
+            disabled.candidates
         );
     }
 }
