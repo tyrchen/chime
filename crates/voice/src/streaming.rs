@@ -31,13 +31,12 @@ impl StreamingSession {
     ///
     /// # Errors
     /// Returns an error if the resources, helper or worker cannot be opened.
-    pub fn start(contents: &Path, preview: bool, seconds: u64) -> io::Result<Self> {
-        let dir = contents.join("Resources/voice");
+    pub fn start(contents: &Path, dir: &Path, preview: bool, seconds: u64) -> io::Result<Self> {
         for name in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
             std::fs::File::open(dir.join(name)).map_err(|e| {
                 io::Error::new(
                     e.kind(),
-                    format!("内置模型 {name} 不可用，请重新安装 Chime：{e}"),
+                    format!("本地语音模型 {name} 不可用，请在「语音输入」中重新下载：{e}"),
                 )
             })?;
         }

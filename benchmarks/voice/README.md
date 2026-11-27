@@ -40,11 +40,11 @@ for m in para sense; do $P benchmarks/voice/compare.py "$D" "$m" > "$D/$m.jsonl"
 
 ## 安装包内置后端冒烟测试
 
-构建 `make macos-installer` 后，用包内原生 helper、动态库和模型验证 Rust 会话，不启动 IMK 或麦克风。使用上面 `prepare` 生成的语音：
+构建 `make macos-installer` 后，用包内原生 helper、动态库和包外模型目录验证 Rust 会话，不启动 IMK 或麦克风。使用上面 `prepare` 生成的语音：
 
 ```bash
 ffmpeg -y -i "$D/short3.wav" -f s16le "$D/short3.pcm"
-CHIME_TEST_APP="$PWD/dist/Chime.app" CHIME_TEST_PCM="$D/short3.pcm" \
+CHIME_TEST_APP="$PWD/dist/Chime.app" CHIME_TEST_MODEL_DIR="$D/para" CHIME_TEST_PCM="$D/short3.pcm" \
   CHIME_TEST_TEXT='下午三点开会记得带上电脑' \
   cargo test -p chime-voice --test streaming -- --ignored --nocapture
 ```

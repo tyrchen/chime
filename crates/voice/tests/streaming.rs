@@ -27,7 +27,7 @@ fn done(s: &StreamingSession) -> VoiceSnapshot {
 fn missing_model_fails_without_starting_a_session() -> io::Result<()> {
     let dir = tempfile::tempdir()?;
     assert!(
-        StreamingSession::start(dir.path(), true, 10)
+        StreamingSession::start(dir.path(), &dir.path().join("missing"), true, 10)
             .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
     );
     Ok(())
@@ -39,12 +39,13 @@ fn helper_crash_finishes_with_error() -> io::Result<()> {
     let dir = tempfile::tempdir()?;
     let contents = dir.path();
     fs::create_dir(contents.join("Helpers"))?;
-    fs::create_dir_all(contents.join("Resources/voice"))?;
+    let model = contents.join("installed-pack");
+    fs::create_dir(&model)?;
     for name in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
-        fs::write(contents.join("Resources/voice").join(name), [])?;
+        fs::write(model.join(name), [])?;
     }
     std::os::unix::fs::symlink("/usr/bin/false", contents.join("Helpers/ChimeVoice"))?;
-    let mut s = StreamingSession::start(contents, true, 10)?;
+    let mut s = StreamingSession::start(contents, &model, true, 10)?;
     s.push_audio(&[0.1; 800]);
     s.stop();
     let result = done(&s);
@@ -58,6 +59,7 @@ fn bundled_dictation() -> Result<(), Box<dyn std::error::Error>> {
     let contents = PathBuf::from(std::env::var("CHIME_TEST_APP")?)
         .canonicalize()?
         .join("Contents");
+    let model = PathBuf::from(std::env::var("CHIME_TEST_MODEL_DIR")?).canonicalize()?;
     let bytes = fs::read(std::env::var("CHIME_TEST_PCM")?)?;
     let expected = std::env::var("CHIME_TEST_TEXT")?;
     let samples: Vec<_> = bytes
@@ -67,11 +69,11 @@ fn bundled_dictation() -> Result<(), Box<dyn std::error::Error>> {
         .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
         .collect();
     // Cancellation while loading must not poison the next hold.
-    let mut cancelled = StreamingSession::start(&contents, true, 180)?;
+    let mut cancelled = StreamingSession::start(&contents, &model, true, 180)?;
     cancelled.push_audio(&[0.1; 800]);
     drop(cancelled);
     for preview in [true, false] {
-        let mut s = StreamingSession::start(&contents, preview, 180)?;
+        let mut s = StreamingSession::start(&contents, &model, preview, 180)?;
         let mut live = String::new();
         for chunk in samples.chunks(800) {
             s.push_audio(chunk);
@@ -89,7 +91,7 @@ fn bundled_dictation() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(result.error, None);
         assert_eq!(result.text, expected);
     }
-    let mut s = StreamingSession::start(&contents, true, 1)?;
+    let mut s = StreamingSession::start(&contents, &model, true, 1)?;
     s.push_audio(&vec![0.0; 20_000]);
     let silence = done(&s);
     assert!(silence.limit_reached && silence.text.is_empty() && silence.error.is_none());

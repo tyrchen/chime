@@ -406,6 +406,12 @@ public final class ChimeVoiceController {
             return
         }
         let caret = ChimeEngineBridge.shared.caretRect(for: active.key)
+        let config = ChimeEngineBridge.shared.currentConfig
+        if config.voice.backend != "http", !VoiceModelManager.shared.pack.installed {
+            phase = .idle
+            VoiceInputPanel.shared.flash(message: "请先在「偏好设置 → 语音输入」中下载 Paraformer 模型", anchor: caret, isError: true)
+            return
+        }
 
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -429,7 +435,6 @@ public final class ChimeVoiceController {
             return
         }
 
-        let config = ChimeEngineBridge.shared.currentConfig
         let errPtr: UnsafeMutablePointer<CChar>?
         if config.voice.backend == "http" {
             let settingsJSON = VoiceRuntimeSettings(config: config).jsonString()
@@ -441,8 +446,10 @@ public final class ChimeVoiceController {
             }
         } else {
             let contents = Bundle.main.bundleURL.appendingPathComponent("Contents")
-            errPtr = contents.path.withCString {
-                chime_voice_start_bundled(handle, $0, config.voice.live_preview, config.voice.max_record_secs)
+            errPtr = contents.path.withCString { appPath in
+                VoiceModelManager.shared.pack.directory.path.withCString { modelPath in
+                    chime_voice_start_local(handle, appPath, modelPath, config.voice.live_preview, config.voice.max_record_secs)
+                }
             }
         }
         if let errPtr {

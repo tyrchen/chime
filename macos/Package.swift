@@ -15,9 +15,11 @@ let package = Package(
             path: "Sources/CChimeFFI",
             publicHeadersPath: "include"
         ),
+        .target(name: "VoiceModelKit"),
+        .testTarget(name: "VoiceModelKitTests", dependencies: ["VoiceModelKit"]),
         .executableTarget(
             name: "ChimeIME",
-            dependencies: ["CChimeFFI"],
+            dependencies: ["CChimeFFI", "VoiceModelKit"],
             path: "Sources/ChimeIME",
             linkerSettings: [
                 .linkedLibrary("chime_ffi"),

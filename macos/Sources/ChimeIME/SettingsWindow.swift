@@ -68,6 +68,8 @@ struct ChimeSettingsView: View {
     @State private var status: ChimeStatusDTO? = ChimeEngineBridge.shared.getStatus()
     @State private var confirmClearHabits = false
     @ObservedObject private var updater = ChimeUpdateManager.shared
+    @ObservedObject private var voiceModels = VoiceModelManager.shared
+    @State private var confirmRemoveVoiceModel = false
     @State private var voiceApiKey = ""
     @State private var voiceProbe: VoiceEndpointProbe?
     @State private var voiceProbing = false
@@ -458,11 +460,32 @@ struct ChimeSettingsView: View {
 
             Section("识别方式") {
                 Picker("模型来源", selection: $config.voice.backend) {
-                    Text("内置 Streaming Paraformer（离线）").tag("bundled")
+                    Text("Streaming Paraformer（按需下载，离线识别）").tag("paraformer")
                     Text("自定义 HTTP 服务").tag("http")
                 }
                 if config.voice.backend != "http" {
-                    Text("中英双语模型已随安装包提供，无需联网。标点恢复也在本机完成。")
+                    HStack {
+                        if let progress = voiceModels.progress {
+                            ProgressView().controlSize(.small)
+                            Text(progress)
+                            Spacer()
+                            Button("取消下载") { voiceModels.cancel() }
+                        } else if voiceModels.installed {
+                            Text("中英双语 INT8 · 已安装，可离线使用")
+                            Spacer()
+                            Button("移除模型…") { confirmRemoveVoiceModel = true }
+                        } else {
+                            Text("中英双语 INT8 · 未安装")
+                            Spacer()
+                            Button("下载模型（约 226 MiB）") { voiceModels.download() }
+                        }
+                    }
+                    .onAppear { voiceModels.refresh() }
+                    .confirmationDialog("移除本地 Paraformer 模型？", isPresented: $confirmRemoveVoiceModel) {
+                        Button("移除", role: .destructive) { voiceModels.remove() }
+                    } message: { Text("不会删除词库、标点模型或 HTTP 设置。以后可以重新下载。") }
+                    if let error = voiceModels.error { Text(error).foregroundStyle(.red) }
+                    Text("仅点击下载时从 Hugging Face 获取模型文件；校验后保存在本机。听写不会联网。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

@@ -81,9 +81,10 @@ pub enum VoiceHotkey {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceBackend {
-    /// Offline Streaming Paraformer shipped with the app.
+    /// Offline Streaming Paraformer installed on demand. Accept pre-model-pack configs.
     #[default]
-    Bundled,
+    #[serde(alias = "bundled")]
+    Paraformer,
     /// User-configured OpenAI-compatible speech service.
     Http,
 }
@@ -126,7 +127,7 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            backend: VoiceBackend::Bundled,
+            backend: VoiceBackend::Paraformer,
             hotkey: VoiceHotkey::RightOption,
             endpoint: "http://127.0.0.1:8000/v1/audio/transcriptions".to_string(),
             model: "whisper-1".to_string(),
@@ -336,7 +337,10 @@ mod tests {
         assert!(!cfg.voice.enabled);
         assert!(cfg.voice.auto_punctuation);
         assert!(!cfg.voice.tidy_dictation);
-        assert_eq!(cfg.voice.backend, VoiceBackend::Bundled);
+        assert_eq!(cfg.voice.backend, VoiceBackend::Paraformer);
+        let legacy = ChimeConfig::from_toml_str("[voice]\nbackend = \"bundled\"\n")
+            .unwrap_or_else(|_| std::process::abort());
+        assert_eq!(legacy.voice.backend, VoiceBackend::Paraformer);
     }
 
     #[test]

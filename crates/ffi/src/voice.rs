@@ -140,14 +140,16 @@ pub unsafe extern "C" fn chime_voice_start(
     std::ptr::null_mut()
 }
 
-/// Starts a bundled 16 kHz stream without reading HTTP settings or credentials.
+/// Starts a local 16 kHz stream using separately installed weights without reading HTTP settings or
+/// credentials.
 ///
 /// # Safety
-/// `voice` must be valid; `contents` is a NUL-terminated app Contents path from the host.
+/// `voice` must be valid; both paths must be valid NUL-terminated UTF-8.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn chime_voice_start_bundled(
+pub unsafe extern "C" fn chime_voice_start_local(
     voice: *mut ChimeVoiceHandle,
     contents: *const c_char,
+    model_dir: *const c_char,
     preview: bool,
     seconds: u64,
 ) -> *mut c_char {
@@ -155,7 +157,15 @@ pub unsafe extern "C" fn chime_voice_start_bundled(
     else {
         return to_c_string("missing voice handle or app bundle");
     };
-    match StreamingSession::start(std::path::Path::new(&path), preview, seconds) {
+    let Some(dir) = (unsafe { opt_str(model_dir) }) else {
+        return to_c_string("missing local model directory");
+    };
+    match StreamingSession::start(
+        std::path::Path::new(&path),
+        std::path::Path::new(&dir),
+        preview,
+        seconds,
+    ) {
         Ok(s) => {
             *handle.lock() = Some(Session::Bundled(s));
             std::ptr::null_mut()

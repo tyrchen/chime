@@ -183,7 +183,7 @@ public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
 
     public init(
         enabled: Bool,
-        backend: String = "bundled",
+        backend: String = "paraformer",
         hotkey: String,
         endpoint: String,
         model: String,

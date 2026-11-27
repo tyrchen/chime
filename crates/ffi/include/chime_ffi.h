@@ -67,7 +67,7 @@ char *chime_voice_start(
     uint32_t sample_rate
 );
 /* Offline streaming backend: app Contents path, fixed 16 kHz mono f32 input. */
-char *chime_voice_start_bundled(ChimeVoiceHandle *voice, const char *contents, bool preview, uint64_t seconds);
+char *chime_voice_start_local(ChimeVoiceHandle *voice, const char *contents, const char *model_dir, bool preview, uint64_t seconds);
 void chime_voice_push_pcm(ChimeVoiceHandle *voice, const float *samples, size_t len);
 void chime_voice_stop(ChimeVoiceHandle *voice);
 void chime_voice_cancel(ChimeVoiceHandle *voice);
