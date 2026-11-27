@@ -564,6 +564,12 @@ impl TokenPinyinIndex {
                             {
                                 let cost = -edit.cost() - cfg.typo_canonical_neighbor_base_cost;
                                 syl_edges[start].push((end, tid_syl, cost, false, true));
+                            } else if tid_syl != sid
+                                && matches!(edit, TypoEdit::AdjacentSwap { .. })
+                            {
+                                let cost =
+                                    -edit.cost() - (cfg.typo_canonical_neighbor_base_cost - 0.35);
+                                syl_edges[start].push((end, tid_syl, cost, false, true));
                             }
                         }
                     }
@@ -613,13 +619,7 @@ impl TokenPinyinIndex {
                             syl_edges[start].push((end, tid_syl, cost, false, true));
                             for (fid, fcost) in fuzzy.expand(canonical_syllable(tid_syl)) {
                                 if fid != tid_syl {
-                                    syl_edges[start].push((
-                                        end,
-                                        fid,
-                                        cost - fcost - cfg.fuzzy_extra_cost,
-                                        false,
-                                        true,
-                                    ));
+                                    syl_edges[start].push((end, fid, cost - fcost, false, true));
                                 }
                             }
                         }
@@ -708,17 +708,17 @@ impl TokenPinyinIndex {
                     if let Some((_, mtids)) = self.en_multi.get(slice)
                         && let Some(&first_tid) = mtids.first()
                     {
-                        // Multi-token tech proper noun (`ChatGPT`, `Kubernetes`, `TypeScript`,
-                        // `Redis`, `PyTorch`, `WebSocket`, `Protobuf`, `Safetensors`, `Colab`,
-                        // `Cloudflare`, `Swift`, `macOS`): prefer canonical full-word span over
-                        // fragmented subwords (`py` + `torch`, `saf` + `特` + `ensors`).
+                        // Multi-token tech/English word (`Obsidian`, `ChatGPT`, `Kubernetes`,
+                        // `TypeScript`, `PyTorch`, `VIP`, `hover`, ...): beam search advances
+                        // the KV-cache through every token in `mtids`, so score with the exact
+                        // same known-tech prior as single-token tech terms!
                         let entry = best_map.entry((first_tid, end)).or_insert((
                             f32::NEG_INFINITY,
                             false,
                             true,
                         ));
-                        if 3.05 > entry.0 {
-                            *entry = (3.05, true, true);
+                        if 1.15 > entry.0 {
+                            *entry = (1.15, true, true);
                         }
                     } else if let Some(tids) = self.en_exact.get(slice) {
                         let is_embedded_lower =
@@ -789,6 +789,7 @@ impl TokenPinyinIndex {
         if m == 0 {
             return None;
         }
+        let lower_raw = raw_input.to_ascii_lowercase();
         let raw_b = raw_input.as_bytes();
         // Sparse DP over `(raw_pos, text_byte_pos) -> (best_cost, is_exact)`.
         let mut dp: HashMap<(usize, usize), (f32, bool)> = HashMap::new();
@@ -820,9 +821,31 @@ impl TokenPinyinIndex {
                     continue;
                 }
                 for edge in &lattice[pos] {
-                    let tok = self.token_str(edge.token_id);
-                    if !tok.is_empty() && rem.starts_with(tok) {
-                        let next_tp = tp + tok.len();
+                    let matched_len = if edge.is_english {
+                        let surf = self
+                            .canonical_en_case(&lower_raw[pos..edge.end])
+                            .unwrap_or_else(|| {
+                                self.token_str(edge.token_id).trim_start_matches(' ')
+                            });
+                        if !surf.is_empty()
+                            && rem.len() >= surf.len()
+                            && rem.is_char_boundary(surf.len())
+                            && rem[..surf.len()].eq_ignore_ascii_case(surf)
+                        {
+                            Some(surf.len())
+                        } else {
+                            None
+                        }
+                    } else {
+                        let tok = self.token_str(edge.token_id);
+                        if !tok.is_empty() && rem.starts_with(tok) {
+                            Some(tok.len())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(mlen) = matched_len {
+                        let next_tp = tp + mlen;
                         let next_cost = cost + edge.channel_cost;
                         let next_ex = ex && edge.is_exact;
                         let e = dp

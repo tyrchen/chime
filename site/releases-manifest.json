@@ -1,7 +1,7 @@
 {
-  "version": "0.15.0",
-  "pkg_sha256": "a19323a13448317bc7d9e0d4602a9a417d1879cd52a76fd5c8a9784f5ed8b8e1",
-  "zip_sha256": "01c325dfbf6fa3ae69ec7c147fe19effef992dc8be76666ed7d791222df80eea",
-  "classics_sha256": "3985ad51cf362b34cc034ff481608cb58c0b278a74fb609cb1baeeeef04cffac",
-  "tech_sha256": "b4bd8628fa42a6ee1acaf2aed8cb55d69fab3bc50c68bfa7930973084213df19"
+  "version": "0.15.1",
+  "pkg_sha256": "bf57f41865d6779aa61c113cb9b4d7ad2b675ea95b986b6e9166c13dc93fad2b",
+  "zip_sha256": "5102720ea89ae22e1b6875857f0dfd87be0461001bf0cc037e7559d3d2b31c65",
+  "classics_sha256": "cf3ab8207cc4fcbcfffaae1dda35741c261abac5be186360d26ae865e2dc3e7a",
+  "tech_sha256": "49b562bc2bfaf9424995f89c1e51e675bbabd9491f7f083e3926b2c750f8279e"
 }

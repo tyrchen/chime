@@ -249,11 +249,25 @@ pub(crate) fn has_explicit_feminine_antecedent(left_context: &str) -> bool {
     })
 }
 
+pub(crate) fn has_explicit_masculine_antecedent(left_context: &str) -> bool {
+    left_context.chars().any(|c| {
+        matches!(
+            c,
+            '他' | '男' | '父' | '爸' | '哥' | '弟' | '爷' | '叔' | '舅' | '夫' | '郎'
+        )
+    }) || left_context.contains("孙子")
+        || left_context.contains("儿子")
+        || left_context.contains("先生")
+        || left_context.contains("小伙")
+}
+
 pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeamCandidate]) {
     if cands.len() < 2 {
         return;
     }
-    if has_explicit_feminine_antecedent(left_context) {
+    let has_fem = has_explicit_feminine_antecedent(left_context);
+    let has_masc = has_explicit_masculine_antecedent(left_context);
+    if has_fem && !has_masc {
         if cands[0].text.contains('他') {
             let swapped = cands[0].text.replace('他', "她");
             if let Some(pos) = cands.iter().position(|c| c.text == swapped)
@@ -262,7 +276,9 @@ pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeam
                 cands.swap(0, pos);
             }
         }
-    } else if !has_feminine_or_neuter_cue(left_context) && cands[0].text.contains('她') {
+    } else if (has_masc && !has_fem || !has_feminine_or_neuter_cue(left_context))
+        && cands[0].text.contains('她')
+    {
         let swapped = cands[0].text.replace('她', "他");
         if let Some(pos) = cands.iter().position(|c| c.text == swapped)
             && cands[0].score - cands[pos].score <= 1.25
@@ -270,6 +286,29 @@ pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeam
             cands.swap(0, pos);
         }
     }
+}
+
+/// Advances a beam's KV-Cache through every sub-token of a multi-token English word (`Obsidian`,
+/// `Kubernetes`, `TypeScript`, `VIP`, `hover`), accumulating the exact joint log-probability so
+/// Route A beam search and Stage-1 exact Bayesian scoring agree bit-for-bit.
+fn advance_en_multi(
+    mlx_model: &MlxTransformer,
+    base_kv: &MlxBeamKv,
+    mtids: &[u32],
+    first_lp: f32,
+    lora_scales: &[f32],
+) -> Option<(MlxBeamKv, u32, f32)> {
+    debug_assert!(mtids.len() >= 2);
+    let mut cur_kv = base_kv.clone();
+    let mut acc_lp = first_lp;
+    for pair in mtids.windows(2) {
+        let (lps, mut kvs) = mlx_model
+            .step_beams_gather_lps(&[&cur_kv], &[pair[0]], &[pair[1]], lora_scales)
+            .ok()?;
+        acc_lp += *lps.first()?;
+        cur_kv = kvs.pop()?;
+    }
+    Some((cur_kv, *mtids.last()?, acc_lp))
 }
 
 /// Incremental keystroke beam cache for Route A: when the user monotonically appends keystrokes
@@ -331,6 +370,8 @@ pub fn decode_constrained_beam(
         .chars()
         .any(|c| ('\u{4E00}'..='\u{9FA5}').contains(&c) && is_obvious_traditional_char(c));
 
+    let bcfg = BeamSearchConfig::default();
+
     let mut primary_out = decode_constrained_beam_single(
         mlx_model,
         kv_cache,
@@ -350,22 +391,23 @@ pub fn decode_constrained_beam(
         beam_width,
         allow_traditional,
         is_pinyin_conditioned,
+        bcfg,
         ChannelConfig::default(),
         beam_cache,
     );
 
-    let bcfg = BeamSearchConfig::default();
-
-    let is_distressed = |out: &SingleDecodeOut| -> bool {
-        let ppl_bad = out.cands.first().is_none_or(|c| {
+    let is_ppl_catastrophic = |out: &SingleDecodeOut| -> bool {
+        out.cands.first().is_none_or(|c| {
             #[allow(clippy::cast_precision_loss)]
             let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
             let threshold =
                 -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
             c.lm_log_prob < threshold
-        });
-        let spike_bad = out.top_spike1.surprisal >= bcfg.spike_rescue_threshold;
-        ppl_bad || spike_bad
+        })
+    };
+
+    let is_distressed = |out: &SingleDecodeOut| -> bool {
+        is_ppl_catastrophic(out) || out.top_spike1.surprisal >= bcfg.spike_rescue_threshold
     };
 
     let merge_into_primary =
@@ -391,19 +433,13 @@ pub fn decode_constrained_beam(
         };
 
     // 1. Adaptive Beam Escalation (all schemes: Full + Xiaohe/Ziranma/Microsoft):
-    // Clean sentences finish at fast `beam_width` (55-75ms); only genuinely distressed sentences
-    // escalate on demand to `rescue_beam_width` (12).
+    // Clean sentences finish at fast `beam_width`; only genuinely distressed sentences at low
+    // live beam widths escalate on demand to `rescue_beam_width`.
     let needs_escalation = {
-        let ppl_bad = primary_out.cands.first().is_none_or(|c| {
-            #[allow(clippy::cast_precision_loss)]
-            let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
-            let threshold =
-                -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
-            c.lm_log_prob < threshold
-        });
         let close_race = primary_out.cands.len() < 2
             || (primary_out.cands[0].score - primary_out.cands[1].score) < 3.0;
-        ppl_bad || (primary_out.top_spike1.surprisal >= bcfg.spike_rescue_threshold && close_race)
+        is_ppl_catastrophic(&primary_out)
+            || (primary_out.top_spike1.surprisal >= bcfg.spike_rescue_threshold && close_race)
     };
     if !is_pinyin_conditioned && n >= 4 && beam_width < bcfg.rescue_beam_width && needs_escalation {
         let escalated = decode_constrained_beam_single(
@@ -425,6 +461,7 @@ pub fn decode_constrained_beam(
             bcfg.rescue_beam_width,
             allow_traditional,
             is_pinyin_conditioned,
+            bcfg,
             ChannelConfig::default(),
             None,
         );
@@ -448,17 +485,9 @@ pub fn decode_constrained_beam(
         && chime_phonetics::can_segment_strict_orthography(&lower_input);
 
     // 2. Localized Surprisal-Spike Canonical Typo Rescue (NeighborKey + AdjacentSwap):
-    // Fires ONLY when the sentence STILL exhibits strong semantic distress after beam escalation
-    // and is NOT a fluent Chinese-English code-switching sentence (ASCII/English tokens naturally
-    // carry higher single-step Chinese-LM surprisal, whereas catastrophic overall perplexity like
-    // `loan 割耻媳小` indicates a false English split of a Pinyin typo and still needs rescue!).
-    let top_ppl_catastrophic = primary_out.cands.first().is_none_or(|c| {
-        #[allow(clippy::cast_precision_loss)]
-        let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
-        let threshold =
-            -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
-        c.lm_log_prob < threshold
-    });
+    // Fires ONLY when the sentence STILL exhibits strong semantic distress after garden-path
+    // re-expansion and is NOT a fluent Chinese-English code-switching sentence.
+    let top_ppl_catastrophic = is_ppl_catastrophic(&primary_out);
     let has_ascii_code_switch = !top_ppl_catastrophic
         && (primary_out
             .cands
@@ -475,9 +504,6 @@ pub fn decode_constrained_beam(
         let neighbor_window = if primary_out.top_spike1.surprisal >= bcfg.spike_rescue_threshold
             && primary_out.top_spike1.end > primary_out.top_spike1.start
         {
-            // In a left-to-right causal LM, a typo at syllable `k` (up to 6 bytes) often surfaces
-            // its highest surprisal spike at syllable `k` OR syllable `k+1`; cover one full
-            // preceding syllable plus 2 bytes downstream.
             let lo = primary_out.top_spike1.start.saturating_sub(6);
             let hi = (primary_out.top_spike1.end + 2).min(n);
             Some((lo, hi))
@@ -506,9 +532,10 @@ pub fn decode_constrained_beam(
             fuzzy,
             pangu_spacing,
             mode,
-            beam_width.min(4),
+            beam_width.min(6),
             allow_traditional,
             is_pinyin_conditioned,
+            bcfg,
             rescue_cfg,
             None,
         );
@@ -564,9 +591,10 @@ pub fn decode_constrained_beam(
                     fuzzy,
                     pangu_spacing,
                     mode,
-                    beam_width.min(4),
+                    beam_width.min(6),
                     allow_traditional,
                     is_pinyin_conditioned,
+                    bcfg,
                     ChannelConfig::default(),
                     None,
                 );
@@ -633,6 +661,7 @@ pub fn decode_constrained_beam(
                     beam_width,
                     allow_traditional,
                     is_pinyin_conditioned,
+                    bcfg,
                     ChannelConfig::default(),
                     None,
                 );
@@ -675,6 +704,7 @@ fn decode_constrained_beam_single(
     beam_width: usize,
     allow_traditional: bool,
     is_pinyin_conditioned: bool,
+    bcfg: BeamSearchConfig,
     channel_cfg: ChannelConfig,
     beam_cache: Option<&mut RouteABeamCache>,
 ) -> SingleDecodeOut {
@@ -871,7 +901,6 @@ fn decode_constrained_beam_single(
         }
     }
 
-    let bcfg = BeamSearchConfig::default();
     if !reused_prefix {
         // Step 0: expand `pos = 0` directly from cached `root_lps` (0 extra GPU calls!).
         let mut best_root_lp = f32::NEG_INFINITY;
@@ -888,24 +917,35 @@ fn decode_constrained_beam_single(
             if !can_reach_end[edge.end] {
                 continue;
             }
-            let Some(&lp) = root_lps.get(edge.token_id as usize) else {
+            let Some(&lp0) = root_lps.get(edge.token_id as usize) else {
                 continue;
             };
-            let tot = lp + edge.channel_cost;
-            if tot < root_floor {
+            if lp0 + edge.channel_cost < root_floor {
                 continue;
             }
+            let span_lower = &lower_input[0..edge.end];
             let surf = append_token_surface(
                 "",
                 pinyin_index.token_str(edge.token_id),
                 edge.is_english,
                 pangu_spacing,
-                &lower_input[0..edge.end],
+                span_lower,
                 pinyin_index,
             );
             if surf.is_empty() {
                 continue;
             }
+            let (parent_kv, pending_token, lp) = if edge.is_english
+                && let Some((_, mtids)) = pinyin_index.lookup_en_multi(span_lower)
+                && mtids.len() >= 2
+                && let Some((mkv, last_tid, full_lp)) =
+                    advance_en_multi(mlx_model, &root_kv, mtids, lp0, lora_scales)
+            {
+                (Some(mkv), last_tid, full_lp)
+            } else {
+                (None, edge.token_id, lp0)
+            };
+            let tot = lp + edge.channel_cost;
             // Only flag an extreme cold-start root anomaly (`-tot > 10.5`, e.g. `loange`,
             // `siyadihuju`) as a localized spike so normal sentence-start entropy (~6-8 nats)
             // never triggers false rescue!
@@ -920,8 +960,8 @@ fn decode_constrained_beam_single(
             };
             buckets[edge.end].push(BeamHyp {
                 text: surf,
-                parent_kv: None,
-                pending_token: edge.token_id,
+                parent_kv,
+                pending_token,
                 lm_lp: lp,
                 channel_cost: edge.channel_cost,
                 best_path_total: tot,
@@ -1022,7 +1062,7 @@ fn decode_constrained_beam_single(
         let early_limit = (n / 4).clamp(6, 8);
         let in_early_funnel = !is_pinyin_conditioned && pos < n && pos <= early_limit;
         let pos_beam_cap = if in_early_funnel {
-            (beam_width * bcfg.early_funnel_multiplier).min(bcfg.max_early_beam)
+            (beam_width * bcfg.early_funnel_multiplier).min(bcfg.max_early_beam.max(beam_width))
         } else {
             beam_width
         };
@@ -1152,10 +1192,21 @@ fn decode_constrained_beam_single(
                 let Some(&slot) = id_to_slot.get(&edge.token_id) else {
                     continue;
                 };
-                let step_lp = row_slice[slot];
-                if step_lp + edge.channel_cost < edge_floor {
+                let step_lp0 = row_slice[slot];
+                if step_lp0 + edge.channel_cost < edge_floor {
                     continue;
                 }
+                let span_lower = &lower_input[pos..edge.end];
+                let (next_kv, pending_token, step_lp) = if edge.is_english
+                    && let Some((_, mtids)) = pinyin_index.lookup_en_multi(span_lower)
+                    && mtids.len() >= 2
+                    && let Some((mkv, last_tid, full_lp)) =
+                        advance_en_multi(mlx_model, &new_kv, mtids, step_lp0, lora_scales)
+                {
+                    (mkv, last_tid, full_lp)
+                } else {
+                    (new_kv.clone(), edge.token_id, step_lp0)
+                };
                 let new_lm_lp = parent.lm_lp + step_lp;
                 let new_chan = parent.channel_cost + edge.channel_cost;
                 let new_tot = new_lm_lp + new_chan;
@@ -1164,15 +1215,15 @@ fn decode_constrained_beam_single(
                     pinyin_index.token_str(edge.token_id),
                     edge.is_english,
                     pangu_spacing,
-                    &lower_input[pos..edge.end],
+                    span_lower,
                     pinyin_index,
                 );
                 let step_surprisal = -(step_lp + edge.channel_cost);
                 let spike1 = parent.with_recorded_step(step_surprisal, pos, edge.end);
                 buckets[edge.end].push(BeamHyp {
                     text,
-                    parent_kv: Some(new_kv.clone()),
-                    pending_token: edge.token_id,
+                    parent_kv: Some(next_kv),
+                    pending_token,
                     lm_lp: new_lm_lp,
                     channel_cost: new_chan,
                     best_path_total: new_tot,
