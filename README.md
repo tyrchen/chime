@@ -66,9 +66,9 @@
    - **双模式英文拼写自动纠错（退格键 `⌫` 一键撤回）**：零额外内存 `mmap` 二分探测覆盖中文混输与 `En` 直输模式（`reivew -> review`、`kubernets -> Kubernetes`、`definately -> definitely`），终端与驼峰标识符自动豁免。
    - **智能排版与标点**：支持中英文/数字前后自动加空格（默认开启可随时关闭）、`⌃.` 切换全半角标点（自动豁免 `3.14` 与 `12:30`）、自定义 `- / =` / `[ / ]` / `, / .` 翻页与 `; / '` 二三候选快选。
 4. **零拷贝 `CHIMED02` 词库、全篇「一路 `Tab`」诗词续写与多 LoRA 卡带**：
-   - `core.imedict` 内置 `660,000+` 中英词条与 16 字节有序 FNV-1a 续写哈希表，`< 0.8 ms` `mmap` 冷启动；支持唐诗宋词古文名篇逐句 `Tab` 续写、重首句消歧与防复读。
+   - `core.imedict` 内置 `400,000+` 无损瘦身核心中英词条（`19.7 MB`）与 16 字节有序 FNV-1a 续写哈希表，`< 0.8 ms` `mmap` 冷启动；支持唐诗宋词古文名篇逐句 `Tab` 续写、重首句消歧与防复读。
    - 原生纯 Rust 导入 **搜狗 `.scel`**、**百度 `.bdict`**、**Rime `.dict.yaml`**、**TSV** 与 **macOS 系统文本替换**，配合本地 `SQLite`（`WAL`）实时学习个人词频与退格负反馈。
-   - **秩堆叠 Multi-LoRA 旁路 + 律绝对仗单纯形路由**：多个 28L Rank-8 卡带预拼接为两次矩阵乘，按宿主应用 Bundle ID、文言虚词与五七言对仗韵律平滑调度。
+   - **秩堆叠 Multi-LoRA 旁路 + 律绝对仗单纯形路由**：多个 18L Rank-8 卡带预拼接为两次矩阵乘，按宿主应用 Bundle ID、文言虚词与五七言对仗韵律平滑调度。
 
 ---
 
@@ -80,11 +80,11 @@
                        ├────────────────────────────────────────────────┐
                        ▼                                                ▼
 ┌─────────────────────────────────────────────┐  ┌─────────────────────────────────────────────┐
-│ 快路径 · 零拷贝双轨网格 (< 0.8 ms · 0 阻塞) │  │ 异步精排 · Route A 拼音约束自回归神经束搜索  │
-│  • mmap CHIMED02 核心词图 + 挂载卡带词典    │  │  • 28L 4-bit MLX Qwen3 (14B 柔和蒸馏, 36K)  │
-│  • 模糊音代数 + 4 类错键容错 + SQLite 习惯  │  │  • 融合 QKV / Gate+Up + 单屏障紧凑 KV (4.07×) │
+│ 快路径 · 零拷贝双轨网格 (< 0.8 ms · 0 阻塞) │  │ 异步精排 · 双提案贝叶斯 Route A 神经束搜索   │
+│  • mmap CHIMED02 核心词图 (19.7 MB) + 卡带  │  │  • BI-18L 混合精度 e8_l4 (190.3 MB, 36K)    │
+│  • 模糊音代数 + 4 类错键容错 + SQLite 习惯  │  │  • 融合 QKV / Gate+Up + 局部惊异度尖峰救援   │
 │  • 按键瞬间即刻上屏候选，永不卡手           │  │  • 确定性 TokenPinyinIndex + 增量 Beam Cache │
-└──────────────────────┬──────────────────────┘  │  • 秩堆叠 28L Rank-8 Multi-LoRA 动态路由     │
+└──────────────────────┬──────────────────────┘  │  • 秩堆叠 18L Rank-8 Multi-LoRA 动态路由     │
                        │                         └──────────────────────┬──────────────────────┘
                        └───────────────────────┬────────────────────────┘
                                                ▼
@@ -112,7 +112,7 @@
 
 ## 训练只属于本机的私有文风 `.imepack` 卡带
 
-你可以用自己过去的 Markdown 博客或笔记，**100% 在本机 Apple Silicon GPU（`mps`）上断网微调**出专属的 28L Rank-8 私有文风卡带（`private_pack: true`），全程零数据出本机：
+你可以用自己过去的 Markdown 博客或笔记，**100% 在本机 Apple Silicon GPU（`mps`）上断网微调**出专属的 18L Rank-8 私有文风卡带（`private_pack: true`），全程零数据出本机：
 
 ```bash
 # 1. 在本地扫描并清洗历史 Markdown 文章（自动剔除链接、邮箱、API Key、代码块与 Frontmatter）
@@ -121,7 +121,7 @@ uv run --python 3.12 --no-project --with jieba --with pypinyin \
   --personal-posts ~/Notes/essays \
   --private-out /tmp/chime_private_personal
 
-# 2. 直接在本机 Apple Silicon Metal 上基于 28L 4-bit 流形训练 9.66 MB Rank-8 LoRA
+# 2. 直接在本机 Apple Silicon Metal 上基于 BI-18L e8_l4 流形训练 6.21 MB Rank-8 LoRA
 uv run --python 3.12 --no-project --with torch --with safetensors --with transformers \
   --with datasets --with huggingface_hub --with mlx --with numpy \
   python tools/colab_train_loras.py \
@@ -155,12 +155,12 @@ rm -rf /tmp/chime_private_personal
 | `crates/phonetics` | 汉语拼音音节代数、小鹤/自然码/微软双拼、动态模糊音、四类错键算子与中英混输音系判定 |
 | `crates/lexicon` | 零拷贝 `mmap` `CHIMED02` 二进制词典、$O(\log C)$ FNV-1a 诗词续写表、第三方词库导入与 `SQLite`（`WAL`）个人习惯库 |
 | `crates/decoder` | 双轨束搜索网格解码器、概率空间分离、上下文诗词续写晋升与防抖冻结窗口 |
-| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` 引擎、融合 `QKV`/`Gate+Up`、Route A 拼音约束自回归束搜索、秩堆叠多 LoRA 与律绝单纯形路由器 |
+| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 混合精度 BI-18L `Qwen3` 引擎、融合 `QKV`/`Gate+Up`、双提案 Route A 神经束搜索、秩堆叠多 LoRA 与律绝单纯形路由器 |
 | `crates/core` | 32 槽位 LRU 会话状态机、异步 Route A 调度器、智能标点、PII/密钥脱敏清洗器与 `.imepack` v2 卡带管理 |
 | `crates/ffi` | 无状态窄 C ABI 接口层，衔接 Rust 核心与 Swift 6 宿主 |
 | `apps/cli` | `chime` 命令行工具集（`decode`、`dict-build-base`、`dict-compile`、`pack`、`corpus-export`、`eval` 与全套 `bench` 评测） |
 | `macos/` | Swift 6 `@MainActor` 原生 `InputMethodKit` 应用包（`Chime.app`）、会话锚定候选栏、`5×5` 网格、零遥测自动更新器与偏好设置窗口 |
-| `tools/` | `Qwen3-14B` 柔和 KL 蒸馏（`modal_distill_qwen3.py`）、28L 多 LoRA 训练（`modal_train_loras.py` / `colab_train_loras.py`）与 4-bit MLX 量化工具 |
+| `tools/` | `Qwen3-14B` 精确尾桶 Soft-KL 蒸馏（`distill_v15_cached.py`）、18L 多 LoRA 训练（`colab_train_loras.py`）与混合精度 MLX 量化工具（`quantize_student_mlx.py`） |
 | `paper/` | Typst 学术论文源码（`chime-paper.typ`、`figures.typ`）、可复现实验结果及 arXiv LaTeX 投稿包（`paper/arxiv/`） |
 | `site/` | GitHub Pages 静态落地页、交互式诗词 `Tab` 续写演示、官方基准面板与 `.imepack` 下载中心 |
 
@@ -175,7 +175,7 @@ make bench-test
 # 从源码编译、签名并安装至 ~/Library/Input Methods/Chime.app
 make install-macos
 
-# 构建 .pkg 安装器、.zip 归档、公开 28L .imepack.zip 卡带与 SHA256SUMS.txt
+# 构建 .pkg 安装器、.zip 归档、公开 18L .imepack.zip 卡带与 SHA256SUMS.txt
 make release-artifacts
 
 # 编译 Typst 学术论文 PDF 与 arXiv pdflatex 源码包

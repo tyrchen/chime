@@ -47,16 +47,16 @@ You can hot-mount `.imepack` cartridges with **zero restart**:
   chime pack install ~/Downloads/tech-developer.imepack.zip
   chime pack list
   ```
-  Cartridges live in `~/Library/Application Support/Chime/packs/` and share the single `256.7 MB` 28L base model in Unified Memory.
+  Cartridges live in `~/Library/Application Support/Chime/packs/` and share the single `190.3 MB` BI-18L base model in Unified Memory.
 
 ---
 
 ## Key Capabilities
 
-1. **Intact 28-Layer `Qwen3-14B` Soft-KL Base + Route A Pinyin-Constrained Neural Beam Search**:
-   - Retains all 28 layers of `Qwen/Qwen3-0.6B-Base` gently distilled from `Qwen/Qwen3-14B-Base` on 65M zero-contamination Chinese tokens (`256.7 MB` 4-bit MLX, lossless `36,864` full-CJK vocab).
-   - Route A advances an incremental autoregressive beam (`RouteABeamCache`) over a deterministic `TokenPinyinIndex` Trie, natively handling long-range homophone disambiguation, out-of-vocabulary compounds, and contextual single-character selection.
-   - **4.07× Fused Metal Speedup**: Fuses `q/k/v -> qkv_proj` and `gate/up -> gate_up_proj` at load time (`-84` Metal GEMM launches/step on 28L, Multi-LoRA preserved) and materializes compact child KV caches inside a single `eval()` barrier to sever cross-step lazy DAG blowup; mid-syllable fast path responds in `0 ms` while Route A refines asynchronously without blocking typing.
+1. **BI-18L Mixed-Precision `Qwen3-14B` Distilled Base + First-Principles Dual-Proposal Bayesian Route A**:
+   - Retains 18 wide-MLP (`3072`) layers via Block Influence pruning distilled from `Qwen/Qwen3-14B-Base` on 80M zero-contamination Chinese tokens with exact tail-bucket Soft-KL and zero-WD embedding protection, quantized with **`e8_l4` mixed-precision MLX** (`8-bit embed_tokens / lm_head` + `4-bit` 18 layers, **`190.3 MB`**).
+   - Unifies Stage-1 lexicon Viterbi proposals (`Exact`, `Fuzzy`, `TypoCorrected`) and Route A neural beam hypotheses under one exact Bayesian objective `log P_LM(Y | C) + log P_channel(X | Y)` with localized causal-LM surprisal-spike typo rescue.
+   - **Smaller & 3× Faster**: Shrinks the model `-66.4 MB`, core dictionary `-46.5%` (`36.8 MB → 19.7 MB`), and `.app` bundle `-83 MB` (`315 MB → 232 MB`), while cutting 10k-sentence blind latency `3.01×` (`p50 293.4 ms → 97.6 ms`) and raising live macOS `beam_width` to `6`.
 2. **Zero-Jitter Swift 6 Native UX (`v0.14.0` Overhaul)**:
    - **Rock-Solid Candidate Bar**: Composition-session vertical anchor & above/below orientation lock, constant compact row height, disabled implicit `CATransaction` animations, and position preservation during async neural refreshes completely eliminate vertical panel jumping.
    - **Zero Duplicate `Shift` Toasts**: `deviceIndependentFlagsMask` deduplication + `150 ms` toggle cooldown + post-`setMarkedText` validated caret geometry ensure the `中 / En` indicator appears once at the true caret; includes hover highlights and 4-edge multi-monitor clamping.
@@ -67,9 +67,9 @@ You can hot-mount `.imepack` cartridges with **zero restart**:
    - **Dual-Mode English Spelling Auto-Correction (1-Key `Backspace` Undo)**: Zero-RAM `mmap` binary-search recovery across Chinese mixed mode and inline `En` mode (`reivew -> review`, `kubernets -> Kubernetes`, `definately -> definitely`), exempting terminals and camelCase identifiers.
    - **Smart Spacing & Punctuation**: Configurable Chinese↔English/number auto-spacing, `⌃.` full/half-width punctuation with decimal (`3.14`) and time (`12:30`) exemptions, customizable `- / =`, `[ / ]`, `, / .` paging, and `; / '` 2nd/3rd candidate quick-select.
 4. **Zero-Copy `CHIMED02` Lexicon, Full-Poem `Tab` Chaining & Multi-LoRA Cartridges**:
-   - `660,000+` core entries + sorted 16-byte FNV-1a continuation table mapped via `mmap` in `< 0.8 ms`, enabling stateful `Tab` verse chaining across classical poetry and prose with anti-repeat disambiguation.
+   - `400,000+` lossless-slimmed core entries (`19.7 MB`) + sorted 16-byte FNV-1a continuation table mapped via `mmap` in `< 0.8 ms`, enabling stateful `Tab` verse chaining across classical poetry and prose with anti-repeat disambiguation.
    - Native pure-Rust importers for **Sogou `.scel`**, **Baidu `.bdict`**, **Rime `.dict.yaml`**, **TSV**, and **macOS Text Replacements**, backed by `SQLite` (`WAL`) online habit learning.
-   - **Rank-Stacked Multi-LoRA + Couplet-Aware Simplex Router**: Dynamically gates 28L Rank-8 FP16 LoRAs by host app Bundle ID, lexical cues, and regulated-verse cadence.
+   - **Rank-Stacked Multi-LoRA + Couplet-Aware Simplex Router**: Dynamically gates 18L Rank-8 FP16 LoRAs (`6.21 MB` each) by host app Bundle ID, lexical cues, and regulated-verse cadence.
 
 ---
 
@@ -81,11 +81,11 @@ Keystrokes + Sliding 96-Char Context + Host Bundle ID
                        ├────────────────────────────────────────────────┐
                        ▼                                                ▼
 ┌─────────────────────────────────────────────┐  ┌─────────────────────────────────────────────┐
-│ Fast Path · Zero-Copy Lattice (< 0.8 ms)    │  │ Async Route A · Constrained Neural Beam     │
-│  • mmap CHIMED02 core + mounted pack dicts  │  │  • 28L 4-bit MLX Qwen3 (14B Distilled, 36K) │
-│  • Fuzzy algebra + 4-op typo + SQLite store │  │  • Fused QKV/Gate+Up + 1-Barrier KV (4.07×) │
+│ Fast Path · Zero-Copy Lattice (< 0.8 ms)    │  │ Async Route A · Dual-Proposal Bayesian Beam │
+│  • mmap CHIMED02 core (19.7 MB) + packs     │  │  • BI-18L Mixed-Precision e8_l4 (190.3 MB)  │
+│  • Fuzzy algebra + 4-op typo + SQLite store │  │  • Fused QKV/Gate+Up + Surprisal-Spike Fix  │
 │  • Instant non-blocking keystroke feedback  │  │  • Deterministic TokenPinyinIndex + Cache   │
-└──────────────────────┬──────────────────────┘  │  • Rank-Stacked 28L Rank-8 Multi-LoRA       │
+└──────────────────────┬──────────────────────┘  │  • Rank-Stacked 18L Rank-8 Multi-LoRA       │
                        │                         └──────────────────────┬──────────────────────┘
                        └───────────────────────┬────────────────────────┘
                                                ▼
@@ -113,7 +113,7 @@ Keystrokes + Sliding 96-Char Context + Host Bundle ID
 
 ## Train an Air-Gapped Private Personal Style `.imepack`
 
-Fine-tune a strictly local 28L Rank-8 personal style cartridge (`private_pack: true`) from your Markdown essays or notes **100% locally on Apple Silicon GPU (`mps`)** without uploading a single byte:
+Fine-tune a strictly local 18L Rank-8 personal style cartridge (`private_pack: true`) from your Markdown essays or notes **100% locally on Apple Silicon GPU (`mps`)** without uploading a single byte:
 
 ```bash
 # 1. Extract sanitized paragraphs, personal words, and bigrams into an ephemeral folder
@@ -123,7 +123,7 @@ uv run --python 3.12 --no-project --with jieba --with pypinyin \
   --personal-posts ~/Notes/essays \
   --private-out /tmp/chime_private_personal
 
-# 2. Train a 9.66 MB 28L Q4-Manifold Aligned Rank-8 LoRA on Apple Silicon Metal
+# 2. Train a 6.21 MB BI-18L e8_l4 Manifold-Aligned Rank-8 LoRA on Apple Silicon Metal
 uv run --python 3.12 --no-project --with torch --with safetensors --with transformers \
   --with datasets --with huggingface_hub --with mlx --with numpy \
   python tools/colab_train_loras.py \
@@ -157,12 +157,12 @@ rm -rf /tmp/chime_private_personal
 | `crates/phonetics` | Mandarin syllable algebra, Xiaohe/Ziranma/MS Shuangpin, dynamic fuzzy expansion, 4-operator motor-slip model, and code-switch phonotactics |
 | `crates/lexicon` | Zero-copy `mmap` `CHIMED02` binary dictionary, $O(\log C)$ FNV-1a verse continuations, `.scel`/`.bdict`/Rime importers, and `SQLite` (`WAL`) user habit store |
 | `crates/decoder` | Dual-track beam lattice decoder, probability-space separation, context next-verse promotion, and anti-jitter freeze window |
-| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` transformer, fused `QKV`/`Gate+Up`, Route A constrained neural beam search, Rank-Stacked Multi-LoRA, and Couplet Simplex Router |
+| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` mixed-precision BI-18L `Qwen3` transformer, fused `QKV`/`Gate+Up`, dual-proposal Route A neural beam search, Rank-Stacked Multi-LoRA, and Couplet Simplex Router |
 | `crates/core` | 32-slot LRU session state machine, async Route A scheduler, smart punctuation, PII/secret sanitizer, and `.imepack` v2 cartridge manager |
 | `crates/ffi` | Stateless C ABI boundary bridging Rust engine and Swift 6 host |
 | `apps/cli` | `chime` CLI (`decode`, `dict-build-base`, `dict-compile`, `pack`, `corpus-export`, `eval`, and `bench` suites) |
 | `macos/` | Swift 6 `@MainActor` `InputMethodKit` app bundle (`Chime.app`), session-anchored candidate bar, `5x5` grid, verified zero-telemetry updater, and Settings UI |
-| `tools/` | `Qwen3-14B` Soft-KL distillation (`modal_distill_qwen3.py`), 28L Multi-LoRA training (`modal_train_loras.py` / `colab_train_loras.py`), and 4-bit MLX quantization |
+| `tools/` | `Qwen3-14B` exact-tail Soft-KL distillation (`distill_v15_cached.py`), 18L Multi-LoRA training (`colab_train_loras.py`), and mixed-precision MLX quantization (`quantize_student_mlx.py`) |
 | `paper/` | Research paper in Typst (`chime-paper.typ`, `figures.typ`), reproducible Metal ablation results, and arXiv LaTeX bundle (`paper/arxiv/`) |
 | `site/` | Static GitHub Pages landing page, interactive `Tab` poetry demo, benchmark table, and `.imepack` download hub |
 
@@ -177,7 +177,7 @@ make bench-test
 # Build, sign, and install ~/Library/Input Methods/Chime.app
 make install-macos
 
-# Build release .pkg, .zip, public 28L .imepack.zip cartridges, and SHA256SUMS.txt
+# Build release .pkg, .zip, public 18L .imepack.zip cartridges, and SHA256SUMS.txt
 make release-artifacts
 
 # Compile research paper PDF (Typst) and arXiv pdflatex tarball

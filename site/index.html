@@ -35,7 +35,7 @@
           <p class="eyebrow" data-i18n="hero.eyebrow">macOS 15+ · Apple Silicon · Apple Notarized · 100% Offline · MIT / Apache-2.0</p>
           <h1 data-i18n="hero.title">BI-18L 混合精度 Qwen3 进统一内存，体积大减 25%，万条严格盲测突破 80.9%。</h1>
           <p class="lead" data-i18n="hero.lead">
-            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法（Rust + Swift 6）。<code>v0.15.0</code> 采用 <strong>BI-18L 混合精度 MLX（<code>e8_l4</code> · 190.3 MB · 36,864 全中文词表）</strong>与<strong>第一性原理双提案贝叶斯 Route A 束搜索</strong>，在安装包减重 <strong>65 MB</strong>、万条推理提速 <strong>3.01×</strong> 的同时，将严格盲测推升至 <strong>90.59%</strong>（万条盲测 <strong>80.93%</strong>，`Hit@5 90.58%`）。
+            Chime 是一款专为 Apple Silicon 打造的端侧中文输入法（Rust + Swift 6）。<code>v0.15.0</code> 采用 <strong>BI-18L 混合精度 MLX（<code>e8_l4</code> · 190.3 MB · 36,864 全中文词表）</strong>与<strong>第一性原理双提案贝叶斯 Route A 束搜索</strong>，在安装包减重 <strong>65 MB</strong>、万条推理提速 <strong>3.01×</strong> 的同时，将严格盲测推升至 <strong>90.59%</strong>（万条盲测 <strong>80.93%</strong>，<code>Hit@5 90.58%</code>）。
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" id="dl-pkg" href="https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg">
@@ -107,25 +107,25 @@
       <div class="container">
         <div class="section-header">
           <p class="eyebrow" data-i18n="arch.eyebrow">Route A 拼音约束自回归束搜索 + Multi-LoRA 卡带</p>
-          <h2 data-i18n="arch.title">保留完整 28 层世界知识，4× Metal 提速与零跳动原生体验</h2>
+          <h2 data-i18n="arch.title">BI-18L 混合精度（e8_l4）、双提案贝叶斯解码与零跳动原生体验</h2>
           <p data-i18n="arch.desc">
-            纯统计词库难以处理跨长句语境同音词与新颖表达，而激进剪层又会损耗预训练世界知识。<code>v0.14.0</code> 保留 <code>Qwen3-0.6B</code> 全部 28 层结构并以 <code>Qwen3-14B-Base</code> 柔和 KL 蒸馏增强，结合底层算子融合与异步增量束搜索，实现端侧输入法的准确率与手感双突破。
+            纯统计词库难以处理跨长句语境同音词，而全 4-bit 量化词表会引入显著同音排序噪声。<code>v0.15.0</code> 以 Block Influence 保留 18 层宽 MLP <code>Qwen3</code> 骨干并用 <code>Qwen3-14B-Base</code> 精确尾桶 Soft-KL 蒸馏，结合 <code>e8_l4</code> 混合精度与第一性原理双提案贝叶斯束搜索，实现更小、快 3×、更准的端侧飞跃。
           </p>
         </div>
 
         <div class="arch-grid">
           <article class="arch-card">
-            <div class="arch-step">01 · 0 ms Fast Path + Async Route A</div>
-            <h3 data-i18n="arch.c1Title">零拷贝词图秒出 + 异步拼音约束神经束搜索</h3>
+            <div class="arch-step">01 · 0 ms Fast Path + Dual-Proposal Route A</div>
+            <h3 data-i18n="arch.c1Title">零拷贝词图秒出 + 异步贝叶斯双提案束搜索</h3>
             <p data-i18n="arch.c1Body">
-              敲击任意键时一阶段 <code>mmap CHIMED02</code> 词图在 <code>&lt; 0.8 ms</code> 内即刻出字不卡手；后台异步 Route A 线程基于确定性 <code>TokenPinyinIndex</code> 前缀树与增量 <code>RouteABeamCache</code> 推进 28 层语言模型，无缝刷新整句最优候选。
+              敲击任意键时一阶段无损瘦身 <code>mmap CHIMED02</code> 词图（<code>19.7 MB</code>）在 <code>&lt; 0.8 ms</code> 内即刻出字；后台异步 Route A 将词图提案与 18L 神经束搜索统一在精确贝叶斯目标下联合评分，配合局部惊异度尖峰救援精准纠错。
             </p>
           </article>
           <article class="arch-card">
-            <div class="arch-step">02 · 28L Qwen3-14B Distill (256.7 MB)</div>
-            <h3 data-i18n="arch.c2Title">14B 柔和蒸馏底座 + 4.07× Metal 算子融合</h3>
+            <div class="arch-step">02 · BI-18L e8_l4 Mixed Precision (190.3 MB)</div>
+            <h3 data-i18n="arch.c2Title">14B 精确尾桶蒸馏 + e8_l4 混合精度 MLX</h3>
             <p data-i18n="arch.c2Body">
-              加载期融合 <code>QKV</code> 与 <code>Gate+Up</code> 量化投影（每步减少 84 次 Metal GEMM 启动），并在单次 <code>eval()</code> 屏障内紧凑物化子束 KV 缓存以切断跨步惰性计算图膨胀——整句评测提速 <strong>4.07×</strong>，语境探针 <code>p50</code> 仅 <strong>6.4 ms</strong>，完整保留 <code>36,864</code> 无损中文词表。
+              仅将共享 <code>embed_tokens / lm_head</code> 升至 8-bit、18 层宽 MLP 保持 4-bit，以仅 <code>+18 MB</code>、零延迟代价消除 4-bit 词表量化噪声；融合 <code>QKV</code> 与 <code>Gate+Up</code> 投影让万条盲测 <code>p50</code> 降至 <strong>97.6 ms（3.01× 提速）</strong>，完整保留 <code>36,864</code> 无损中文词表。
             </p>
           </article>
           <article class="arch-card">
