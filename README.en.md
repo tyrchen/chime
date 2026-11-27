@@ -149,6 +149,23 @@ rm -rf /tmp/chime_private_personal
 
 ---
 
+## Voice Input (Hold-to-Talk with a Local / Self-Hosted Model)
+
+Enable it under **Preferences… → 语音输入**. **Hold Right `Option`** (or Right `⌘` / Right `⌃` / `Fn`) for about 0.3 s and a small voice HUD appears: recognized text shows up at the caret while you speak, releasing the key commits it, and `Esc` cancels. Grant microphone access on first use. The installer includes a bilingual **Streaming Paraformer INT8** model: no runtime download, server, or API key is needed. The default backend keeps audio on device and exits its helper process after dictation. This model does not insert punctuation.
+
+To use an existing endpoint, explicitly select the custom HTTP backend (`backend = "http"` under `[voice]`). Only this backend sends audio to the configured URL; the optional API key stays in Keychain. Any OpenAI-compatible transcription server works (`POST multipart/form-data` with `file`, `model`, `language`, `prompt`; response `{"text": …}`), for example whisper.cpp:
+
+```bash
+brew install whisper-cpp
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8178 -l zh
+# Preferences endpoint: http://127.0.0.1:8178/inference
+```
+
+For speaches / faster-whisper-server, vLLM or LocalAI, use their `/v1/audio/transcriptions` URL and model name. `cargo run -p chime-voice --example dictate_wav -- speech.wav <endpoint>` checks a server without the IME.
+
+---
+
 ## Workspace Structure & Building from Source
 
 | Path | Description |
@@ -158,6 +175,7 @@ rm -rf /tmp/chime_private_personal
 | `crates/decoder` | Dual-track beam lattice decoder, probability-space separation, context next-verse promotion, and anti-jitter freeze window |
 | `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` transformer, fused `QKV`/`Gate+Up`, Route A constrained neural beam search, Rank-Stacked Multi-LoRA, and Couplet Simplex Router |
 | `crates/core` | 32-slot LRU session state machine, async Route A scheduler, smart punctuation, PII/secret sanitizer, and `.imepack` v2 cartridge manager |
+| `crates/voice` | Hold-to-talk dictation: energy VAD segmentation, live partial transcripts, and a client for local / self-hosted OpenAI-compatible ASR servers |
 | `crates/ffi` | Stateless C ABI boundary bridging Rust engine and Swift 6 host |
 | `apps/cli` | `chime` CLI (`decode`, `dict-build-base`, `dict-compile`, `pack`, `corpus-export`, `eval`, and `bench` suites) |
 | `macos/` | Swift 6 `@MainActor` `InputMethodKit` app bundle (`Chime.app`), session-anchored candidate bar, `5x5` grid, verified zero-telemetry updater, and Settings UI |

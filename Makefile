@@ -2,6 +2,7 @@ DIST_DIR ?= $(CURDIR)/dist
 RELEASE_DIR := $(DIST_DIR)/releases
 PACKS_BUILD_DIR := $(DIST_DIR)/packs
 APP_BUNDLE := $(DIST_DIR)/Chime.app
+VOICE_CACHE ?= $(DIST_DIR)/voice-cache
 CORE_DICT := $(DIST_DIR)/core.imedict
 NGRAMS_TSV := $(DIST_DIR)/ngrams.tsv
 MULTI_LEX_TSV := $(DIST_DIR)/multi_lexicon.tsv
@@ -125,18 +126,22 @@ macos-bundle: build-core-dict build-icons swift-build
 	@cp "$(APP_ICON_ICNS)" "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns"
 	@cp "$(CORE_DICT)" "$(APP_BUNDLE)/Contents/Resources/core.imedict"
 	@cp -R "$(BASE_NEURAL_DIR)" "$(APP_BUNDLE)/Contents/Resources/neural"
+	@python3 macos/Scripts/bundle_voice.py "$(APP_BUNDLE)/Contents" "$(VOICE_CACHE)"
 	@cp NOTICE "$(APP_BUNDLE)/Contents/Resources/NOTICE"
 	@chmod -R u+rwX,go+rX "$(APP_BUNDLE)"
 	@xattr -cr "$(APP_BUNDLE)"
 	@! otool -L "$(APP_BUNDLE)/Contents/MacOS/Chime" | grep -q "libswift_stdio" || { echo "FATAL: Chime still links macOS 26+/15.4+ only libswift_stdio.dylib"; exit 1; }
 	@if [ -n "$(APP_SIGN_IDENTITY)" ]; then \
 		echo "Signing $(APP_BUNDLE) with $(APP_SIGN_IDENTITY) (Hardened Runtime + Timestamp)..."; \
-		codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/MacOS/Chime"; \
-		codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)"; \
+		set -e; for binary in "$(APP_BUNDLE)"/Contents/Frameworks/*.dylib "$(APP_BUNDLE)/Contents/Helpers/ChimeVoice"; do \
+			codesign --force --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" "$$binary"; \
+		done; \
+		codesign --force --options runtime --timestamp --entitlements macos/Resources/Chime.entitlements --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/MacOS/Chime"; \
+		codesign --force --options runtime --timestamp --entitlements macos/Resources/Chime.entitlements --sign "$(APP_SIGN_IDENTITY)" "$(APP_BUNDLE)"; \
 		codesign --verify --deep --strict --verbose=2 "$(APP_BUNDLE)"; \
 		! codesign -d --entitlements - "$(APP_BUNDLE)" 2>/dev/null | grep -q get-task-allow || { echo "Refusing get-task-allow entitlement in Developer ID bundle"; exit 1; }; \
 	else \
-		codesign --force --deep --sign - "$(APP_BUNDLE)"; \
+		codesign --force --deep --entitlements macos/Resources/Chime.entitlements --sign - "$(APP_BUNDLE)"; \
 	fi
 	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 28L 4-bit MLX Metal)"
 
@@ -187,8 +192,11 @@ define build-installer-pkg
 @rm -rf "$(DIST_DIR)/pkg-root" "$(DIST_DIR)/component.plist"
 endef
 
-release-artifacts: macos-bundle build-public-packs
+.PHONY: macos-installer
+macos-installer: macos-bundle
 	$(call build-installer-pkg,$(if $(INSTALLER_SIGN_IDENTITY),--sign "$(INSTALLER_SIGN_IDENTITY)",))
+
+release-artifacts: macos-installer build-public-packs
 	@if [ -n "$(INSTALLER_SIGN_IDENTITY)" ]; then \
 		pkgutil --check-signature "$(RELEASE_DIR)/Chime-v$(VERSION)-macos-arm64.pkg"; \
 	fi

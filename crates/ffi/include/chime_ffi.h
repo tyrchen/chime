@@ -54,6 +54,29 @@ char *chime_get_status_json(ChimeEngineHandle *engine);
 
 void chime_string_free(char *ptr);
 
+/* Hold-to-talk voice dictation. Thread-safe: audio may be pushed from the AVAudioEngine tap. */
+typedef struct ChimeVoiceHandle ChimeVoiceHandle;
+
+ChimeVoiceHandle *chime_voice_new(void);
+void chime_voice_free(ChimeVoiceHandle *voice);
+/* Returns NULL on success, else an error message to free with chime_string_free. */
+char *chime_voice_start(
+    ChimeVoiceHandle *voice,
+    const char *settings_json,
+    const char *api_key,
+    uint32_t sample_rate
+);
+/* Offline streaming backend: app Contents path, fixed 16 kHz mono f32 input. */
+char *chime_voice_start_bundled(ChimeVoiceHandle *voice, const char *contents, bool preview, uint64_t seconds);
+void chime_voice_push_pcm(ChimeVoiceHandle *voice, const float *samples, size_t len);
+void chime_voice_stop(ChimeVoiceHandle *voice);
+void chime_voice_cancel(ChimeVoiceHandle *voice);
+void chime_voice_end(ChimeVoiceHandle *voice);
+/* JSON snapshot of the running session, or NULL when idle. */
+char *chime_voice_snapshot(ChimeVoiceHandle *voice);
+/* Blocking connectivity probe; call off the main thread. Returns JSON. */
+char *chime_voice_test_endpoint(const char *settings_json, const char *api_key);
+
 #ifdef __cplusplus
 }
 #endif

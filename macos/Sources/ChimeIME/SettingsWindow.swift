@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -56,6 +57,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance = "排版与外观"
     case fuzzy = "模糊音"
     case lexicon = "词库与 AI"
+    case voice = "语音输入"
 
     var id: String { rawValue }
 }
@@ -66,6 +68,10 @@ struct ChimeSettingsView: View {
     @State private var status: ChimeStatusDTO? = ChimeEngineBridge.shared.getStatus()
     @State private var confirmClearHabits = false
     @ObservedObject private var updater = ChimeUpdateManager.shared
+    @State private var voiceApiKey = ""
+    @State private var voiceProbe: VoiceEndpointProbe?
+    @State private var voiceProbing = false
+    @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,7 +82,7 @@ struct ChimeSettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 420)
+            .frame(maxWidth: 520)
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
 
@@ -92,6 +98,8 @@ struct ChimeSettingsView: View {
                     fuzzyPinyinTab
                 case .lexicon:
                     lexiconAndModelTab
+                case .voice:
+                    voiceInputTab
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -99,6 +107,7 @@ struct ChimeSettingsView: View {
         .frame(minWidth: 660, idealWidth: 680, minHeight: 700, idealHeight: 740)
         .onAppear {
             status = ChimeEngineBridge.shared.getStatus()
+            micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
             updater.ensureManifestLoadedQuietly()
         }
         .onChange(of: config) { _, newValue in
@@ -390,5 +399,130 @@ struct ChimeSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var micStatusText: String {
+        switch micStatus {
+        case .authorized: "已允许 Chime 使用麦克风"
+        case .notDetermined: "尚未授权（首次按住快捷键时系统会询问）"
+        case .denied, .restricted: "已拒绝：请在系统设置中允许 Chime 使用麦克风"
+        @unknown default: "未知"
+        }
+    }
+
+    private var voiceInputTab: some View {
+        Form {
+            Section("按住说话") {
+                Toggle("启用语音输入", isOn: $config.voice.enabled)
+                Picker("按住快捷键", selection: $config.voice.hotkey) {
+                    Text("右 Option ⌥（推荐）").tag("right_option")
+                    Text("右 Command ⌘").tag("right_command")
+                    Text("右 Control ⌃").tag("right_control")
+                    Text("Fn / 🌐").tag("fn")
+                }
+                Toggle("边说边出字", isOn: $config.voice.live_preview)
+                Text("按住 \(ChimeVoiceController.hotkeyLabel(config.voice.hotkey)) 约 0.3 秒开始录音，识别结果实时显示在光标处；松开后最终结果上屏，按 Esc 取消。密码框中不会启用录音。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if config.voice.hotkey == "fn" {
+                    Text("使用 Fn 前，请在「系统设置 › 键盘」中把「按下 🌐 键时」设为「不执行任何操作」，避免与系统听写或表情面板冲突。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section("麦克风权限") {
+                HStack {
+                    Text(micStatusText)
+                    Spacer()
+                    if micStatus == .notDetermined {
+                        Button("请求权限") {
+                            Task {
+                                _ = await AVCaptureDevice.requestAccess(for: .audio)
+                                micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                            }
+                        }
+                    } else if micStatus != .authorized {
+                        Button("打开系统设置") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("识别方式") {
+                Picker("模型来源", selection: $config.voice.backend) {
+                    Text("内置 Streaming Paraformer（离线）").tag("bundled")
+                    Text("自定义 HTTP 服务").tag("http")
+                }
+                if config.voice.backend != "http" {
+                    Text("中英双语模型已随安装包提供，无需联网。内置模型不自动补标点。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if config.voice.backend == "http" { voiceHTTPSettings }
+            Section("录音") {
+                Stepper("单次最长录音：\(config.voice.max_record_secs) 秒", value: $config.voice.max_record_secs, in: 10...600, step: 10)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var voiceHTTPSettings: some View {
+        Group {
+            Section("识别服务（本机或内网私有化部署的语音识别模型）") {
+                TextField("服务地址", text: $config.voice.endpoint, prompt: Text("http://127.0.0.1:8000/v1/audio/transcriptions"))
+                TextField("模型名称", text: $config.voice.model, prompt: Text("whisper-1"))
+                Picker("识别语言", selection: $config.voice.language) {
+                    Text("中文普通话 (zh)").tag("zh")
+                    Text("粤语 (yue)").tag("yue")
+                    Text("英文 (en)").tag("en")
+                    Text("日文 (ja)").tag("ja")
+                    Text("自动检测").tag("")
+                }
+                TextField("提示词（可选）", text: $config.voice.prompt, prompt: Text("用于偏向简体中文、标点或专业词汇"), axis: .vertical)
+                    .lineLimit(2...4)
+                SecureField("API Key（可选，保存在系统钥匙串）", text: Binding(
+                    get: { voiceApiKey }, set: { voiceApiKey = $0; ChimeVoiceKeychain.write($0) }
+                ))
+                .onAppear { voiceApiKey = ChimeVoiceKeychain.read() ?? "" }
+                HStack(spacing: 10) {
+                    Button("测试连接") {
+                        voiceProbing = true
+                        voiceProbe = nil
+                        Task {
+                            voiceProbe = await ChimeVoiceController.probeEndpoint(config: config, apiKey: voiceApiKey)
+                            voiceProbing = false
+                        }
+                    }
+                    .disabled(voiceProbing)
+                    if voiceProbing {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    if let probe = voiceProbe {
+                        if probe.ok {
+                            Text("✓ 连接成功（\(probe.latency_ms) ms）")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("✗ \(probe.error ?? "失败")")
+                                .foregroundStyle(.red)
+                                .lineLimit(3)
+                        }
+                    }
+                    Spacer()
+                }
+                Text("兼容 OpenAI 语音转写接口（POST multipart/form-data：file、model、language、prompt，返回 {\"text\": …}）。例如：whisper.cpp server（…/inference）、speaches / faster-whisper-server、vLLM、LocalAI（…/v1/audio/transcriptions）。音频只发送到这里填写的地址。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("高级") {
+                Stepper("实时预览间隔：\(config.voice.partial_interval_ms) ms", value: $config.voice.partial_interval_ms, in: 200...5000, step: 100)
+                Stepper("单次请求超时：\(config.voice.request_timeout_ms / 1000) 秒", value: $config.voice.request_timeout_ms, in: 2000...120_000, step: 1000)
+            }
+        }
     }
 }

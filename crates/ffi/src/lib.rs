@@ -8,6 +8,10 @@ use std::{
 
 use chime_core::{ChimeConfig, ChimeEngine, EngineResponse, KeyEvent};
 
+mod voice;
+
+pub use crate::voice::ChimeVoiceHandle;
+
 /// Opaque handle owned by Swift's `@MainActor final class ChimeEngineBridge`.
 #[derive(Debug)]
 pub struct ChimeEngineHandle {

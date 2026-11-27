@@ -62,6 +62,87 @@ pub enum ShiftCommitMode {
     CommitKeepChinese,
 }
 
+/// Modifier key that is held down to dictate (push-to-talk).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceHotkey {
+    /// Right `Option` (`0x3D`).
+    #[default]
+    RightOption,
+    /// Right `Command` (`0x36`).
+    RightCommand,
+    /// Right `Control` (`0x3E`).
+    RightControl,
+    /// `Fn` / Globe (`0x3F`).
+    Fn,
+}
+
+/// Source of speech recognition for hold-to-talk dictation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceBackend {
+    /// Offline Streaming Paraformer shipped with the app.
+    #[default]
+    Bundled,
+    /// User-configured OpenAI-compatible speech service.
+    Http,
+}
+
+/// Hold-to-talk dictation (`[voice]` table).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    /// Recognition backend; the default does not send audio over the network.
+    pub backend: VoiceBackend,
+    /// Master switch; microphone use is opt-in.
+    pub enabled: bool,
+    /// Modifier key held to dictate.
+    pub hotkey: VoiceHotkey,
+    /// OpenAI-compatible transcription URL (whisper.cpp `/inference`, speaches / vLLM / `LocalAI`
+    /// `/v1/audio/transcriptions`, …).
+    pub endpoint: String,
+    /// `model` form field sent to the server.
+    pub model: String,
+    /// Language hint (`zh`, `en`, …); empty means auto-detect.
+    pub language: String,
+    /// Optional decoding prompt (vocabulary / style hint).
+    pub prompt: String,
+    /// Show recognized text live while speaking.
+    pub live_preview: bool,
+    /// Minimum gap between live-preview requests (`200..=5000` ms).
+    pub partial_interval_ms: u64,
+    /// Per-request timeout (`2000..=120000` ms).
+    pub request_timeout_ms: u64,
+    /// Recording stops automatically after this many seconds (`10..=600`).
+    pub max_record_secs: u64,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: VoiceBackend::Bundled,
+            hotkey: VoiceHotkey::RightOption,
+            endpoint: "http://127.0.0.1:8000/v1/audio/transcriptions".to_string(),
+            model: "whisper-1".to_string(),
+            language: "zh".to_string(),
+            prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。".to_string(),
+            live_preview: true,
+            partial_interval_ms: 700,
+            request_timeout_ms: 20_000,
+            max_record_secs: 180,
+        }
+    }
+}
+
+impl VoiceConfig {
+    fn clamp(&mut self) {
+        self.partial_interval_ms = self.partial_interval_ms.clamp(200, 5_000);
+        self.request_timeout_ms = self.request_timeout_ms.clamp(2_000, 120_000);
+        self.max_record_secs = self.max_record_secs.clamp(10, 600);
+    }
+}
+
 /// Root user configuration stored at `~/Library/Application Support/Chime/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
@@ -136,6 +217,9 @@ pub struct ChimeConfig {
     /// (explicit browse keywords such as `emoji` / `yanwenzi` still work).
     #[serde(default)]
     pub suppress_emoji_in_ide: bool,
+    /// Hold-to-talk voice dictation (`[voice]` table).
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 const fn default_true() -> bool {
@@ -179,6 +263,7 @@ impl Default for ChimeConfig {
             emoji_suggestions: true,
             kaomoji_suggestions: true,
             suppress_emoji_in_ide: false,
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -193,6 +278,7 @@ impl ChimeConfig {
         let mut cfg: Self = toml::from_str(raw)?;
         cfg.page_size = cfg.page_size.clamp(3, 9);
         cfg.candidate_font_size = cfg.candidate_font_size.clamp(13, 20);
+        cfg.voice.clamp();
         Ok(cfg)
     }
 
@@ -224,8 +310,41 @@ impl ChimeConfig {
         let mut clean = self.clone();
         clean.page_size = clean.page_size.clamp(3, 9);
         clean.candidate_font_size = clean.candidate_font_size.clamp(13, 20);
+        clean.voice.clamp();
         let encoded = toml::to_string_pretty(&clean)?;
         std::fs::write(path, encoded)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_config_without_voice_table_gets_defaults() {
+        let cfg = ChimeConfig::from_toml_str("scheme = \"full\"\npage_size = 5\n")
+            .unwrap_or_else(|_| std::process::abort());
+        assert_eq!(cfg.voice, VoiceConfig::default());
+        assert!(!cfg.voice.enabled);
+        assert_eq!(cfg.voice.backend, VoiceBackend::Bundled);
+    }
+
+    #[test]
+    fn voice_table_round_trips_and_clamps() {
+        let raw = "[voice]\nenabled = true\nhotkey = \"right_command\"\nbackend = \"http\"\nendpoint = \"http://10.0.0.5:9000/inference\"\npartial_interval_ms = 10\n";
+        let cfg = ChimeConfig::from_toml_str(raw).unwrap_or_else(|_| std::process::abort());
+        assert!(cfg.voice.enabled);
+        assert_eq!(cfg.voice.backend, VoiceBackend::Http);
+        assert_eq!(cfg.voice.hotkey, VoiceHotkey::RightCommand);
+        assert_eq!(cfg.voice.endpoint, "http://10.0.0.5:9000/inference");
+        assert_eq!(cfg.voice.partial_interval_ms, 200);
+        assert_eq!(cfg.voice.language, "zh");
+
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("config.toml");
+        cfg.save(&path).unwrap_or_else(|_| std::process::abort());
+        let back = ChimeConfig::load_or_init(&path).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(back, cfg);
     }
 }

@@ -542,7 +542,7 @@ public final class CandidatePanel: NSPanel {
         return (NSPoint(x: round(x), y: round(y)), placedAbove)
     }
 
-    fileprivate static func clampedOrigin(size: NSSize, caretRect: NSRect) -> NSPoint {
+    static func clampedOrigin(size: NSSize, caretRect: NSRect) -> NSPoint {
         anchoredOrigin(size: size, caretRect: caretRect, lockedPlacedAbove: nil).0
     }
 }

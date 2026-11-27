@@ -218,6 +218,19 @@ public final class ChimeInputController: IMKInputController {
         let isCtrlPeriod = ctrlOnly && (keyCode == 0x2F || event.charactersIgnoringModifiers == ".")
         let secure = IsSecureEventInputEnabled()
 
+        // Hold-to-talk dictation sees modifier changes first and owns the keyboard while active.
+        let voiceConsumed: Bool = MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.ensureSlot(controllerKey: key, client: unsafeClientObj)
+            if type == .flagsChanged {
+                ChimeVoiceController.shared.handleFlagsChanged(keyCode: keyCode, flags: flags)
+                return false
+            }
+            return type == .keyDown && ChimeVoiceController.shared.interceptKeyDown(keyCode: keyCode)
+        }
+        if voiceConsumed {
+            return true
+        }
+
         let observedLeftContext: String? = {
             if secure || type != .keyDown {
                 return nil

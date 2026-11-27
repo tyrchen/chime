@@ -147,6 +147,25 @@ rm -rf /tmp/chime_private_personal
 
 ---
 
+## 语音输入（按住说话 · 本地 / 私有化识别模型）
+
+在 **偏好设置… → 语音输入** 中开启后，**按住右 `Option`（可改为右 `⌘` / 右 `⌃` / `Fn`）约 0.3 秒**即弹出语音浮窗：说话时识别结果实时出现在光标处，松开上屏，按 `Esc` 取消。首次使用需允许麦克风权限。默认使用安装包内置的 **Streaming Paraformer INT8** 中英双语模型：不需要下载模型、启动服务或填写 API Key，音频不离开本机。每次按住使用一个独立识别进程，结束即退出。模型不会自动补标点。
+
+开发者可用 `make macos-installer` 构建含模型的 `.pkg`。构建时从固定版本下载并校验权重和原生运行库，缓存位于 `dist/voice-cache/`（可通过 `VOICE_CACHE` 指定）。只有构建需要这些下载，安装和听写均不需要 Python。
+
+如需使用自己的模型，可将「模型来源」改为「自定义 HTTP 服务」（`[voice].backend = "http"`）；原有服务地址、模型名和钥匙串中的 API Key 可继续使用。仅此模式会发送音频，内置模式出错不会转发。识别服务需兼容 OpenAI 转写接口（`POST multipart/form-data`：`file`、`model`、`language`、`prompt`，返回 `{"text": …}`），例如 whisper.cpp：
+
+```bash
+brew install whisper-cpp
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8178 -l zh
+# 偏好设置中填写服务地址：http://127.0.0.1:8178/inference
+```
+
+speaches / faster-whisper-server、vLLM、LocalAI 等服务填写其 `/v1/audio/transcriptions` 地址与模型名即可。不打开输入法也能用 `cargo run -p chime-voice --example dictate_wav -- speech.wav <服务地址>` 检查服务端效果。
+
+---
+
 ## 仓库目录结构与从源码构建
 
 | 目录 | 模块职责 |
@@ -156,6 +175,7 @@ rm -rf /tmp/chime_private_personal
 | `crates/decoder` | 双轨束搜索网格解码器、概率空间分离、上下文诗词续写晋升与防抖冻结窗口 |
 | `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` 引擎、融合 `QKV`/`Gate+Up`、Route A 拼音约束自回归束搜索、秩堆叠多 LoRA 与律绝单纯形路由器 |
 | `crates/core` | 32 槽位 LRU 会话状态机、异步 Route A 调度器、智能标点、PII/密钥脱敏清洗器与 `.imepack` v2 卡带管理 |
+| `crates/voice` | 按住说话语音输入：能量 VAD 分句、边说边出字的实时预览，以及对接本地/私有化 ASR 服务（OpenAI 兼容转写接口）的客户端 |
 | `crates/ffi` | 无状态窄 C ABI 接口层，衔接 Rust 核心与 Swift 6 宿主 |
 | `apps/cli` | `chime` 命令行工具集（`decode`、`dict-build-base`、`dict-compile`、`pack`、`corpus-export`、`eval` 与全套 `bench` 评测） |
 | `macos/` | Swift 6 `@MainActor` 原生 `InputMethodKit` 应用包（`Chime.app`）、会话锚定候选栏、`5×5` 网格、零遥测自动更新器与偏好设置窗口 |
@@ -185,6 +205,7 @@ make paper-arxiv
 
 ## 隐私与安全设计
 
+- **语音输入默认离线**：语音输入默认关闭；开启后只在按住快捷键期间录音，安全输入模式下不启动录音。只有选择自定义 HTTP 服务才会将音频发往配置的地址。
 - **彻底零按键联网**：日常输入过程零网络请求、零设备指纹、零遥测 SDK；你的每一次按键、个人高频词与 `.imepack` 权重严格只留在你的 Mac 本地磁盘中。（可选的自动更新检查默认每 24 小时仅只读拉取静态 `releases-manifest.json`，可在偏好设置随时一键关闭。）
 - **硬件级安全输入旁路**：每次按键自动检查 macOS `IsSecureEventInputEnabled()`，一旦焦点进入系统密码框、终端 `sudo`/SSH 口令提示或 1Password/钥匙串弹窗，立即原样放行并停止记录上下文。
 - **内存安全边界**：全部纯逻辑 Rust Crate（`phonetics`、`decoder`、`neural`、`core`、`cli`）开启 `#![forbid(unsafe_code)]`，仅在只读词典 `mmap` 映射与极薄的 C FFI 边界保留最小受控封装。

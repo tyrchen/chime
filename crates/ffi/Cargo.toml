@@ -16,3 +16,4 @@ workspace = true
 chime-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chime-voice = { workspace = true }

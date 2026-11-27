@@ -3,3 +3,4 @@
 "app.tyrchen.inputmethod.Chime" = "Chime 拼音";
 "app.tyrchen.inputmethod.Chime.pinyin" = "Chime 拼音";
 "app.tyrchen.inputmethod.Chime.Pinyin" = "Chime 拼音";
+"NSMicrophoneUsageDescription" = "Chime voice input records from the microphone while you hold the dictation key. Recognition is offline by default. Only the custom server option sends audio to the configured endpoint.";
