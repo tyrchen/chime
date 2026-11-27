@@ -7,7 +7,29 @@
 #include <string.h>
 #include "sherpa-onnx/c-api/c-api.h"
 
-int main(void) {
+/* Text-only second pass. Keep transcripts off argv, disk, and stderr. EOF ends
+ * the request. Model failure is isolated from ASR; the host keeps its original. */
+static int punctuate(void) {
+    char text[32769];
+    size_t n = fread(text, 1, sizeof(text), stdin);
+    if (!n || n == sizeof(text) || ferror(stdin)) return 2;
+    text[n] = '\0';
+    SherpaOnnxOfflinePunctuationConfig cfg = {0};
+    cfg.model.ct_transformer = "punct.int8.onnx";
+    cfg.model.num_threads = 2;
+    cfg.model.provider = "cpu";
+    const SherpaOnnxOfflinePunctuation *p = SherpaOnnxCreateOfflinePunctuation(&cfg);
+    if (!p) return 1;
+    const char *result = SherpaOfflinePunctuationAddPunct(p, text);
+    int ok = result && fputs(result, stdout) >= 0 && fflush(stdout) == 0;
+    if (result) SherpaOfflinePunctuationFreeText(result);
+    SherpaOnnxDestroyOfflinePunctuation(p);
+    return ok ? 0 : 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--punctuate") == 0) return punctuate();
+    if (argc != 1) return 2;
     SherpaOnnxOnlineRecognizerConfig config = {0};
     config.feat_config.sample_rate = 16000;
     config.feat_config.feature_dim = 80;

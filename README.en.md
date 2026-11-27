@@ -151,7 +151,7 @@ rm -rf /tmp/chime_private_personal
 
 ## Voice Input (Hold-to-Talk with a Local / Self-Hosted Model)
 
-Enable it under **Preferences… → 语音输入**. **Hold Right `Option`** (or Right `⌘` / Right `⌃` / `Fn`) for about 0.3 s and a small voice HUD appears: recognized text shows up at the caret while you speak, releasing the key commits it, and `Esc` cancels. Grant microphone access on first use. The installer includes a bilingual **Streaming Paraformer INT8** model: no runtime download, server, or API key is needed. The default backend keeps audio on device and exits its helper process after dictation. This model does not insert punctuation.
+Enable it under **Preferences… → 语音输入**. **Hold Right `Option`** (or Right `⌘` / Right `⌃` / `Fn`) for about 0.3 s and a small voice HUD appears: recognized text shows up at the caret while you speak, releasing the key commits it, and `Esc` cancels. Grant microphone access on first use. The installer includes a bilingual **Streaming Paraformer INT8** model: no runtime download, server, or API key is needed. The default backend keeps audio on device and exits its helper process after dictation. On release, a bundled CT-Transformer restores punctuation locally. An independent, opt-in cleanup removes repeated starts, duplicate clauses and isolated Mandarin fillers, without rewriting previously committed text. Live previews remain unchanged.
 
 To use an existing endpoint, explicitly select the custom HTTP backend (`backend = "http"` under `[voice]`). Only this backend sends audio to the configured URL; the optional API key stays in Keychain. Any OpenAI-compatible transcription server works (`POST multipart/form-data` with `file`, `model`, `language`, `prompt`; response `{"text": …}`), for example whisper.cpp:
 

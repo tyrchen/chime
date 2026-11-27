@@ -55,6 +55,13 @@ def bundle(contents, cache):
         directory.mkdir(parents=True, exist_ok=True)
     for name, sha in FILES.items():
         shutil.copyfile(fetch(cache, name, f"{MODEL}/{name}", sha), model / name)
+    punct = fetch(
+        cache,
+        "punct.int8.onnx",
+        "https://huggingface.co/ranger810/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/resolve/5cccf43af83e4fc50d1d55b8410312e87709be70/model.int8.onnx",
+        "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1",
+    )
+    shutil.copyfile(punct, model / "punct.int8.onnx")
     shutil.copytree(src / "licenses", model / "licenses", dirs_exist_ok=True)
     with (
         zipfile.ZipFile(fetch(cache, "core.whl", WHEEL, WHEEL_SHA)) as archive,

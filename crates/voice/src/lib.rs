@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod client;
+mod format;
 mod session;
 mod streaming;
 mod text;
@@ -22,6 +23,7 @@ use thiserror::Error;
 
 pub use crate::{
     client::{HttpTranscriber, Transcriber, build_multipart_body, parse_transcript},
+    format::format_final,
     session::{VoiceSession, VoiceSnapshot, VoiceState},
     streaming::StreamingSession,
     text::{join_segments, normalize_transcript},

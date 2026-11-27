@@ -253,6 +253,29 @@ pub unsafe extern "C" fn chime_voice_snapshot(voice: *mut ChimeVoiceHandle) -> *
     })
 }
 
+/// Format an ASR final without accessing the IMK client or network. Blocking; use off main.
+///
+/// # Safety
+/// `contents` and `text` must be valid NUL-terminated UTF-8. Free the result with
+/// `chime_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_format_final(
+    contents: *const c_char,
+    text: *const c_char,
+    punctuation: bool,
+    tidy: bool,
+) -> *mut c_char {
+    let (Some(path), Some(raw)) = (unsafe { opt_str(contents) }, unsafe { opt_str(text) }) else {
+        return std::ptr::null_mut();
+    };
+    to_c_string(&chime_voice::format_final(
+        std::path::Path::new(&path),
+        &raw,
+        punctuation,
+        tidy,
+    ))
+}
+
 #[derive(Serialize)]
 struct EndpointProbe {
     ok: bool,

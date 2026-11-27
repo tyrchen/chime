@@ -161,6 +161,8 @@ public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
     public var model: String
     public var language: String
     public var prompt: String
+    public var auto_punctuation = true
+    public var tidy_dictation = false
     public var live_preview: Bool
     public var partial_interval_ms: UInt64
     public var request_timeout_ms: UInt64
@@ -215,6 +217,8 @@ public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
         self.model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
         self.language = try c.decodeIfPresent(String.self, forKey: .language) ?? d.language
         self.prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
+        self.auto_punctuation = try c.decodeIfPresent(Bool.self, forKey: .auto_punctuation) ?? d.auto_punctuation
+        self.tidy_dictation = try c.decodeIfPresent(Bool.self, forKey: .tidy_dictation) ?? d.tidy_dictation
         self.live_preview = try c.decodeIfPresent(Bool.self, forKey: .live_preview) ?? d.live_preview
         self.partial_interval_ms = try c.decodeIfPresent(UInt64.self, forKey: .partial_interval_ms) ?? d.partial_interval_ms
         self.request_timeout_ms = try c.decodeIfPresent(UInt64.self, forKey: .request_timeout_ms) ?? d.request_timeout_ms

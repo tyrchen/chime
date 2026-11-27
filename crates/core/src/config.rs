@@ -91,6 +91,7 @@ pub enum VoiceBackend {
 /// Hold-to-talk dictation (`[voice]` table).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // Independent, user-facing switches in config.toml.
 pub struct VoiceConfig {
     /// Recognition backend; the default does not send audio over the network.
     pub backend: VoiceBackend,
@@ -107,6 +108,10 @@ pub struct VoiceConfig {
     pub language: String,
     /// Optional decoding prompt (vocabulary / style hint).
     pub prompt: String,
+    /// Restore punctuation on the final transcript locally.
+    pub auto_punctuation: bool,
+    /// Opt-in removal of redundant spoken phrases from the final transcript.
+    pub tidy_dictation: bool,
     /// Show recognized text live while speaking.
     pub live_preview: bool,
     /// Minimum gap between live-preview requests (`200..=5000` ms).
@@ -127,6 +132,8 @@ impl Default for VoiceConfig {
             model: "whisper-1".to_string(),
             language: "zh".to_string(),
             prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。".to_string(),
+            auto_punctuation: true,
+            tidy_dictation: false,
             live_preview: true,
             partial_interval_ms: 700,
             request_timeout_ms: 20_000,
@@ -327,6 +334,8 @@ mod tests {
             .unwrap_or_else(|_| std::process::abort());
         assert_eq!(cfg.voice, VoiceConfig::default());
         assert!(!cfg.voice.enabled);
+        assert!(cfg.voice.auto_punctuation);
+        assert!(!cfg.voice.tidy_dictation);
         assert_eq!(cfg.voice.backend, VoiceBackend::Bundled);
     }
 

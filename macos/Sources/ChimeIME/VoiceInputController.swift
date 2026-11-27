@@ -226,6 +226,7 @@ public final class ChimeVoiceController {
         case arming
         case recording
         case finishing
+        case formatting
     }
 
     private struct HotkeySpec {
@@ -250,6 +251,9 @@ public final class ChimeVoiceController {
     private var activeSpec: HotkeySpec?
     private var armTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var formatTask: Task<Void, Never>?
+    private var autoPunctuation = true
+    private var tidyDictation = false
     private var target: (key: ObjectIdentifier, client: IMKTextInput)?
     private var hasMarkedText = false
     private var lastText = ""
@@ -312,7 +316,7 @@ public final class ChimeVoiceController {
             if !down {
                 finishRecording()
             }
-        case .finishing:
+        case .finishing, .formatting:
             break
         }
         hotkeyDown = down
@@ -332,13 +336,18 @@ public final class ChimeVoiceController {
                 cancelSession()
             }
             return true
-        case .finishing:
+        case .finishing, .formatting:
             if keyCode == Self.escKeyCode {
                 cancelSession()
                 return true
             }
-            // The user is already typing again: keep what was recognized and let the key through.
-            endSession(commit: lastText, error: nil)
+            guard !IsSecureEventInputEnabled(), ChimeEngineBridge.shared.currentConfig.voice.enabled else {
+                cancelSession()
+                return false
+            }
+            // Typing takes priority over the optional, asynchronous formatting pass.
+            let latest = handle.flatMap { snapshot($0) }
+            endSession(commit: latest?.state == "done" ? latest?.text : lastText, error: latest?.error)
             return false
         }
     }
@@ -349,7 +358,7 @@ public final class ChimeVoiceController {
 
     public func controllerDeactivated(_ key: ObjectIdentifier) {
         cancelArming()
-        if let target, target.key == key, phase == .recording || phase == .finishing {
+        if let target, target.key == key, phase == .recording || phase == .finishing || phase == .formatting {
             cancelSession()
         }
     }
@@ -460,6 +469,8 @@ public final class ChimeVoiceController {
             return
         }
 
+        autoPunctuation = config.voice.auto_punctuation
+        tidyDictation = config.voice.tidy_dictation
         target = active
         activeSpec = spec
         hasMarkedText = false
@@ -488,6 +499,8 @@ public final class ChimeVoiceController {
 
     /// Commits `text` (if any) to the target client and returns to idle.
     private func endSession(commit text: String?, error: String?) {
+        formatTask?.cancel()
+        formatTask = nil
         pollTask?.cancel()
         pollTask = nil
         capture.stop()
@@ -560,7 +573,7 @@ public final class ChimeVoiceController {
         }
         switch snap.state {
         case "done":
-            endSession(commit: snap.text, error: snap.error)
+            completeRecognition(snap)
             return false
         case "cancelled":
             endSession(commit: nil, error: nil)
@@ -588,6 +601,37 @@ public final class ChimeVoiceController {
             listening: phase == .recording
         )
         return true
+    }
+
+    private func completeRecognition(_ snap: VoiceSnapshotDTO) {
+        let raw = snap.text
+        guard snap.error == nil, !raw.isEmpty, autoPunctuation || tidyDictation else {
+            endSession(commit: raw, error: snap.error)
+            return
+        }
+        capture.stop()
+        if let handle { chime_voice_end(handle) }
+        phase = .formatting
+        lastText = raw // if the user types immediately, prefer the full ASR final to a stale preview
+        VoiceInputPanel.shared.update(text: raw, level: 0, hint: "整理文字中… · Esc 取消", isError: false, listening: false)
+        let contents = Bundle.main.bundleURL.appendingPathComponent("Contents").path
+        let punct = autoPunctuation, tidy = tidyDictation
+        formatTask = Task { @MainActor [weak self] in
+            let text = await Task.detached(priority: .userInitiated) {
+                contents.withCString { path in raw.withCString { input -> String in
+                    guard let ptr = chime_voice_format_final(path, input, punct, tidy) else { return raw }
+                    defer { chime_string_free(ptr) }
+                    return String(cString: ptr)
+                } }
+            }.value
+            guard let self, !Task.isCancelled, self.phase == .formatting else { return }
+            guard !IsSecureEventInputEnabled(), ChimeEngineBridge.shared.currentConfig.voice.enabled,
+                  let active = ChimeEngineBridge.shared.activeTextClient(), active.key == self.target?.key else {
+                self.cancelSession()
+                return
+            }
+            self.endSession(commit: text, error: nil)
+        }
     }
 
     private func recordingHint(spec: HotkeySpec, elapsedMs: UInt64) -> String {
