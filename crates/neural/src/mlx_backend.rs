@@ -608,10 +608,15 @@ impl MlxTransformer {
             .map_err(|e| NeuralError::Safetensors(format!("MLX load_safetensors failed: {e}")))?;
 
         let qcfg = cfg.quantization;
-        let embed_tokens = MlxEmbedding::load(&mut raw, "model.embed_tokens", qcfg)?;
+        let embed_qcfg = qcfg.map(|qc| QuantizationConfig {
+            group_size: qc.embed_group_size.unwrap_or(qc.group_size),
+            bits: qc.embed_bits.unwrap_or(qc.bits),
+            ..qc
+        });
+        let embed_tokens = MlxEmbedding::load(&mut raw, "model.embed_tokens", embed_qcfg)?;
         let final_norm = take_tensor(&mut raw, "model.norm.weight")?;
         let lm_head = if raw.contains_key("lm_head.weight") {
-            MlxLinear::load(&mut raw, "lm_head", qcfg)?
+            MlxLinear::load(&mut raw, "lm_head", embed_qcfg)?
         } else {
             embed_tokens.to_tied_lm_head()?
         };

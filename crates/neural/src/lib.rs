@@ -16,11 +16,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::{
-    beam_decoder::{NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam},
+    beam_decoder::{
+        BeamSearchConfig, NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam,
+    },
     mlx_backend::{
         LoraMountSpec, LoraRouting, MlxBeamKv, MlxLoraAdapter, MlxPrefixCache, MlxTransformer,
     },
-    pinyin_trie::{TokenEdge, TokenPinyinIndex},
+    pinyin_trie::{ChannelConfig, TokenEdge, TokenPinyinIndex},
     transformer::{
         ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
     },
@@ -387,6 +389,120 @@ impl SafetensorsReranker {
             is_pc,
             cache_opt,
         )
+    }
+
+    /// Dual-Proposal Exact Bayesian Decoding: combines Route A autoregressive BPE neural beam
+    /// search with complementary Stage-1 word-level Viterbi proposals (`Exact`, `Fuzzy`,
+    /// `TypoCorrected`), scoring every novel proposal under the exact same Bayesian objective
+    /// `log P_LM(Y | C) + closure + exact_channel_cost(X | Y)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_constrained_with_proposals(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+        extra_stage1_candidates: &[(String, f32, bool)],
+    ) -> Vec<NeuralBeamCandidate> {
+        let mut ncands = self.decode_constrained(
+            left_context,
+            app_bundle_id,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+        );
+        if extra_stage1_candidates.is_empty() {
+            return ncands;
+        }
+
+        let mut to_score: Vec<(String, f32, bool)> = Vec::new();
+        let ch_cfg = pinyin_trie::ChannelConfig::default();
+        let mut primary_lattice: Option<Vec<Vec<pinyin_trie::TokenEdge>>> = None;
+        let mut neighbor_lattice: Option<Vec<Vec<pinyin_trie::TokenEdge>>> = None;
+        for (txt, fallback_chan, fallback_exact) in extra_stage1_candidates {
+            if ncands.iter().any(|c| c.text == *txt)
+                || to_score.iter().any(|(existing, _, _)| existing == txt)
+            {
+                continue;
+            }
+            let (chan_cost, is_exact) = self
+                .pinyin_index
+                .as_ref()
+                .and_then(|idx| {
+                    let prim = primary_lattice.get_or_insert_with(|| {
+                        idx.build_token_lattice_with_config(raw_input, scheme, fuzzy, false, ch_cfg)
+                    });
+                    if let Some(res) = idx.exact_channel_cost_with_lattice(raw_input, txt, prim) {
+                        return Some(res);
+                    }
+                    if scheme == ShuangpinScheme::Full {
+                        let neigh = neighbor_lattice.get_or_insert_with(|| {
+                            idx.build_token_lattice_with_config(
+                                raw_input,
+                                scheme,
+                                fuzzy,
+                                false,
+                                pinyin_trie::ChannelConfig {
+                                    enable_canonical_neighbor_typos: true,
+                                    canonical_neighbor_window: None,
+                                    ..ch_cfg
+                                },
+                            )
+                        });
+                        return idx.exact_channel_cost_with_lattice(raw_input, txt, neigh);
+                    }
+                    None
+                })
+                .unwrap_or((*fallback_chan, *fallback_exact));
+            to_score.push((txt.clone(), chan_cost, is_exact));
+        }
+
+        if !to_score.is_empty() {
+            let bcfg = beam_decoder::BeamSearchConfig::default();
+            let lower_raw = raw_input.to_ascii_lowercase();
+            let is_single_syl = scheme == ShuangpinScheme::Full
+                && !raw_input.contains('\'')
+                && chime_phonetics::is_valid_syllable(&lower_raw);
+            let eff_mode = if is_single_syl
+                || (!left_context.trim().is_empty()
+                    && raw_input.len() <= bcfg.contextual_short_phrase_max_bytes)
+            {
+                ScoringMode::OpenContextual
+            } else {
+                mode
+            };
+            let texts: Vec<String> = to_score.iter().map(|(t, _, _)| t.clone()).collect();
+            let lps = self.score_candidates_exact_bayesian_with_pinyin(
+                left_context,
+                app_bundle_id,
+                raw_input,
+                scheme,
+                &texts,
+                eff_mode,
+            );
+            for ((txt, chan_cost, is_exact), lp) in to_score.into_iter().zip(lps) {
+                if lp.is_finite() {
+                    ncands.push(NeuralBeamCandidate {
+                        text: txt,
+                        score: lp + chan_cost,
+                        lm_log_prob: lp,
+                        channel_cost: chan_cost,
+                        is_exact,
+                        consumed_bytes: raw_input.len(),
+                    });
+                }
+            }
+            ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
+            beam_decoder::apply_pronoun_symmetry(left_context, &mut ncands);
+        }
+        ncands
     }
 
     /// Computes exact unnormalized Bayesian log-likelihoods `log P_LM(Y | C) (+ closure)` on the

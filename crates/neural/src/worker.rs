@@ -33,9 +33,10 @@ pub struct RouteADecodeRequest {
     pub scoring_mode: ScoringMode,
     /// Autoregressive beam width (typically `8`).
     pub beam_width: usize,
-    /// Optional exact-pinyin full-span lexicon / `.imepack` / user-custom phrase proposals scored
-    /// strictly on the exact same Bayesian `log P_LM(Y | C)` scale (zero static unigram bias).
-    pub extra_exact_candidates: Vec<String>,
+    /// Optional full-span Stage-1 lexicon / `.imepack` / fuzzy / typo proposals `(surface,
+    /// acoustic_channel_cost, is_exact)` scored strictly on the exact same Bayesian
+    /// `log P_LM(Y | C) + channel_cost` scale (zero static unigram bias).
+    pub extra_stage1_candidates: Vec<(String, f32, bool)>,
 }
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
@@ -600,7 +601,7 @@ fn run_route_a_request(
     reranker: &mut SafetensorsReranker,
     req: &RouteADecodeRequest,
 ) -> Vec<NeuralBeamCandidate> {
-    let mut ncands = reranker.decode_constrained(
+    reranker.decode_constrained_with_proposals(
         &req.left_context,
         &req.app_bundle_id,
         &req.raw_input,
@@ -609,48 +610,6 @@ fn run_route_a_request(
         req.pangu_spacing,
         req.scoring_mode,
         req.beam_width,
-    );
-    if !req.extra_exact_candidates.is_empty() {
-        let mut to_score = Vec::new();
-        for txt in &req.extra_exact_candidates {
-            if !ncands.iter().any(|c| c.text == *txt) && !to_score.contains(txt) {
-                to_score.push(txt.clone());
-            }
-        }
-        if !to_score.is_empty() {
-            let lower_raw = req.raw_input.to_ascii_lowercase();
-            let is_single_syl = req.scheme == ShuangpinScheme::Full
-                && !req.raw_input.contains('\'')
-                && chime_phonetics::is_valid_syllable(&lower_raw);
-            let eff_mode = if is_single_syl
-                || (!req.left_context.trim().is_empty() && req.raw_input.len() <= 12)
-            {
-                ScoringMode::OpenContextual
-            } else {
-                req.scoring_mode
-            };
-            let lps = reranker.score_candidates_exact_bayesian_with_pinyin(
-                &req.left_context,
-                &req.app_bundle_id,
-                &req.raw_input,
-                req.scheme,
-                &to_score,
-                eff_mode,
-            );
-            for (txt, lp) in to_score.into_iter().zip(lps) {
-                if lp.is_finite() {
-                    ncands.push(NeuralBeamCandidate {
-                        text: txt,
-                        score: lp,
-                        lm_log_prob: lp,
-                        channel_cost: 0.0,
-                        is_exact: true,
-                        consumed_bytes: req.raw_input.len(),
-                    });
-                }
-            }
-            ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
-        }
-    }
-    ncands
+        &req.extra_stage1_candidates,
+    )
 }

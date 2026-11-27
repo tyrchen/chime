@@ -1511,17 +1511,32 @@ impl ChimeEngine {
             && chime_phonetics::is_valid_syllable(&lower_raw);
         let is_single_syl_ctx = has_left_ctx && is_single_syl;
 
-        let mut extra_exact_candidates: Vec<String> = Vec::new();
+        let mut extra_stage1_candidates: Vec<(String, f32, bool)> = Vec::new();
         let mut has_stage1_exact = false;
+        let bm_cfg = chime_neural::BeamSearchConfig::default();
         for lc in stage1_cands {
-            if lc.consumed_bytes == raw_clone.len() && lc.kind == MatchKind::Exact {
-                has_stage1_exact = true;
-                if raw_clone.len() >= 6
+            if lc.consumed_bytes == raw_clone.len()
+                && matches!(
+                    lc.kind,
+                    MatchKind::Exact | MatchKind::Fuzzy | MatchKind::TypoCorrected
+                )
+            {
+                let (chan_cost, is_exact) = match lc.kind {
+                    MatchKind::Exact => {
+                        has_stage1_exact = true;
+                        (0.0, true)
+                    }
+                    MatchKind::Fuzzy => (-(self.config.fuzzy.fuzzy_penalty + 0.85), false),
+                    _ => (bm_cfg.swap_channel_cost, false),
+                };
+                if raw_clone.len() >= 2
                     && !is_single_syl
-                    && extra_exact_candidates.len() < 4
-                    && !extra_exact_candidates.contains(&lc.text)
+                    && extra_stage1_candidates.len() < 8
+                    && !extra_stage1_candidates
+                        .iter()
+                        .any(|(t, _, _)| t == &lc.text)
                 {
-                    extra_exact_candidates.push(lc.text.clone());
+                    extra_stage1_candidates.push((lc.text.clone(), chan_cost, is_exact));
                 }
             }
         }
@@ -1561,9 +1576,9 @@ impl ChimeEngine {
             {
                 4
             } else {
-                5
+                6
             },
-            extra_exact_candidates,
+            extra_stage1_candidates,
         };
         let Some(ncands) =
             worker.decode_route_a_timed_or_async(session_id, generation_id, req, sync_budget)

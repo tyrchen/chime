@@ -24,14 +24,14 @@ public struct OfficialPackCatalogItem: Identifiable, Sendable {
             id: "classics-poetry",
             title: "古典诗词曲赋与成语全库",
             routingBadge: "古汉语语境自动激活",
-            summary: "26.6 万古典词条 + 23.1 万条全篇逐句 Tab 续写链 + 28L Rank-8 古文 LoRA",
+            summary: "26.6 万古典词条 + 23.1 万条全篇逐句 Tab 续写链 + 18L Rank-8 古文 LoRA",
             approxSize: "~24 MB"
         ),
         OfficialPackCatalogItem(
             id: "tech-developer",
             title: "开发者中英技术双语包",
             routingBadge: "终端 / IDE 自动激活",
-            summary: "Rust / Swift / AI / 云原生双语术语与精确驼峰大小写 + 28L Rank-8 技术 LoRA",
+            summary: "Rust / Swift / AI / 云原生双语术语与精确驼峰大小写 + 18L Rank-8 技术 LoRA",
             approxSize: "~8.9 MB"
         )
     ]

@@ -291,7 +291,7 @@ struct ChimeSettingsView: View {
                     LabeledContent(
                         "端侧神经解码引擎",
                         value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded)
-                            ? "Qwen3 28L 4-bit MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
+                            ? "Qwen3 BI-18L 混合精度 MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
                             : "统计双轨模式"
                     )
                 }

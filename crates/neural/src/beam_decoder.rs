@@ -15,7 +15,7 @@ use chime_phonetics::{FuzzyConfig, ShuangpinScheme};
 use crate::{
     ScoringMode,
     mlx_backend::{MlxBeamKv, MlxPrefixCache, MlxTransformer},
-    pinyin_trie::{TokenEdge, TokenPinyinIndex},
+    pinyin_trie::{ChannelConfig, TokenEdge, TokenPinyinIndex},
 };
 
 /// Decoded candidate returned by Route A neural beam search.
@@ -35,6 +35,75 @@ pub struct NeuralBeamCandidate {
     pub consumed_bytes: usize,
 }
 
+/// Centralized hyperparameters for Route A constrained beam search (replaces scattered magic
+/// constants and arbitrary sentence-length cutoffs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeamSearchConfig {
+    /// Early-sentence funnel multiplier applied during the ambiguous prefix window.
+    pub early_funnel_multiplier: usize,
+    /// Upper cap on the widened early funnel beam width.
+    pub max_early_beam: usize,
+    /// Log-prob pruning margin at `pos = 0`.
+    pub root_prune_margin: f32,
+    /// Log-prob pruning margin during early funnel positions.
+    pub early_prune_margin: f32,
+    /// Log-prob pruning margin during steady-state positions.
+    pub late_prune_margin: f32,
+    /// Per-step edge log-prob floor relative to the best edge from the same parent.
+    pub step_edge_margin: f32,
+    /// Channel cost applied to cross-syllable adjacent-key transposition repairs when strict
+    /// orthography fails.
+    pub swap_channel_cost: f32,
+    /// Channel cost applied to localized adjacent-key transposition repairs when the raw input was
+    /// already canonically segmentable (`hucihou -> huichou`, `lelie -> leile`).
+    pub canonical_swap_channel_cost: f32,
+    /// Maximum canonical swap repairs evaluated per input.
+    pub max_swap_repairs: usize,
+    /// Maximum raw byte length treated as an open mid-sentence short phrase when left context is
+    /// present.
+    pub contextual_short_phrase_max_bytes: usize,
+    /// Cold-start first-character surprisal allowance (nats) for perplexity-triggered rescue.
+    pub rescue_cold_start_nats: f32,
+    /// Per-additional-character surprisal allowance (nats) for perplexity-triggered rescue.
+    /// Triggers rescue when `lm_log_prob < -(rescue_cold_start_nats + rescue_per_extra_char_nats *
+    /// (chars - 1))`.
+    pub rescue_per_extra_char_nats: f32,
+    /// Localized single-step surprisal threshold (nats) for `pos > 0` transitions that triggers
+    /// on-demand adaptive beam escalation and localized typo rescue even inside long fluent
+    /// sentences (`你什么时候到红寺`, `最近一直没拦到你`, `再忙我也忽此后时间的`).
+    pub spike_rescue_threshold: f32,
+    /// Beam width used during on-demand adaptive beam escalation on distressed sentences.
+    pub rescue_beam_width: usize,
+}
+
+impl Default for BeamSearchConfig {
+    fn default() -> Self {
+        Self {
+            early_funnel_multiplier: 2,
+            max_early_beam: 12,
+            root_prune_margin: 14.0,
+            early_prune_margin: 11.5,
+            late_prune_margin: 9.5,
+            step_edge_margin: 12.5,
+            swap_channel_cost: -2.60,
+            canonical_swap_channel_cost: -3.60,
+            max_swap_repairs: 3,
+            contextual_short_phrase_max_bytes: 12,
+            rescue_cold_start_nats: 8.5,
+            rescue_per_extra_char_nats: 4.6,
+            spike_rescue_threshold: 9.8,
+            rescue_beam_width: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SurprisalSpike {
+    surprisal: f32,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Debug, Clone)]
 struct BeamHyp {
     /// Decoded UTF-8 text accumulated so far (leading BPE whitespace normalized).
@@ -52,6 +121,8 @@ struct BeamHyp {
     best_path_total: f32,
     /// True if all transitions in the canonical path were exact.
     is_exact: bool,
+    /// Worst localized single-step surprisal spike along this path (`pos > 0`).
+    spike1: SurprisalSpike,
 }
 
 impl BeamHyp {
@@ -59,6 +130,24 @@ impl BeamHyp {
     fn total_score(&self) -> f32 {
         self.lm_lp + self.channel_cost
     }
+
+    #[inline]
+    fn with_recorded_step(&self, surprisal: f32, start: usize, end: usize) -> SurprisalSpike {
+        if surprisal >= self.spike1.surprisal {
+            SurprisalSpike {
+                surprisal,
+                start,
+                end,
+            }
+        } else {
+            self.spike1
+        }
+    }
+}
+
+struct SingleDecodeOut {
+    cands: Vec<NeuralBeamCandidate>,
+    top_spike1: SurprisalSpike,
 }
 
 #[inline]
@@ -114,7 +203,7 @@ fn append_token_surface(
     out
 }
 
-fn has_feminine_or_neuter_cue(left_context: &str) -> bool {
+pub(crate) fn has_feminine_or_neuter_cue(left_context: &str) -> bool {
     left_context.chars().any(|c| {
         matches!(
             c,
@@ -139,11 +228,41 @@ fn has_feminine_or_neuter_cue(left_context: &str) -> bool {
     })
 }
 
-fn apply_unmarked_pronoun_symmetry(cands: &mut [NeuralBeamCandidate]) {
+pub(crate) fn has_explicit_feminine_antecedent(left_context: &str) -> bool {
+    left_context.chars().any(|c| {
+        matches!(
+            c,
+            '她' | '女'
+                | '妈'
+                | '姐'
+                | '妹'
+                | '姑'
+                | '娘'
+                | '妻'
+                | '婆'
+                | '姨'
+                | '嫂'
+                | '妇'
+                | '母'
+                | '闺'
+        )
+    })
+}
+
+pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeamCandidate]) {
     if cands.len() < 2 {
         return;
     }
-    if cands[0].text.contains('她') {
+    if has_explicit_feminine_antecedent(left_context) {
+        if cands[0].text.contains('他') {
+            let swapped = cands[0].text.replace('他', "她");
+            if let Some(pos) = cands.iter().position(|c| c.text == swapped)
+                && cands[0].score - cands[pos].score <= 1.25
+            {
+                cands.swap(0, pos);
+            }
+        }
+    } else if !has_feminine_or_neuter_cue(left_context) && cands[0].text.contains('她') {
         let swapped = cands[0].text.replace('她', "他");
         if let Some(pos) = cands.iter().position(|c| c.text == swapped)
             && cands[0].score - cands[pos].score <= 1.25
@@ -212,7 +331,7 @@ pub fn decode_constrained_beam(
         .chars()
         .any(|c| ('\u{4E00}'..='\u{9FA5}').contains(&c) && is_obvious_traditional_char(c));
 
-    let mut primary = decode_constrained_beam_single(
+    let mut primary_out = decode_constrained_beam_single(
         mlx_model,
         kv_cache,
         pinyin_index,
@@ -231,17 +350,249 @@ pub fn decode_constrained_beam(
         beam_width,
         allow_traditional,
         is_pinyin_conditioned,
+        ChannelConfig::default(),
         beam_cache,
     );
 
-    // Cross-syllable adjacent transposition recovery (`dgeuo -> deguo`, `qudnao -> qundao`,
-    // `molugoe -> moluoge`, `qiyjeia -> qiyejia`, `mdaa -> mada`, `bofeur -> bofuer`): when the
-    // raw Full-Pinyin string cannot segment canonically, test single adjacent-key swaps in ~15us
-    // and fuse any canonically segmentable repairs on the exact same Bayesian scale!
-    if scheme == ShuangpinScheme::Full
-        && (4..=38).contains(&n)
+    let bcfg = BeamSearchConfig::default();
+
+    let is_distressed = |out: &SingleDecodeOut| -> bool {
+        let ppl_bad = out.cands.first().is_none_or(|c| {
+            #[allow(clippy::cast_precision_loss)]
+            let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
+            let threshold =
+                -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
+            c.lm_log_prob < threshold
+        });
+        let spike_bad = out.top_spike1.surprisal >= bcfg.spike_rescue_threshold;
+        ppl_bad || spike_bad
+    };
+
+    let merge_into_primary =
+        |primary: &mut Vec<NeuralBeamCandidate>, incoming: Vec<NeuralBeamCandidate>| -> bool {
+            let mut changed = false;
+            for rc in incoming {
+                if let Some(existing) = primary.iter_mut().find(|c| c.text == rc.text) {
+                    if rc.score > existing.score {
+                        *existing = rc;
+                        changed = true;
+                    }
+                } else {
+                    primary.push(rc);
+                    changed = true;
+                }
+            }
+            if changed {
+                primary.sort_by(|a, b| b.score.total_cmp(&a.score));
+                primary.truncate(beam_width);
+                apply_pronoun_symmetry(left_context, primary);
+            }
+            changed
+        };
+
+    // 1. Adaptive Beam Escalation (all schemes: Full + Xiaohe/Ziranma/Microsoft):
+    // Clean sentences finish at fast `beam_width` (55-75ms); only genuinely distressed sentences
+    // escalate on demand to `rescue_beam_width` (12).
+    let needs_escalation = {
+        let ppl_bad = primary_out.cands.first().is_none_or(|c| {
+            #[allow(clippy::cast_precision_loss)]
+            let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
+            let threshold =
+                -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
+            c.lm_log_prob < threshold
+        });
+        let close_race = primary_out.cands.len() < 2
+            || (primary_out.cands[0].score - primary_out.cands[1].score) < 3.0;
+        ppl_bad || (primary_out.top_spike1.surprisal >= bcfg.spike_rescue_threshold && close_race)
+    };
+    if !is_pinyin_conditioned && n >= 4 && beam_width < bcfg.rescue_beam_width && needs_escalation {
+        let escalated = decode_constrained_beam_single(
+            mlx_model,
+            kv_cache,
+            pinyin_index,
+            left_context,
+            app_bundle_id,
+            prefix_ids,
+            lora_scales,
+            closure_token_ids,
+            closure_weight,
+            raw_input,
+            &lower_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            bcfg.rescue_beam_width,
+            allow_traditional,
+            is_pinyin_conditioned,
+            ChannelConfig::default(),
+            None,
+        );
+        let prev_top_score = primary_out
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        let esc_top_score = escalated
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        if esc_top_score > prev_top_score {
+            primary_out.top_spike1 = escalated.top_spike1;
+        }
+        merge_into_primary(&mut primary_out.cands, escalated.cands);
+    }
+
+    let is_strict_canonical = scheme == ShuangpinScheme::Full
+        && n >= 4
         && lower_input.bytes().all(|b| b.is_ascii_lowercase())
-        && !chime_phonetics::can_segment_exact(&lower_input)
+        && chime_phonetics::can_segment_strict_orthography(&lower_input);
+
+    // 2. Localized Surprisal-Spike Canonical Typo Rescue (NeighborKey + AdjacentSwap):
+    // Fires ONLY when the sentence STILL exhibits strong semantic distress after beam escalation
+    // and is NOT a fluent Chinese-English code-switching sentence (ASCII/English tokens naturally
+    // carry higher single-step Chinese-LM surprisal, whereas catastrophic overall perplexity like
+    // `loan 割耻媳小` indicates a false English split of a Pinyin typo and still needs rescue!).
+    let top_ppl_catastrophic = primary_out.cands.first().is_none_or(|c| {
+        #[allow(clippy::cast_precision_loss)]
+        let extra_chars = c.text.chars().count().saturating_sub(1) as f32;
+        let threshold =
+            -(bcfg.rescue_cold_start_nats + bcfg.rescue_per_extra_char_nats * extra_chars);
+        c.lm_log_prob < threshold
+    });
+    let has_ascii_code_switch = !top_ppl_catastrophic
+        && (primary_out
+            .cands
+            .first()
+            .is_some_and(|c| c.text.bytes().any(|b| b.is_ascii_alphabetic()))
+            || chime_phonetics::classify_code_switch(&lower_input)
+                != chime_phonetics::CodeSwitchSignal::AmbiguousAscii);
+    if scheme == ShuangpinScheme::Full
+        && n >= 4
+        && !has_ascii_code_switch
+        && lower_input.bytes().all(|b| b.is_ascii_lowercase())
+        && is_distressed(&primary_out)
+    {
+        let neighbor_window = if primary_out.top_spike1.surprisal >= bcfg.spike_rescue_threshold
+            && primary_out.top_spike1.end > primary_out.top_spike1.start
+        {
+            // In a left-to-right causal LM, a typo at syllable `k` (up to 6 bytes) often surfaces
+            // its highest surprisal spike at syllable `k` OR syllable `k+1`; cover one full
+            // preceding syllable plus 2 bytes downstream.
+            let lo = primary_out.top_spike1.start.saturating_sub(6);
+            let hi = (primary_out.top_spike1.end + 2).min(n);
+            Some((lo, hi))
+        } else {
+            None
+        };
+
+        let rescue_cfg = ChannelConfig {
+            enable_canonical_neighbor_typos: true,
+            canonical_neighbor_window: neighbor_window,
+            ..ChannelConfig::default()
+        };
+        let rescue_out = decode_constrained_beam_single(
+            mlx_model,
+            kv_cache,
+            pinyin_index,
+            left_context,
+            app_bundle_id,
+            prefix_ids,
+            lora_scales,
+            closure_token_ids,
+            closure_weight,
+            raw_input,
+            &lower_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width.min(4),
+            allow_traditional,
+            is_pinyin_conditioned,
+            rescue_cfg,
+            None,
+        );
+        let prev_top_score = primary_out
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        let res_top_score = rescue_out
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        if res_top_score > prev_top_score {
+            primary_out.top_spike1 = rescue_out.top_spike1;
+        }
+        merge_into_primary(&mut primary_out.cands, rescue_out.cands);
+
+        // Localized adjacent-swap recovery ONLY if neighbor rescue did not already resolve the
+        // surprisal spike!
+        if is_strict_canonical && is_distressed(&primary_out) {
+            let (win_lo, win_hi) = neighbor_window.unwrap_or((0, n));
+            let raw_b = lower_input.as_bytes();
+            let mut local_swaps: Vec<String> = Vec::new();
+            for i in win_lo..win_hi.min(n - 1) {
+                if raw_b[i] == raw_b[i + 1] {
+                    continue;
+                }
+                let mut swapped = raw_b.to_vec();
+                swapped.swap(i, i + 1);
+                if let Ok(s) = String::from_utf8(swapped)
+                    && chime_phonetics::can_segment_strict_orthography(&s)
+                    && !local_swaps.contains(&s)
+                {
+                    local_swaps.push(s);
+                    if local_swaps.len() >= 2 {
+                        break;
+                    }
+                }
+            }
+            for rep in local_swaps {
+                let rep_out = decode_constrained_beam_single(
+                    mlx_model,
+                    kv_cache,
+                    pinyin_index,
+                    left_context,
+                    app_bundle_id,
+                    prefix_ids,
+                    lora_scales,
+                    closure_token_ids,
+                    closure_weight,
+                    &rep,
+                    &rep,
+                    scheme,
+                    fuzzy,
+                    pangu_spacing,
+                    mode,
+                    beam_width.min(4),
+                    allow_traditional,
+                    is_pinyin_conditioned,
+                    ChannelConfig::default(),
+                    None,
+                );
+                let adjusted: Vec<NeuralBeamCandidate> = rep_out
+                    .cands
+                    .into_iter()
+                    .map(|mut rc| {
+                        rc.channel_cost += bcfg.canonical_swap_channel_cost;
+                        rc.score += bcfg.canonical_swap_channel_cost;
+                        rc.is_exact = false;
+                        rc.consumed_bytes = n;
+                        rc
+                    })
+                    .collect();
+                merge_into_primary(&mut primary_out.cands, adjusted);
+            }
+        }
+    }
+
+    // 3. Cross-syllable adjacent transposition recovery (`dgeuo -> deguo`, `qudnao -> qundao`,
+    // `yagouo -> yaoguo`, `qiyjeia -> qiyejia`, `fayni -> fanyi`): triggered for ANY sentence
+    // length whenever strict GB/T 16159 Pinyin orthography fails!
+    if scheme == ShuangpinScheme::Full
+        && n >= 4
+        && lower_input.bytes().all(|b| b.is_ascii_lowercase())
+        && !is_strict_canonical
     {
         let mut repairs: Vec<String> = Vec::new();
         let raw_b = lower_input.as_bytes();
@@ -252,19 +603,18 @@ pub fn decode_constrained_beam(
             let mut swapped = raw_b.to_vec();
             swapped.swap(i, i + 1);
             if let Ok(s) = String::from_utf8(swapped)
-                && chime_phonetics::can_segment_exact(&s)
+                && chime_phonetics::can_segment_strict_orthography(&s)
                 && !repairs.contains(&s)
             {
                 repairs.push(s);
-                if repairs.len() >= 2 {
+                if repairs.len() >= bcfg.max_swap_repairs {
                     break;
                 }
             }
         }
         if !repairs.is_empty() {
-            const SWAP_CHANNEL_COST: f32 = -2.60;
             for rep in repairs {
-                let rep_cands = decode_constrained_beam_single(
+                let rep_out = decode_constrained_beam_single(
                     mlx_model,
                     kv_cache,
                     pinyin_index,
@@ -283,31 +633,26 @@ pub fn decode_constrained_beam(
                     beam_width,
                     allow_traditional,
                     is_pinyin_conditioned,
+                    ChannelConfig::default(),
                     None,
                 );
-                for mut rc in rep_cands {
-                    rc.channel_cost += SWAP_CHANNEL_COST;
-                    rc.score += SWAP_CHANNEL_COST;
-                    rc.is_exact = false;
-                    rc.consumed_bytes = n;
-                    if let Some(existing) = primary.iter_mut().find(|c| c.text == rc.text) {
-                        if rc.score > existing.score {
-                            *existing = rc;
-                        }
-                    } else {
-                        primary.push(rc);
-                    }
-                }
-            }
-            primary.sort_by(|a, b| b.score.total_cmp(&a.score));
-            primary.truncate(beam_width);
-            if !has_feminine_or_neuter_cue(left_context) {
-                apply_unmarked_pronoun_symmetry(&mut primary);
+                let adjusted: Vec<NeuralBeamCandidate> = rep_out
+                    .cands
+                    .into_iter()
+                    .map(|mut rc| {
+                        rc.channel_cost += bcfg.swap_channel_cost;
+                        rc.score += bcfg.swap_channel_cost;
+                        rc.is_exact = false;
+                        rc.consumed_bytes = n;
+                        rc
+                    })
+                    .collect();
+                merge_into_primary(&mut primary_out.cands, adjusted);
             }
         }
     }
 
-    primary
+    primary_out.cands
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -330,8 +675,13 @@ fn decode_constrained_beam_single(
     beam_width: usize,
     allow_traditional: bool,
     is_pinyin_conditioned: bool,
+    channel_cfg: ChannelConfig,
     beam_cache: Option<&mut RouteABeamCache>,
-) -> Vec<NeuralBeamCandidate> {
+) -> SingleDecodeOut {
+    let empty_out = || SingleDecodeOut {
+        cands: Vec::new(),
+        top_spike1: SurprisalSpike::default(),
+    };
     let n = raw_input.len();
 
     // Exact Bayesian Left-Boundary Token Healing (`P(B | A, C) = P(AB | C) / P(A | C)`):
@@ -380,17 +730,22 @@ fn decode_constrained_beam_single(
         .ensure_prefix_cached_with_scales(prefix_ids, lora_scales, kv_cache)
         .is_err()
     {
-        return Vec::new();
+        return empty_out();
     }
 
     let root_kv = kv_cache.to_beam_kv();
     let root_lps = kv_cache.next_token_log_probs();
     if root_lps.is_empty() {
-        return Vec::new();
+        return empty_out();
     }
 
-    let mut token_edges =
-        pinyin_index.build_token_lattice(raw_input, scheme, fuzzy, allow_traditional);
+    let mut token_edges = pinyin_index.build_token_lattice_with_config(
+        raw_input,
+        scheme,
+        fuzzy,
+        allow_traditional,
+        channel_cfg,
+    );
     let raw_bytes = raw_input.as_bytes();
 
     // Pure consonant skeleton abbreviation (`wsm -> 为什么`, `srf -> 输入+法`, `mywt -> 没有+问题`,
@@ -436,14 +791,17 @@ fn decode_constrained_beam_single(
         && !chime_phonetics::can_segment_exact(lower_input)
         && let Some(comp) = pinyin_index.complete_en_prefix(lower_input)
     {
-        return vec![NeuralBeamCandidate {
-            text: comp.to_string(),
-            score: -0.5,
-            lm_log_prob: -0.5,
-            channel_cost: 0.0,
-            is_exact: true,
-            consumed_bytes: n,
-        }];
+        return SingleDecodeOut {
+            cands: vec![NeuralBeamCandidate {
+                text: comp.to_string(),
+                score: -0.5,
+                lm_log_prob: -0.5,
+                channel_cost: 0.0,
+                is_exact: true,
+                consumed_bytes: n,
+            }],
+            top_spike1: SurprisalSpike::default(),
+        };
     }
 
     // Fast-path single-token skeleton fallback when `!can_reach_end[0]` and input contains vowels
@@ -472,7 +830,10 @@ fn decode_constrained_beam_single(
         skel_cands.sort_by(|a, b| b.score.total_cmp(&a.score));
         skel_cands.truncate(beam_width);
         if !skel_cands.is_empty() {
-            return skel_cands;
+            return SingleDecodeOut {
+                cands: skel_cands,
+                top_spike1: SurprisalSpike::default(),
+            };
         }
     }
 
@@ -510,6 +871,7 @@ fn decode_constrained_beam_single(
         }
     }
 
+    let bcfg = BeamSearchConfig::default();
     if !reused_prefix {
         // Step 0: expand `pos = 0` directly from cached `root_lps` (0 extra GPU calls!).
         let mut best_root_lp = f32::NEG_INFINITY;
@@ -521,7 +883,7 @@ fn decode_constrained_beam_single(
                 best_root_lp = best_root_lp.max(lp + edge.channel_cost);
             }
         }
-        let root_floor = best_root_lp - 14.0;
+        let root_floor = best_root_lp - bcfg.root_prune_margin;
         for edge in &token_edges[0] {
             if !can_reach_end[edge.end] {
                 continue;
@@ -544,6 +906,18 @@ fn decode_constrained_beam_single(
             if surf.is_empty() {
                 continue;
             }
+            // Only flag an extreme cold-start root anomaly (`-tot > 10.5`, e.g. `loange`,
+            // `siyadihuju`) as a localized spike so normal sentence-start entropy (~6-8 nats)
+            // never triggers false rescue!
+            let root_spike = if -tot >= 10.5 {
+                SurprisalSpike {
+                    surprisal: -tot - 3.5,
+                    start: 0,
+                    end: edge.end,
+                }
+            } else {
+                SurprisalSpike::default()
+            };
             buckets[edge.end].push(BeamHyp {
                 text: surf,
                 parent_kv: None,
@@ -552,6 +926,7 @@ fn decode_constrained_beam_single(
                 channel_cost: edge.channel_cost,
                 best_path_total: tot,
                 is_exact: edge.is_exact,
+                spike1: root_spike,
             });
         }
 
@@ -576,6 +951,7 @@ fn decode_constrained_beam_single(
                     channel_cost: chan,
                     best_path_total: tot,
                     is_exact: exact,
+                    spike1: SurprisalSpike::default(),
                 });
             }
         }
@@ -604,7 +980,10 @@ fn decode_constrained_beam_single(
             // Mid-sentence contextual short phrases (`has_left_ctx && n <= 12`, e.g. `上一版`,
             // `业品位`, `主招生`, `体也`) and single syllables must not be penalized for not ending
             // a sentence!
-            ScoringMode::ClosedSentence if !(is_single_syl_input || (has_left_ctx && n <= 12)) => {
+            ScoringMode::ClosedSentence
+                if !(is_single_syl_input
+                    || (has_left_ctx && n <= bcfg.contextual_short_phrase_max_bytes)) =>
+            {
                 closure_weight
             }
             ScoringMode::ClosedSentence
@@ -629,6 +1008,7 @@ fn decode_constrained_beam_single(
                     existing.channel_cost = hyp.channel_cost;
                     existing.best_path_total = hyp.best_path_total;
                     existing.is_exact = hyp.is_exact;
+                    existing.spike1 = hyp.spike1;
                 }
                 existing.lm_lp = new_total_prob - existing.channel_cost;
             } else {
@@ -637,17 +1017,23 @@ fn decode_constrained_beam_single(
         }
         let mut active: Vec<BeamHyp> = merged_map.into_values().collect();
         active.sort_by(|a, b| b.total_score().total_cmp(&a.total_score()));
-        // Keep wider early beam on the first 2 syllables (`pos <= 9`) so garden-path verbs and
-        // 4-char idioms (`守株待兔`, `掩耳盗铃`, `唱了一首老歌`, `盛了一碗米饭`) survive!
-        let pos_beam_cap = if !is_pinyin_conditioned && pos < n && pos <= 6 {
-            (beam_width * 2).min(12)
+        // Proportional early funnel window keeps garden-path openings alive while tapering cleanly
+        // on long sentences without sacrificing sibling candidates.
+        let early_limit = (n / 4).clamp(6, 8);
+        let in_early_funnel = !is_pinyin_conditioned && pos < n && pos <= early_limit;
+        let pos_beam_cap = if in_early_funnel {
+            (beam_width * bcfg.early_funnel_multiplier).min(bcfg.max_early_beam)
         } else {
             beam_width
         };
         active.truncate(pos_beam_cap);
         if pos < n && active.len() > 2 {
             let best_active = active[0].total_score();
-            let prune_margin = if pos > 6 { 9.0 } else { 11.5 };
+            let prune_margin = if in_early_funnel {
+                bcfg.early_prune_margin
+            } else {
+                bcfg.late_prune_margin
+            };
             active.retain(|h| h.total_score() >= best_active - prune_margin);
         }
 
@@ -656,10 +1042,8 @@ fn decode_constrained_beam_single(
         }
 
         if pos == n {
-            let need_closure = eff_closure_weight > 0.0
-                && !closure_token_ids.is_empty()
-                && active.len() >= 2
-                && (active[0].total_score() - active[1].total_score()) < 6.0;
+            let need_closure =
+                eff_closure_weight > 0.0 && !closure_token_ids.is_empty() && !active.is_empty();
             if need_closure {
                 apply_closure_bonus(
                     mlx_model,
@@ -684,6 +1068,9 @@ fn decode_constrained_beam_single(
                 cache.saved_buckets = snap;
                 cache.saved_root_kv = Some(root_kv);
             }
+            let top_spike1 = active
+                .first()
+                .map_or(SurprisalSpike::default(), |h| h.spike1);
             let mut out: Vec<NeuralBeamCandidate> = active
                 .into_iter()
                 .map(|h| NeuralBeamCandidate {
@@ -695,10 +1082,11 @@ fn decode_constrained_beam_single(
                     consumed_bytes: n,
                 })
                 .collect();
-            if !has_feminine_or_neuter_cue(left_context) {
-                apply_unmarked_pronoun_symmetry(&mut out);
-            }
-            return out;
+            apply_pronoun_symmetry(left_context, &mut out);
+            return SingleDecodeOut {
+                cands: out,
+                top_spike1,
+            };
         }
 
         if raw_bytes[pos] == b'\'' {
@@ -755,7 +1143,7 @@ fn decode_constrained_beam_single(
                     best_edge_delta = best_edge_delta.max(row_slice[slot] + edge.channel_cost);
                 }
             }
-            let edge_floor = best_edge_delta - 12.5;
+            let edge_floor = best_edge_delta - bcfg.step_edge_margin;
 
             for edge in next_edges {
                 if !can_reach_end[edge.end] {
@@ -779,6 +1167,8 @@ fn decode_constrained_beam_single(
                     &lower_input[pos..edge.end],
                     pinyin_index,
                 );
+                let step_surprisal = -(step_lp + edge.channel_cost);
+                let spike1 = parent.with_recorded_step(step_surprisal, pos, edge.end);
                 buckets[edge.end].push(BeamHyp {
                     text,
                     parent_kv: Some(new_kv.clone()),
@@ -787,6 +1177,7 @@ fn decode_constrained_beam_single(
                     channel_cost: new_chan,
                     best_path_total: new_tot,
                     is_exact: parent.is_exact && edge.is_exact,
+                    spike1,
                 });
             }
         }
@@ -795,17 +1186,20 @@ fn decode_constrained_beam_single(
     // Fallback for curated English/tech prefix completions (`chatg -> ChatGPT`, `kubern ->
     // Kubernetes`) when no full-span Pinyin parse reached `n`.
     if let Some(comp) = pinyin_index.complete_en_prefix(lower_input) {
-        return vec![NeuralBeamCandidate {
-            text: comp.to_string(),
-            score: -1.0,
-            lm_log_prob: -1.0,
-            channel_cost: 0.0,
-            is_exact: true,
-            consumed_bytes: n,
-        }];
+        return SingleDecodeOut {
+            cands: vec![NeuralBeamCandidate {
+                text: comp.to_string(),
+                score: -1.0,
+                lm_log_prob: -1.0,
+                channel_cost: 0.0,
+                is_exact: true,
+                consumed_bytes: n,
+            }],
+            top_spike1: SurprisalSpike::default(),
+        };
     }
 
-    Vec::new()
+    empty_out()
 }
 
 fn is_obvious_traditional_char(c: char) -> bool {

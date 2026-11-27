@@ -413,14 +413,7 @@ fn main() -> Result<()> {
             } else {
                 String::new()
             };
-            let default_eng = PathBuf::from("/usr/share/dict/words");
-            let eng_ref = english_words.as_deref().or_else(|| {
-                if default_eng.exists() {
-                    Some(default_eng.as_path())
-                } else {
-                    None
-                }
-            });
+            let eng_ref = english_words.as_deref();
 
             let t0 = Instant::now();
             let mut lex = build_comprehensive_lexicon(&jieba_text, eng_ref, min_freq);
@@ -1215,15 +1208,29 @@ fn run_golden_eval(
             {
                 comp.text.clone()
             } else {
-                let mut extra = Vec::new();
-                if c.keys.len() >= 6 {
+                let mut extra: Vec<(String, f32, bool)> = Vec::new();
+                if c.keys.len() >= 2 {
+                    let bm_cfg = chime_neural::BeamSearchConfig::default();
+                    let fuzzy_def = chime_phonetics::FuzzyConfig::default();
                     for lc in &stage1 {
                         if lc.consumed_bytes == c.keys.len()
-                            && lc.kind == chime_decoder::MatchKind::Exact
-                            && !extra.contains(&lc.text)
+                            && matches!(
+                                lc.kind,
+                                chime_decoder::MatchKind::Exact
+                                    | chime_decoder::MatchKind::Fuzzy
+                                    | chime_decoder::MatchKind::TypoCorrected
+                            )
+                            && !extra.iter().any(|(t, _, _)| t == &lc.text)
                         {
-                            extra.push(lc.text.clone());
-                            if extra.len() >= 4 {
+                            let (chan_cost, is_exact) = match lc.kind {
+                                chime_decoder::MatchKind::Exact => (0.0, true),
+                                chime_decoder::MatchKind::Fuzzy => {
+                                    (-(fuzzy_def.fuzzy_penalty + 0.85), false)
+                                }
+                                _ => (bm_cfg.swap_channel_cost, false),
+                            };
+                            extra.push((lc.text.clone(), chan_cost, is_exact));
+                            if extra.len() >= 8 {
                                 break;
                             }
                         }
@@ -1246,7 +1253,7 @@ fn run_golden_eval(
                         chime_neural::ScoringMode::ClosedSentence
                     },
                     beam_width: 8,
-                    extra_exact_candidates: extra,
+                    extra_stage1_candidates: extra,
                 };
                 route_a_worker
                     .decode_route_a_with_budget(req, std::time::Duration::from_millis(250))
@@ -1579,75 +1586,56 @@ fn run_large_bench(
             } else {
                 chime_neural::ScoringMode::ClosedSentence
             };
-            let mut ncands = slm.decode_constrained(
-                left_ctx,
-                app,
-                keys,
-                scheme,
-                chime_phonetics::FuzzyConfig::default(),
-                true,
-                mode,
-                beam_width,
-            );
-            // Pure-Bayesian Exact-Lexicon Hypothesis Fusion:
-            // Collect exact-pinyin full-span dictionary/idiom/pack proposals (ZERO static unigram
-            // score!) and score them on the exact same `log P_LM(Y | C) (+ closure)` scale so
-            // rare-start 4-char idioms, classical verses, and `.imepack` terms never suffer beam
-            // horizon pruning!
+            let fuzzy_cfg = chime_phonetics::FuzzyConfig::default();
             let stage1_ctx = DecodeContext {
                 left_context: left_ctx,
                 app_bundle_id: app,
                 scheme,
-                fuzzy: chime_phonetics::FuzzyConfig::default(),
+                fuzzy: fuzzy_cfg,
                 pangu_spacing: true,
                 uppercase_triggers_english: true,
                 english_auto_correct: true,
                 now_epoch_secs: 1_000,
             };
-            if keys.len() >= 6 && !is_single_syl_ctx {
+            let mut extra_items: Vec<(String, f32, bool)> = Vec::new();
+            if keys.len() >= 2 && !is_single_syl_ctx {
                 let lex_cands = decoder.decode(keys, &base_lex, &user_store, &stage1_ctx);
-                let mut extra_texts: Vec<String> = Vec::new();
+                let bm_cfg = chime_neural::BeamSearchConfig::default();
                 for lc in lex_cands {
                     if lc.consumed_bytes == keys.len()
-                        && lc.kind == chime_decoder::MatchKind::Exact
-                        && !ncands.iter().any(|c| c.text == lc.text)
-                        && !extra_texts.contains(&lc.text)
+                        && matches!(
+                            lc.kind,
+                            chime_decoder::MatchKind::Exact
+                                | chime_decoder::MatchKind::Fuzzy
+                                | chime_decoder::MatchKind::TypoCorrected
+                        )
+                        && !extra_items.iter().any(|(t, _, _)| t == &lc.text)
                     {
-                        extra_texts.push(lc.text);
-                        if extra_texts.len() >= 4 {
+                        let (chan_cost, is_exact) = match lc.kind {
+                            chime_decoder::MatchKind::Exact => (0.0, true),
+                            chime_decoder::MatchKind::Fuzzy => {
+                                (-(fuzzy_cfg.fuzzy_penalty + 0.85), false)
+                            }
+                            _ => (bm_cfg.swap_channel_cost, false),
+                        };
+                        extra_items.push((lc.text, chan_cost, is_exact));
+                        if extra_items.len() >= 8 {
                             break;
                         }
                     }
                 }
-                if !extra_texts.is_empty() {
-                    let eff_mode = if !left_ctx.trim().is_empty() && keys.len() <= 12 {
-                        chime_neural::ScoringMode::OpenContextual
-                    } else {
-                        mode
-                    };
-                    let lps = slm.score_candidates_exact_bayesian_with_pinyin(
-                        left_ctx,
-                        app,
-                        keys,
-                        scheme,
-                        &extra_texts,
-                        eff_mode,
-                    );
-                    for (txt, lp) in extra_texts.into_iter().zip(lps) {
-                        if lp.is_finite() {
-                            ncands.push(chime_neural::NeuralBeamCandidate {
-                                text: txt,
-                                score: lp,
-                                lm_log_prob: lp,
-                                channel_cost: 0.0,
-                                is_exact: true,
-                                consumed_bytes: keys.len(),
-                            });
-                        }
-                    }
-                    ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
-                }
             }
+            let ncands = slm.decode_constrained_with_proposals(
+                left_ctx,
+                app,
+                keys,
+                scheme,
+                fuzzy_cfg,
+                true,
+                mode,
+                beam_width,
+                &extra_items,
+            );
             ncands.into_iter().map(|c| c.text).collect()
         } else {
             let ctx = DecodeContext {

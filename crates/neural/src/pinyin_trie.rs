@@ -4,13 +4,57 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use chime_phonetics::{
-    FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact, canonical_syllable,
-    expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
+    FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact,
+    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_pair,
+    generate_typo_variants, lookup_syllable,
 };
 use serde::Deserialize;
 use smallvec::SmallVec;
 
 use crate::NeuralError;
+
+/// Acoustic and keystroke channel log-probability parameters for [`TokenPinyinIndex`] lattice
+/// construction (centralized to eliminate scattered magic numbers and length cliffs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelConfig {
+    /// Additional log-prob cost layered on top of `FuzzyConfig::fuzzy_penalty`.
+    pub fuzzy_extra_cost: f32,
+    /// Base channel cost for typo recovery on non-canonical spans (`shaung`, `meo`, `tonh`).
+    pub typo_noncanonical_base_cost: f32,
+    /// Base channel cost for immediate QWERTY neighbor recovery on canonical syllables.
+    pub typo_canonical_neighbor_base_cost: f32,
+    /// Maximum Euclidean keyboard edit cost accepted for canonical-syllable neighbor recovery.
+    pub max_canonical_neighbor_dist_cost: f32,
+    /// Channel cost for shared-boundary nasal/velar consonant elision (`chunuan -> chun+nuan`).
+    pub geminate_elision_cost: f32,
+    /// Log-prob penalty applied to Traditional-only CJK tokens when left context is Simplified.
+    pub traditional_penalty: f32,
+    /// Maximum motor-typo syllables permitted inside a single multi-syllable vocabulary token.
+    pub max_typos_per_token: u8,
+    /// When `true`, also expand immediate QWERTY neighbor-key substitutions on already-valid
+    /// canonical syllables (`shuruga -> shurufa`). Enabled on-demand via surprisal-spike rescue so
+    /// clean sentences pay zero fan-out overhead regardless of sentence length.
+    pub enable_canonical_neighbor_typos: bool,
+    /// Optional byte window `(start, end)` restricting canonical neighbor-key expansion to the
+    /// localized surprisal-spike region (`None` expands across the full buffer).
+    pub canonical_neighbor_window: Option<(usize, usize)>,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            fuzzy_extra_cost: 0.85,
+            typo_noncanonical_base_cost: 2.10,
+            typo_canonical_neighbor_base_cost: 3.80,
+            max_canonical_neighbor_dist_cost: 1.35,
+            geminate_elision_cost: 2.40,
+            traditional_penalty: 4.80,
+            max_typos_per_token: 1,
+            enable_canonical_neighbor_typos: false,
+            canonical_neighbor_window: None,
+        }
+    }
+}
 
 /// A single phonetically valid token transition spanning `start..end` in the raw keystroke buffer.
 #[derive(Debug, Clone, Copy)]
@@ -413,16 +457,35 @@ impl TokenPinyinIndex {
             .map_or("", String::as_str)
     }
 
-    /// Builds the acoustic syllable lattice and expands it through the Pinyin-to-Token Trie to
-    /// produce `edges_by_start[pos]` for every byte position `0..raw_input.len()`.
+    /// Builds the acoustic syllable lattice using default [`ChannelConfig`] and expands it through
+    /// the Pinyin-to-Token Trie to produce `edges_by_start[pos]` for `0..raw_input.len()`.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn build_token_lattice(
         &self,
         raw_input: &str,
         scheme: ShuangpinScheme,
         fuzzy: FuzzyConfig,
         allow_traditional: bool,
+    ) -> Vec<Vec<TokenEdge>> {
+        self.build_token_lattice_with_config(
+            raw_input,
+            scheme,
+            fuzzy,
+            allow_traditional,
+            ChannelConfig::default(),
+        )
+    }
+
+    /// Builds the acoustic syllable lattice with explicit [`ChannelConfig`] parameters.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn build_token_lattice_with_config(
+        &self,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        allow_traditional: bool,
+        cfg: ChannelConfig,
     ) -> Vec<Vec<TokenEdge>> {
         type SylEdge = (usize, SyllableId, f32, bool, bool);
         type TrieWalkState = (usize, usize, f32, bool, u8, u8);
@@ -434,7 +497,8 @@ impl TokenPinyinIndex {
         }
         let lower = raw_input.to_ascii_lowercase();
         let bytes = lower.as_bytes();
-        let full_is_canonical = scheme == ShuangpinScheme::Full && can_segment_exact(&lower);
+        let full_is_canonical =
+            scheme == ShuangpinScheme::Full && can_segment_strict_orthography(&lower);
 
         // 1. Build syllable-level acoustic channel edges: `(end, SyllableId, channel_cost,
         //    is_exact, is_typo)`
@@ -452,13 +516,17 @@ impl TokenPinyinIndex {
                 continue;
             }
 
-            let max_end = (start + 6).min(n);
+            let max_end = (start + 7).min(n);
             for end in (start + 1)..=max_end {
                 if bytes[end - 1] == b'\'' {
                     break;
                 }
                 let slice = &lower[start..end];
-                let canonical = lookup_syllable(slice);
+                let canonical = if slice.len() <= 6 {
+                    lookup_syllable(slice)
+                } else {
+                    None
+                };
                 if let Some(sid) = canonical {
                     syl_edges[start].push((end, sid, 0.0, true, false));
                     // Shared-boundary nasal/velar elision (`chunuan -> chun + nuan`,
@@ -470,52 +538,85 @@ impl TokenPinyinIndex {
                         && end < n
                         && matches!(bytes[end], b'a' | b'e' | b'i' | b'o' | b'u' | b'v')
                     {
-                        syl_edges[start].push((end - 1, sid, -2.40, false, true));
+                        syl_edges[start].push((
+                            end - 1,
+                            sid,
+                            -cfg.geminate_elision_cost,
+                            false,
+                            true,
+                        ));
                     }
-                    // Tight single-key QWERTY neighbor recovery on valid syllables (`shulufa ->
-                    // shurufa`, `shuruga -> shurufa`, `biyao -> buyao`, `landaoni -> kandaoni`) at
-                    // a strong `-4.45` channel cost, restricted to immediate physical neighbors
-                    // (`edit.cost() <= 1.35`) so clean long sentences stay fast and never misfire!
-                    if n <= 28 && slice.len() >= 2 {
+                    // Tight single-key QWERTY neighbor recovery on valid syllables (only when
+                    // explicitly enabled by surprisal-spike rescue — zero overhead on clean
+                    // sentences and zero arbitrary sentence-length cutoff!).
+                    let in_neighbor_window = cfg
+                        .canonical_neighbor_window
+                        .is_none_or(|(lo, hi)| end > lo && start < hi);
+                    if cfg.enable_canonical_neighbor_typos && in_neighbor_window && slice.len() >= 2
+                    {
                         for (tid_syl, edit) in generate_typo_variants(slice) {
                             if tid_syl != sid
-                                && matches!(edit, TypoEdit::NeighborKey { cost } if cost <= 1.35)
+                                && matches!(
+                                    edit,
+                                    TypoEdit::NeighborKey { cost }
+                                        if cost <= cfg.max_canonical_neighbor_dist_cost
+                                )
                             {
-                                let cost = -edit.cost() - 4.55;
+                                let cost = -edit.cost() - cfg.typo_canonical_neighbor_base_cost;
                                 syl_edges[start].push((end, tid_syl, cost, false, true));
                             }
                         }
                     }
                 }
-                // Always run fuzzy expansion for `len >= 2` EVEN when `slice` itself is NOT a
+                // Always run fuzzy expansion for `2..=6` EVEN when `slice` itself is NOT a
                 // canonical Mandarin syllable (e.g. `suang -> shuang`, `diang -> dian`,
                 // `zuang -> zhuang`, `cuang -> chuang`, `tiang -> tian`)!
-                if slice.len() >= 2 {
+                // On a standalone canonical single-syllable input (`gen`), exact-pinyin characters
+                // must strongly lead fuzzy equivalents (`geng -> 更`) so cold-start unigram skew
+                // never usurps Slot #1.
+                if (2..=6).contains(&slice.len()) {
+                    let single_syl_exact_extra = if start == 0 && end == n && canonical.is_some() {
+                        2.0
+                    } else {
+                        0.0
+                    };
                     for (fid, fcost) in fuzzy.expand(slice) {
                         if Some(fid) != canonical {
-                            syl_edges[start].push((end, fid, -fcost - 0.85, false, false));
+                            syl_edges[start].push((
+                                end,
+                                fid,
+                                -fcost - cfg.fuzzy_extra_cost - single_syl_exact_extra,
+                                false,
+                                false,
+                            ));
                         }
                     }
                 }
                 if canonical.is_none() && slice.len() >= 2 {
                     // Always allow transposition (`tina -> tian`, `yuo -> you`, `zia -> zai`,
                     // `yign -> ying`) and extra-repeat typos on non-syllable spans; allow QWERTY
-                    // neighbor substitutions on non-canonical inputs. Also chain fuzzy expansion
-                    // after typo repair so `mohuyign -> ying (typo) -> yin (fuzzy)` recovers!
+                    // neighbor substitutions whenever strict orthography fails (`suoyicaimeoqu`)
+                    // OR inside an on-demand localized surprisal-spike rescue window (e.g.
+                    // `qianean` falsely segmenting as `qian+e+an` while intending `qian+wan`).
+                    let in_neighbor_window = cfg
+                        .canonical_neighbor_window
+                        .is_none_or(|(lo, hi)| end > lo && start < hi);
+                    let allow_neighbor = !full_is_canonical
+                        || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
                     for (tid_syl, edit) in generate_typo_variants(slice) {
                         let is_swap_or_rep = matches!(
                             edit,
                             TypoEdit::AdjacentSwap { .. } | TypoEdit::ExtraRepeat { .. }
                         );
-                        if !full_is_canonical || is_swap_or_rep {
-                            let cost = -edit.cost() - 2.10;
+                        if allow_neighbor || is_swap_or_rep {
+                            let cost = -edit.cost() - cfg.typo_noncanonical_base_cost;
                             syl_edges[start].push((end, tid_syl, cost, false, true));
                             for (fid, fcost) in fuzzy.expand(canonical_syllable(tid_syl)) {
                                 if fid != tid_syl {
                                     syl_edges[start].push((
                                         end,
                                         fid,
-                                        cost - fcost - 0.85,
+                                        cost - fcost - cfg.fuzzy_extra_cost,
                                         false,
                                         true,
                                     ));
@@ -548,7 +649,7 @@ impl TokenPinyinIndex {
                 let node = &self.nodes[node_idx];
                 for &tid in &node.token_ids {
                     let trad_pen = if !allow_traditional && self.is_traditional_token(tid) {
-                        -4.80
+                        -cfg.traditional_penalty
                     } else {
                         0.0
                     };
@@ -576,7 +677,7 @@ impl TokenPinyinIndex {
                             // `zici -> 支持`) inside a multi-syllable token, while capping motor
                             // typos to at most 1 per token!
                             let next_typos = typo_cnt + u8::from(is_typo2);
-                            if next_typos > 1 {
+                            if next_typos > cfg.max_typos_per_token {
                                 continue;
                             }
                             if let Some(&child) = node.children.get(&sid2) {
@@ -620,12 +721,19 @@ impl TokenPinyinIndex {
                             *entry = (3.05, true, true);
                         }
                     } else if let Some(tids) = self.en_exact.get(slice) {
+                        let is_embedded_lower =
+                            !(start == 0 && end == n) && &raw_input[start..end] == slice;
                         let en_pen = if is_known_tech {
                             0.35
                         } else if slice.len() <= 2 && lookup_syllable(slice).is_some() {
                             -2.80
                         } else if slice.len() <= 3 && can_segment_exact(slice) {
                             -1.80
+                        } else if is_embedded_lower
+                            && chime_phonetics::classify_code_switch(slice)
+                                == chime_phonetics::CodeSwitchSignal::AmbiguousAscii
+                        {
+                            -2.20
                         } else {
                             -0.65
                         };
@@ -659,5 +767,115 @@ impl TokenPinyinIndex {
         }
 
         edges_by_start
+    }
+
+    /// Aligns `candidate_text` against a pre-built token lattice, returning the minimum phonetic /
+    /// keystroke channel cost `(channel_cost, is_exact)`.
+    #[must_use]
+    pub fn exact_channel_cost_with_lattice(
+        &self,
+        raw_input: &str,
+        candidate_text: &str,
+        lattice: &[Vec<TokenEdge>],
+    ) -> Option<(f32, bool)> {
+        let n = raw_input.len();
+        if n == 0 || candidate_text.is_empty() || lattice.len() != n {
+            return None;
+        }
+        // Strip Pangu ASCII spaces inserted between CJK/ASCII boundaries so pure token strings
+        // align cleanly against `self.id_to_token`.
+        let compact: String = candidate_text.chars().filter(|&c| c != ' ').collect();
+        let m = compact.len();
+        if m == 0 {
+            return None;
+        }
+        let raw_b = raw_input.as_bytes();
+        // Sparse DP over `(raw_pos, text_byte_pos) -> (best_cost, is_exact)`.
+        let mut dp: HashMap<(usize, usize), (f32, bool)> = HashMap::new();
+        dp.insert((0, 0), (0.0, true));
+        for pos in 0..n {
+            let mut cur_states: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
+            for (&(rp, tp), &(cost, ex)) in &dp {
+                if rp == pos {
+                    cur_states.push((tp, cost, ex));
+                }
+            }
+            if cur_states.is_empty() {
+                continue;
+            }
+            if raw_b[pos] == b'\'' {
+                for (tp, cost, ex) in cur_states {
+                    let e = dp
+                        .entry((pos + 1, tp))
+                        .or_insert((f32::NEG_INFINITY, false));
+                    if cost > e.0 {
+                        *e = (cost, ex);
+                    }
+                }
+                continue;
+            }
+            for (tp, cost, ex) in cur_states {
+                let rem = &compact[tp..];
+                if rem.is_empty() {
+                    continue;
+                }
+                for edge in &lattice[pos] {
+                    let tok = self.token_str(edge.token_id);
+                    if !tok.is_empty() && rem.starts_with(tok) {
+                        let next_tp = tp + tok.len();
+                        let next_cost = cost + edge.channel_cost;
+                        let next_ex = ex && edge.is_exact;
+                        let e = dp
+                            .entry((edge.end, next_tp))
+                            .or_insert((f32::NEG_INFINITY, false));
+                        if next_cost > e.0 || ((next_cost - e.0).abs() < 1e-6 && next_ex && !e.1) {
+                            *e = (next_cost, next_ex);
+                        }
+                    }
+                }
+            }
+        }
+        dp.get(&(n, m)).copied()
+    }
+
+    /// Computes the exact minimum acoustic/keystroke channel cost `(channel_cost, is_exact)` for
+    /// aligning `candidate_text` to `raw_input` under the exact same [`ChannelConfig`] &
+    /// [`FuzzyConfig`] used by Route A beam search.
+    #[must_use]
+    pub fn exact_channel_cost(
+        &self,
+        raw_input: &str,
+        candidate_text: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        allow_traditional: bool,
+        cfg: ChannelConfig,
+    ) -> Option<(f32, bool)> {
+        let primary_lattice =
+            self.build_token_lattice_with_config(raw_input, scheme, fuzzy, allow_traditional, cfg);
+        if let Some(res) =
+            self.exact_channel_cost_with_lattice(raw_input, candidate_text, &primary_lattice)
+        {
+            return Some(res);
+        }
+        if !cfg.enable_canonical_neighbor_typos && scheme == ShuangpinScheme::Full {
+            let neighbor_lattice = self.build_token_lattice_with_config(
+                raw_input,
+                scheme,
+                fuzzy,
+                allow_traditional,
+                ChannelConfig {
+                    enable_canonical_neighbor_typos: true,
+                    canonical_neighbor_window: None,
+                    ..cfg
+                },
+            );
+            return self.exact_channel_cost_with_lattice(
+                raw_input,
+                candidate_text,
+                &neighbor_lattice,
+            );
+        }
+        None
     }
 }

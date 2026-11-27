@@ -12,24 +12,24 @@
 
 **Chime** is a 100% offline, zero-telemetry neural Chinese Pinyin Input Method Editor (IME) for **macOS 15+ on Apple Silicon**, written in **Rust** and **Swift 6**.
 
-In **`v0.14.0`**, Chime combines a **$< 0.8\text{ ms}$ zero-copy `mmap` lattice fast path (`CHIMED02`)** with **asynchronous Route A Pinyin-constrained autoregressive beam search** over an intact **28-layer 4-bit MLX `Qwen3-0.6B` softly KL-distilled from `Qwen3-14B-Base`** (`256.7 MB`, lossless `36,864` full-CJK vocab), accelerated **4.07×** on Metal with fused projections and paired with hot-swappable **28L Rank-8 Multi-LoRA `.imepack` cartridges** — achieving **`90.00%`** Acc@1 on the strictly blind 1,010-case holdout and **`79.70%`** on the strictly blind 10,000-sentence holdout.
+In **`v0.15.0`**, Chime combines a **$< 0.8\text{ ms}$ lossless-slimmed `mmap` lattice fast path (`CHIMED02`, `19.7 MB`)** with **first-principles Dual-Proposal Bayesian Route A beam search** over a **BI-18L mixed-precision MLX `Qwen3` (`e8_l4`: 8-bit `embed_tokens`/`lm_head` + 4-bit 18 layers, `190.3 MB`, lossless `36,864` full-CJK vocab)** distilled from `Qwen3-14B-Base` with exact tail-bucket Soft-KL, paired with **localized surprisal-spike typo rescue** and hot-swappable **18L Rank-8 Multi-LoRA `.imepack` cartridges** — shrinking the installer by **25% (`257 MB → 192 MB`)** and speeding up 10k-sentence `p50` latency **3.01×** while pushing strictly blind holdout accuracy to **`90.59%`** (`1,010` cases) and **`80.93%`** (`10,000` open-domain blind holdout, `Hit@5 90.58%`).
 
 - **Website & Interactive Live Demo**: [https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **Research Paper (PDF)**: [*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf) ([Typst & arXiv LaTeX sources in `paper/`](paper/))
-- **Latest macOS Installer & Cartridges (`v0.14.1`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **Latest macOS Installer & Cartridges (`v0.15.0`)**: [GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## Download & Installation (`v0.14.1`)
+## Download & Installation (`v0.15.0`)
 
 Requires **macOS 15.0 (Sequoia) or newer** on **Apple Silicon (`M1` / `M2` / `M3` / `M4`)**.
 
 | Artifact | Direct Download | Size | Notes |
 | :--- | :--- | ---: | :--- |
-| **macOS Installer (`.pkg`)** | [**`Chime-v0.14.1-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | Installs & migrates Chime into user-writable `~/Library/Input Methods/Chime.app` (cleaning legacy `/Library` copy) so all future in-app updates run **silently with zero passwords** |
-| **Portable App Bundle (`.zip`)** | [**`Chime-v0.14.1-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
-| **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `24 MB` | `266,816` classical entries + `231,593` `Tab` chains + 28L Rank-8 LoRA (`9.66 MB`) |
-| **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `8.9 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + 28L Rank-8 LoRA (`9.66 MB`) |
+| **macOS Installer (`.pkg`)** | [**`Chime-v0.15.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `192 MB` | Installs & migrates Chime into user-writable `~/Library/Input Methods/Chime.app` (cleaning legacy `/Library` copy) so all future in-app updates run **silently with zero passwords** |
+| **Portable App Bundle (`.zip`)** | [**`Chime-v0.15.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `192 MB` | Unzip, drag `Chime.app` into `~/Library/Input Methods/`, and open once |
+| **Classical Poetry & Guwen Pack** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `17 MB` | `266,816` classical entries + `231,593` `Tab` chains + 18L Rank-8 LoRA (`6.21 MB`) |
+| **Developer Bilingual Pack** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `5.8 MB` | Systems/AI/Cloud bilingual lexicon + exact casing + 18L Rank-8 LoRA (`6.21 MB`) |
 | **SHA-256 Checksums** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | Release integrity checksums |
 
 > **Apple Notarized + Seamless Passwordless Future Upgrades (`v0.14.0`)**:
@@ -101,12 +101,13 @@ Keystrokes + Sliding 96-Char Context + Host Bundle ID
 | `v0.10.0` · 6L `Qwen3-0.6B` Rerank (24K) | `64.2 MB` | — | `86.01%` | `70.89%` | — | — |
 | `v0.12.2` · 8L `Qwen3-4B` Distill Rerank (36K) | `87.8 MB` | — | `89.51%` | `75.84%` | — | `66.45%` |
 | `v0.13.0` · 8L `Qwen3-4B` Distill + Route A | `87.8 MB` | — | `91.49%` | `83.66%` | `77.00%` | `75.31%` |
-| **`v0.14.0` · 28L `Qwen3-14B` Distill + 4× Fused Route A** | **`256.7 MB`** | **`93.33%`** (`Hit@3 98.3%`) | **`93.16%`** (`Hit@5 97.9%`) | **`90.00%`** (`+6.34%`) | **`81.34%`** (`+4.34%`) | **`79.70%`** (`+4.39%`) |
+| `v0.14.0` · 28L `Qwen3-14B` Distill + 4× Fused Route A | `256.7 MB` | `93.33%` (`Hit@3 98.3%`) | `93.16%` (`Hit@5 97.9%`) | `90.00%` (`+6.34%`) | `81.34%` (`+4.34%`) | `79.70%` (`+4.39%`) |
+| **`v0.15.0` · BI-18L `e8_l4` Mixed-Precision + Dual-Proposal Route A** | **`190.3 MB` (`-26%`)** | **`93.33%+`** | **`93.80%`** (`Hit@5 98.4%`) | **`90.59%`** (`Hit@5 95.5%`) | **`81.82%`** (`Hit@5 91.5%`) | **`80.93%`** (**`+1.23%`**, `Hit@5 90.6%`) |
 
-- **`v0.14.0` Highlights**:
-  - `test_holdout.tsv` (1,010 blind): Science/Medical/Legal `100%`, Finance/Business `100%`, Idioms/Classics `100%`, all 3 Shuangpin schemes `100%`, Fuzzy/Dialect `97.50%`, Contextual Dialogue `95.00%`, `MRR 0.9100`.
-  - `test_holdout_10k.tsv` (10,000 blind): Contextual Sentences `89.53%`, Tech/Developer Prose `85.58%`, Contextual Single-Char `85.14%`, `Hit@5 87.36%`, `MRR 0.8303`.
-  - **4.07× Metal Inference Speedup**: Same 28L model on `dev_suite` dropped from `351.8 s -> 86.5 s` (`p50 278 ms -> 71.1 ms`); `contextual_open` `p50` dropped from `21.2 ms -> 6.44 ms`.
+- **`v0.15.0` Highlights**:
+  - `test_holdout.tsv` (1,010 blind): **Six categories hit `100.00%`** (QWERTY motor typos `100%`, polyphone context `100%`, all 3 Shuangpin schemes `100%`, Idioms/Classics `100%`, Science/Medical/Legal `100%`, Finance/Business `100%`), `Hit@3 94.95% (+3.07%)`, `Hit@5 95.54% (+3.16%)`, `MRR 0.9282`.
+  - `test_holdout_10k.tsv` (10,000 blind): First release crossing **`80%` Acc@1 (`80.93%`, `+1.23%`)** and **`90%` Hit@5 (`90.58%`, `+3.22%`)**, `MRR 0.8518 (+0.0215)`.
+  - **Smaller & 3× Faster**: `.pkg` shrinks `257 MB → 192 MB` (`-25.3%`), unpacked `.app` `315 MB → 232 MB` (`-26.3%`), lossless `core.imedict` `36.8 MB → 19.7 MB` (`-46.5%`); 10k blind `p50` drops `293.4 ms → 97.6 ms` (**3.01× faster**) and `p99` drops `1044 ms → 484.9 ms` (**2.15× faster**).
 
 ---
 

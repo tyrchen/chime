@@ -78,7 +78,7 @@ build-core-dict: build-models build-classics-corpus
 		[c_lines.append(f"{p[0]}\t{p[1]}\t{(float(p[2]) - 1.25 if len(p[0]) <= 4 else float(p[2])):.4f}") for ln in (d/"classics_core_lexicon.tsv").read_text("utf-8").splitlines() if "\t" in ln for p in [ln.split("\t")] if len(p) >= 3 and len(p[0]) >= 2]; \
 		(d/"merged_core_lexicon.tsv").write_text(m + ("\n" if not m.endswith("\n") else "") + "\n".join(c_lines) + "\n", "utf-8")'; \
 		if [ -n "$(JIEBA_DICT)" ] && [ -f "$(JIEBA_DICT)" ]; then \
-			MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 2; \
+			MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --jieba-dict "$(JIEBA_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)" --min-freq 15; \
 		else \
 			MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- dict-build-base -o "$(CORE_DICT)" --extra-tsv "$(MERGED_CORE_LEX)" --continuations "$(CLASSICS_CORE_CONT)" --ngrams "$(NGRAMS_TSV)"; \
 		fi; \
@@ -138,7 +138,7 @@ macos-bundle: build-core-dict build-icons swift-build
 	else \
 		codesign --force --deep --sign - "$(APP_BUNDLE)"; \
 	fi
-	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 28L 4-bit MLX Metal)"
+	@echo "Built $(APP_BUNDLE) v$(VERSION) (macOS 14.0+ compatible, bundled mlx.metallib + Qwen3 BI-18L e8_l4 MLX Metal)"
 
 build-public-packs: build-classics-corpus
 	@mkdir -p "$(PACKS_BUILD_DIR)" "$(RELEASE_DIR)"
@@ -150,7 +150,7 @@ build-public-packs: build-classics-corpus
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/classics-poetry.imepack" \
 		--id classics-poetry \
 		--name "古典诗词曲赋与成语全库" \
-		--description "收录唐诗、宋词、元曲、诗经、楚辞、四书、古文名篇及新华成语歇后语共 26.6 万词条与 23.1 万条全篇 Tab 续写链，含 28L Rank-8 古汉语 LoRA" \
+		--description "收录唐诗、宋词、元曲、诗经、楚辞、四书、古文名篇及新华成语歇后语共 26.6 万词条与 23.1 万条全篇 Tab 续写链，含 18L Rank-8 古汉语 LoRA" \
 		--routing classical \
 		--lora-scale 1.0 \
 		--tsv "$(DIST_DIR)/classics_pack_lexicon.tsv" \
@@ -159,7 +159,7 @@ build-public-packs: build-classics-corpus
 	@MLX_RS_METAL_PATH="$(MLX_METAL_OUT_DIR)" cargo run --release -p chime-cli -- pack build "$(PACKS_BUILD_DIR)/tech-developer.imepack" \
 		--id tech-developer \
 		--name "开发者中英技术双语包" \
-		--description "面向系统编程、Rust/Swift、端侧 AI 与云原生的中英双语术语库及 28L Rank-8 技术语境 LoRA，在终端与 IDE 中自动满权激活" \
+		--description "面向系统编程、Rust/Swift、端侧 AI 与云原生的中英双语术语库及 18L Rank-8 技术语境 LoRA，在终端与 IDE 中自动满权激活" \
 		--routing developer \
 		--lora-scale 1.0 \
 		--tsv "$(DIST_DIR)/tech_pack_lexicon.tsv" \

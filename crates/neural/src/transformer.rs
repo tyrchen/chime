@@ -8,13 +8,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::NeuralError;
 
-/// Optional MLX affine quantization metadata (`group_size = 64, bits = 4`).
+/// Optional MLX affine quantization metadata (`group_size = 64, bits = 4`, with optional
+/// mixed-precision override for `embed_tokens` / tied `lm_head`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuantizationConfig {
-    /// Group size along input dimension (typically `64`).
+    /// Group size along input dimension for transformer layers (typically `64` or `32`).
     pub group_size: i32,
-    /// Bits per quantized weight (`4` or `8`).
+    /// Bits per quantized weight for transformer layers (`4`, `6`, or `8`).
     pub bits: i32,
+    /// Optional precision override for `embed_tokens` and tied `lm_head` (`4`, `6`, `8`, or `16`
+    /// when stored as dense `FP16`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_bits: Option<i32>,
+    /// Optional group size override for `embed_tokens` and tied `lm_head`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_group_size: Option<i32>,
 }
 
 /// Hyperparameters for the compact Causal Transformer reranker (`config.json`).
