@@ -202,6 +202,7 @@ release-artifacts: macos-bundle build-public-packs
 		"Chime-macos-arm64.zip" \
 		"classics-poetry.imepack.zip" \
 		"tech-developer.imepack.zip" > SHA256SUMS.txt
+	@python3 -c 'import json, pathlib; sums = dict(reversed(ln.split()) for ln in pathlib.Path("$(RELEASE_DIR)/SHA256SUMS.txt").read_text().splitlines() if ln.strip()); pathlib.Path("site/releases-manifest.json").write_text(json.dumps({"version": "$(VERSION)", "pkg_sha256": sums["Chime-macos-arm64.pkg"], "zip_sha256": sums["Chime-macos-arm64.zip"], "classics_sha256": sums["classics-poetry.imepack.zip"], "tech_sha256": sums["tech-developer.imepack.zip"]}, indent=2) + "\n")'
 	@echo "Packaged release artifacts in $(RELEASE_DIR):"
 	@ls -lh "$(RELEASE_DIR)"
 
@@ -237,6 +238,7 @@ release-notarize: macos-bundle build-public-packs
 		"Chime-macos-arm64.zip" \
 		"classics-poetry.imepack.zip" \
 		"tech-developer.imepack.zip" > SHA256SUMS.txt
+	@python3 -c 'import json, pathlib; sums = dict(reversed(ln.split()) for ln in pathlib.Path("$(RELEASE_DIR)/SHA256SUMS.txt").read_text().splitlines() if ln.strip()); pathlib.Path("site/releases-manifest.json").write_text(json.dumps({"version": "$(VERSION)", "pkg_sha256": sums["Chime-macos-arm64.pkg"], "zip_sha256": sums["Chime-macos-arm64.zip"], "classics_sha256": sums["classics-poetry.imepack.zip"], "tech_sha256": sums["tech-developer.imepack.zip"]}, indent=2) + "\n")'
 	@echo "Successfully signed, notarized, and stapled all Chime v$(VERSION) release artifacts!"
 	@cat "$(RELEASE_DIR)/SHA256SUMS.txt"
 
