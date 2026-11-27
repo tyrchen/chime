@@ -113,6 +113,8 @@ pub struct VoiceConfig {
     pub auto_punctuation: bool,
     /// Opt-in removal of redundant spoken phrases from the final transcript.
     pub tidy_dictation: bool,
+    /// Offer a dictionary correction on strong matches; never apply it automatically.
+    pub lexicon_suggestions: bool,
     /// Show recognized text live while speaking.
     pub live_preview: bool,
     /// Minimum gap between live-preview requests (`200..=5000` ms).
@@ -135,6 +137,7 @@ impl Default for VoiceConfig {
             prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。".to_string(),
             auto_punctuation: true,
             tidy_dictation: false,
+            lexicon_suggestions: true,
             live_preview: true,
             partial_interval_ms: 700,
             request_timeout_ms: 20_000,

@@ -74,6 +74,8 @@ void chime_voice_cancel(ChimeVoiceHandle *voice);
 void chime_voice_end(ChimeVoiceHandle *voice);
 /* JSON snapshot of the running session, or NULL when idle. */
 char *chime_voice_snapshot(ChimeVoiceHandle *voice);
+/* Final-only, opt-in replacement: null for no suggestion. Free with chime_string_free. */
+char *chime_voice_lexicon_suggestion(const ChimeEngineHandle *engine, const char *text);
 /* Blocking, local, final-only formatting. Free with chime_string_free. */
 char *chime_voice_format_final(const char *contents, const char *text, bool punctuation, bool tidy);
 /* Blocking connectivity probe; call off the main thread. Returns JSON. */

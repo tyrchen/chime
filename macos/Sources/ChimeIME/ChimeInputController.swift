@@ -225,7 +225,7 @@ public final class ChimeInputController: IMKInputController {
                 ChimeVoiceController.shared.handleFlagsChanged(keyCode: keyCode, flags: flags)
                 return false
             }
-            return type == .keyDown && ChimeVoiceController.shared.interceptKeyDown(keyCode: keyCode)
+            return type == .keyDown && ChimeVoiceController.shared.interceptKeyDown(keyCode: keyCode, flags: flags)
         }
         if voiceConsumed {
             return true

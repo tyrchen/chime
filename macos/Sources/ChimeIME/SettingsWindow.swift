@@ -425,6 +425,7 @@ struct ChimeSettingsView: View {
                 Toggle("边说边出字", isOn: $config.voice.live_preview)
                 Toggle("松键后智能补标点、断句", isOn: $config.voice.auto_punctuation)
                 Toggle("整理口述：删去重复表达和口头填充词", isOn: $config.voice.tidy_dictation)
+                Toggle("词库纠错建议（按 Tab 采用，不自动替换）", isOn: $config.voice.lexicon_suggestions)
                 Text("只处理本次口述的最终稿，不改已输入的文字。关闭整理可保留原话。")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("按住 \(ChimeVoiceController.hotkeyLabel(config.voice.hotkey)) 约 0.3 秒开始录音，识别结果实时显示在光标处；松开后最终结果上屏，按 Esc 取消。密码框中不会启用录音。")

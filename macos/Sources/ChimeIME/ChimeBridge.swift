@@ -163,6 +163,7 @@ public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
     public var prompt: String
     public var auto_punctuation = true
     public var tidy_dictation = false
+    public var lexicon_suggestions = true
     public var live_preview: Bool
     public var partial_interval_ms: UInt64
     public var request_timeout_ms: UInt64
@@ -218,6 +219,7 @@ public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
         self.language = try c.decodeIfPresent(String.self, forKey: .language) ?? d.language
         self.prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
         self.auto_punctuation = try c.decodeIfPresent(Bool.self, forKey: .auto_punctuation) ?? d.auto_punctuation
+        self.lexicon_suggestions = try c.decodeIfPresent(Bool.self, forKey: .lexicon_suggestions) ?? d.lexicon_suggestions
         self.tidy_dictation = try c.decodeIfPresent(Bool.self, forKey: .tidy_dictation) ?? d.tidy_dictation
         self.live_preview = try c.decodeIfPresent(Bool.self, forKey: .live_preview) ?? d.live_preview
         self.partial_interval_ms = try c.decodeIfPresent(UInt64.self, forKey: .partial_interval_ms) ?? d.partial_interval_ms
@@ -997,6 +999,12 @@ public final class ChimeEngineBridge {
         } else {
             CandidatePanel.shared.update(response: resp, caretRect: slot.lastCaretRect)
         }
+    }
+
+    func voiceLexiconSuggestion(_ text: String) -> String? {
+        guard let handle, let ptr = text.withCString({ chime_voice_lexicon_suggestion(handle, $0) }) else { return nil }
+        defer { chime_string_free(ptr) }
+        return String(cString: ptr)
     }
 
     public func getConfig() -> ChimeConfigDTO? {

@@ -468,6 +468,33 @@ pub unsafe extern "C" fn chime_get_status_json(engine: *mut ChimeEngineHandle) -
     encode_json(&eng.inner.status())
 }
 
+/// Suggest a dictionary-backed alternative for a completed voice transcript. Returns null when
+/// there is no unique match. Query on the engine's owner thread, like other dictionary operations.
+///
+/// # Safety
+/// `engine` must be valid and `text` a NUL-terminated UTF-8 string (or null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_lexicon_suggestion(
+    engine: *const ChimeEngineHandle,
+    text: *const c_char,
+) -> *mut c_char {
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    if text.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(text) }).to_str() else {
+        return std::ptr::null_mut();
+    };
+    engine
+        .inner
+        .lexicon()
+        .voice_suggestion(text)
+        .and_then(|s| CString::new(s).ok())
+        .map_or(std::ptr::null_mut(), CString::into_raw)
+}
+
 /// Frees a C string returned by any `chime_*` FFI function.
 ///
 /// # Safety

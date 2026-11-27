@@ -227,6 +227,7 @@ public final class ChimeVoiceController {
         case recording
         case finishing
         case formatting
+        case reviewing
     }
 
     private struct HotkeySpec {
@@ -252,6 +253,8 @@ public final class ChimeVoiceController {
     private var armTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
+    private var reviewTimeout: Task<Void, Never>?
+    private var alternative: String?
     private var autoPunctuation = true
     private var tidyDictation = false
     private var target: (key: ObjectIdentifier, client: IMKTextInput)?
@@ -316,6 +319,11 @@ public final class ChimeVoiceController {
             if !down {
                 finishRecording()
             }
+        case .reviewing:
+            if down && !hotkeyDown && !otherHeld {
+                resolveSuggestion(accept: false)
+                beginArming(spec)
+            }
         case .finishing, .formatting:
             break
         }
@@ -323,7 +331,7 @@ public final class ChimeVoiceController {
     }
 
     /// Returns `true` when the key was consumed by dictation.
-    public func interceptKeyDown(keyCode: UInt16) -> Bool {
+    public func interceptKeyDown(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         switch phase {
         case .idle:
             return false
@@ -336,6 +344,12 @@ public final class ChimeVoiceController {
                 cancelSession()
             }
             return true
+        case .reviewing:
+            let plain = flags.intersection(Self.chordModifiers).isEmpty
+            let adopt = plain && keyCode == 0x30
+            let keep = plain && keyCode == Self.escKeyCode
+            let resolved = resolveSuggestion(accept: adopt)
+            return resolved && (adopt || keep)
         case .finishing, .formatting:
             if keyCode == Self.escKeyCode {
                 cancelSession()
@@ -358,7 +372,7 @@ public final class ChimeVoiceController {
 
     public func controllerDeactivated(_ key: ObjectIdentifier) {
         cancelArming()
-        if let target, target.key == key, phase == .recording || phase == .finishing || phase == .formatting {
+        if let target, target.key == key, phase != .idle {
             cancelSession()
         }
     }
@@ -506,6 +520,9 @@ public final class ChimeVoiceController {
 
     /// Commits `text` (if any) to the target client and returns to idle.
     private func endSession(commit text: String?, error: String?) {
+        reviewTimeout?.cancel()
+        reviewTimeout = nil
+        alternative = nil
         formatTask?.cancel()
         formatTask = nil
         pollTask?.cancel()
@@ -612,12 +629,16 @@ public final class ChimeVoiceController {
 
     private func completeRecognition(_ snap: VoiceSnapshotDTO) {
         let raw = snap.text
-        guard snap.error == nil, !raw.isEmpty, autoPunctuation || tidyDictation else {
+        guard snap.error == nil, !raw.isEmpty else {
             endSession(commit: raw, error: snap.error)
             return
         }
         capture.stop()
         if let handle { chime_voice_end(handle) }
+        guard autoPunctuation || tidyDictation else {
+            offerSuggestion(for: raw)
+            return
+        }
         phase = .formatting
         lastText = raw // if the user types immediately, prefer the full ASR final to a stale preview
         VoiceInputPanel.shared.update(text: raw, level: 0, hint: "整理文字中… · Esc 取消", isError: false, listening: false)
@@ -637,8 +658,59 @@ public final class ChimeVoiceController {
                 self.cancelSession()
                 return
             }
-            self.endSession(commit: text, error: nil)
+            self.offerSuggestion(for: text)
         }
+    }
+
+    private func offerSuggestion(for text: String) {
+        let bridge = ChimeEngineBridge.shared
+        guard bridge.currentConfig.voice.lexicon_suggestions,
+              let candidate = bridge.voiceLexiconSuggestion(text) else {
+            endSession(commit: text, error: nil)
+            return
+        }
+        phase = .reviewing
+        lastText = text
+        alternative = candidate
+        showInline(text) // the original stays marked; only plain Tab commits the alternative
+        guard let client = target?.client, ownsReviewMark(client) else {
+            // Nonstandard clients may not support querying preedit. Keep normal dictation
+            // behavior there rather than leaving a timer that can edit a moved caret.
+            endSession(commit: text, error: nil)
+            return
+        }
+        VoiceInputPanel.shared.update(text: candidate, level: 0, hint: "词库建议 · Tab 采用 · Esc 或稍候保留原文", isError: false, listening: false)
+        reviewTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, self?.phase == .reviewing else { return }
+            self?.resolveSuggestion(accept: false)
+        }
+    }
+
+    private func ownsReviewMark(_ client: IMKTextInput) -> Bool {
+        let range = client.markedRange()
+        return range.location != NSNotFound && range.length == (lastText as NSString).length
+            && client.attributedSubstring(from: range)?.string == lastText
+    }
+
+    @discardableResult
+    private func resolveSuggestion(accept: Bool) -> Bool {
+        let bridge = ChimeEngineBridge.shared
+        guard !IsSecureEventInputEnabled(), bridge.currentConfig.voice.enabled,
+              let active = bridge.activeTextClient(), let target, active.key == target.key,
+              (active.client as AnyObject) === (target.client as AnyObject) else {
+            cancelSession()
+            return false
+        }
+        // Some hosts commit marked text themselves on a mouse click. Do not insert a
+        // second copy (or replace an unrelated selection) after the caret has moved.
+        guard ownsReviewMark(active.client) else {
+            self.target = nil
+            endSession(commit: nil, error: nil)
+            return false
+        }
+        endSession(commit: accept && bridge.currentConfig.voice.lexicon_suggestions ? alternative : lastText, error: nil)
+        return true
     }
 
     private func recordingHint(spec: HotkeySpec, elapsedMs: UInt64) -> String {
