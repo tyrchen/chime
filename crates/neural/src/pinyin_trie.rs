@@ -617,13 +617,23 @@ impl TokenPinyinIndex {
                         .is_none_or(|(lo, hi)| end > lo && start < hi);
                     let allow_neighbor = (!full_is_canonical && !has_single_fuzzy)
                         || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
+                    let allow_repeat = !full_is_canonical
+                        || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
                     for (tid_syl, edit) in generate_typo_variants(slice) {
-                        let is_swap_or_rep = matches!(
-                            edit,
-                            TypoEdit::AdjacentSwap { .. } | TypoEdit::ExtraRepeat { .. }
-                        );
-                        if allow_neighbor || is_swap_or_rep {
-                            let cost = -edit.cost() - cfg.typo_noncanonical_base_cost;
+                        let allowed = match edit {
+                            TypoEdit::AdjacentSwap { .. } => true,
+                            TypoEdit::ExtraRepeat { .. } => allow_repeat,
+                            TypoEdit::NeighborKey { .. } => allow_neighbor,
+                        };
+                        if allowed {
+                            let base_cost = if full_is_canonical
+                                && matches!(edit, TypoEdit::ExtraRepeat { .. })
+                            {
+                                cfg.typo_canonical_neighbor_base_cost
+                            } else {
+                                cfg.typo_noncanonical_base_cost
+                            };
+                            let cost = -edit.cost() - base_cost;
                             syl_edges[start].push((end, tid_syl, cost, false, true));
                             for (fid, fcost) in fuzzy.expand(canonical_syllable(tid_syl)) {
                                 if fid != tid_syl {
@@ -717,16 +727,25 @@ impl TokenPinyinIndex {
                         && let Some(&first_tid) = mtids.first()
                     {
                         // Multi-token tech/English word (`Obsidian`, `ChatGPT`, `Kubernetes`,
-                        // `TypeScript`, `PyTorch`, `VIP`, `hover`, ...): beam search advances
-                        // the KV-cache through every token in `mtids`, so score with the exact
-                        // same known-tech prior as single-token tech terms!
+                        // `TypeScript`, `PyTorch`, `VSCode`, `gRPC`, `WebSocket`, `Cloudflare`,
+                        // `SwiftUI`, `Tokio`, ...): beam search advances the KV-cache through
+                        // every token in `mtids`. When `slice` cannot be canonically segmented as
+                        // Pinyin (`obsidian`, `tokio`, `vscode`, `cloudflare`, ...), compensate
+                        // mildly for BPE sub-word fragmentation so bogus typo-decoded Chinese
+                        // (`博士点`, `提括`) never beats an exact curated non-Pinyin tech word.
+                        #[allow(clippy::cast_precision_loss)]
+                        let en_multi_prior = if can_segment_exact(slice) {
+                            1.15
+                        } else {
+                            1.15 + 0.90 * (mtids.len().saturating_sub(1) as f32)
+                        };
                         let entry = best_map.entry((first_tid, end)).or_insert((
                             f32::NEG_INFINITY,
                             false,
                             true,
                         ));
-                        if 1.15 > entry.0 {
-                            *entry = (1.15, true, true);
+                        if en_multi_prior > entry.0 {
+                            *entry = (en_multi_prior, true, true);
                         }
                     } else if let Some(tids) = self.en_exact.get(slice) {
                         let is_embedded_lower =

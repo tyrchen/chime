@@ -121,6 +121,10 @@ struct BeamHyp {
     best_path_total: f32,
     /// True if all transitions in the canonical path were exact.
     is_exact: bool,
+    /// True if the immediately preceding emitted token was an ASCII/English token (used to
+    /// penalize phantom English-to-English word splits when the user typed contiguous letters
+    /// without pressing Space, e.g. `Cloud Fl are` vs `Cloudflare`, `Swift UI` vs `SwiftUI`).
+    last_was_english: bool,
     /// Worst localized single-step surprisal spike along this path (`pos > 0`).
     spike1: SurprisalSpike,
 }
@@ -228,37 +232,59 @@ pub(crate) fn has_feminine_or_neuter_cue(left_context: &str) -> bool {
     })
 }
 
-pub(crate) fn has_explicit_feminine_antecedent(left_context: &str) -> bool {
-    left_context.chars().any(|c| {
-        matches!(
-            c,
-            '她' | '女'
-                | '妈'
-                | '姐'
-                | '妹'
-                | '姑'
-                | '娘'
-                | '妻'
-                | '婆'
-                | '姨'
-                | '嫂'
-                | '妇'
-                | '母'
-                | '闺'
-        )
-    })
+/// Strips dialogue speaker tags (`女：`, `男：`, `女:`, `男:`) so speaker labels are never
+/// mistaken for 3rd-person gendered antecedents in Chinese anaphora resolution.
+fn strip_speaker_tags(left_context: &str) -> String {
+    left_context
+        .replace("女：", " ")
+        .replace("男：", " ")
+        .replace("女:", " ")
+        .replace("男:", " ")
 }
 
-pub(crate) fn has_explicit_masculine_antecedent(left_context: &str) -> bool {
-    left_context.chars().any(|c| {
-        matches!(
-            c,
-            '他' | '男' | '父' | '爸' | '哥' | '弟' | '爷' | '叔' | '舅' | '夫' | '郎'
-        )
-    }) || left_context.contains("孙子")
-        || left_context.contains("儿子")
-        || left_context.contains("先生")
-        || left_context.contains("小伙")
+fn last_feminine_antecedent_pos(text: &str) -> Option<usize> {
+    text.char_indices()
+        .rev()
+        .find(|&(_, c)| {
+            matches!(
+                c,
+                '她' | '女'
+                    | '妈'
+                    | '姐'
+                    | '妹'
+                    | '姑'
+                    | '娘'
+                    | '妻'
+                    | '婆'
+                    | '姨'
+                    | '嫂'
+                    | '妇'
+                    | '母'
+                    | '闺'
+            )
+        })
+        .map(|(i, _)| i)
+}
+
+fn last_masculine_antecedent_pos(text: &str) -> Option<usize> {
+    let char_pos = text
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| {
+            matches!(
+                c,
+                '他' | '男' | '父' | '爸' | '哥' | '弟' | '爷' | '叔' | '舅' | '夫' | '郎'
+            )
+        })
+        .map(|(i, _)| i);
+    let phrase_pos = ["孙子", "儿子", "先生", "小伙"]
+        .iter()
+        .filter_map(|p| text.rfind(p))
+        .max();
+    match (char_pos, phrase_pos) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Mild Cache-LM repetition prior (Kuhn & De Mori 1990): when a decoded candidate reuses a
@@ -364,8 +390,9 @@ pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeam
     if cands.len() < 2 {
         return;
     }
-    let has_fem = has_explicit_feminine_antecedent(left_context);
-    let has_masc = has_explicit_masculine_antecedent(left_context);
+    let cleaned = strip_speaker_tags(left_context);
+    let has_fem = last_feminine_antecedent_pos(&cleaned).is_some();
+    let has_masc = last_masculine_antecedent_pos(&cleaned).is_some();
     if has_fem && !has_masc {
         if cands[0].text.contains('他') {
             let swapped = cands[0].text.replace('他', "她");
@@ -1135,6 +1162,7 @@ fn decode_constrained_beam_single(
                 channel_cost: edge.channel_cost,
                 best_path_total: tot,
                 is_exact: edge.is_exact,
+                last_was_english: edge.is_english,
                 spike1: root_spike,
             });
         }
@@ -1160,6 +1188,7 @@ fn decode_constrained_beam_single(
                     channel_cost: chan,
                     best_path_total: tot,
                     is_exact: exact,
+                    last_was_english: false,
                     spike1: SurprisalSpike::default(),
                 });
             }
@@ -1217,6 +1246,7 @@ fn decode_constrained_beam_single(
                     existing.channel_cost = hyp.channel_cost;
                     existing.best_path_total = hyp.best_path_total;
                     existing.is_exact = hyp.is_exact;
+                    existing.last_was_english = hyp.last_was_english;
                     existing.spike1 = hyp.spike1;
                 }
                 existing.lm_lp = new_total_prob - existing.channel_cost;
@@ -1379,8 +1409,17 @@ fn decode_constrained_beam_single(
                 } else {
                     (new_kv.clone(), edge.token_id, step_lp0)
                 };
+                // Penalize phantom English-to-English word splits when the user typed contiguous
+                // lowercase letters without pressing Space (`vs` + `code` vs `VSCode`, `Cloud` +
+                // `Fl` + `are` vs `Cloudflare`, `Swift` + `UI` vs `SwiftUI`, `GR` + `PC` vs
+                // `gRPC`).
+                let en_split_pen = if parent.last_was_english && edge.is_english {
+                    -3.60
+                } else {
+                    0.0
+                };
                 let new_lm_lp = parent.lm_lp + step_lp;
-                let new_chan = parent.channel_cost + edge.channel_cost;
+                let new_chan = parent.channel_cost + edge.channel_cost + en_split_pen;
                 let new_tot = new_lm_lp + new_chan;
                 let text = append_token_surface(
                     &parent.text,
@@ -1390,7 +1429,7 @@ fn decode_constrained_beam_single(
                     span_lower,
                     pinyin_index,
                 );
-                let step_surprisal = -(step_lp + edge.channel_cost);
+                let step_surprisal = -(step_lp + edge.channel_cost + en_split_pen);
                 let spike1 = parent.with_recorded_step(step_surprisal, pos, edge.end);
                 buckets[edge.end].push(BeamHyp {
                     text,
@@ -1400,6 +1439,7 @@ fn decode_constrained_beam_single(
                     channel_cost: new_chan,
                     best_path_total: new_tot,
                     is_exact: parent.is_exact && edge.is_exact,
+                    last_was_english: edge.is_english,
                     spike1,
                 });
             }
@@ -1520,5 +1560,25 @@ mod tests {
         let mut inexact = vec![mk_cand("演或", -5.0, true), mk_cand("演活", -5.5, false)];
         apply_left_context_cache_bonus("演活了", &mut inexact);
         assert_eq!(inexact[0].text, "演或");
+    }
+
+    #[test]
+    fn test_pronoun_symmetry_ignores_speaker_tag_and_preserves_female_speaker_context() {
+        let mut cands = vec![
+            mk_cand("现在每天围着她转", -10.0, true),
+            mk_cand("现在每天围着他转", -10.4, true),
+        ];
+        apply_pronoun_symmetry("女：哪有时间啊?给我那宝贝孙子买奶粉去，", &mut cands);
+        assert_eq!(cands[0].text, "现在每天围着他转");
+
+        let mut cands2 = vec![
+            mk_cand("我一直想同她和好", -10.0, true),
+            mk_cand("我一直想同他和好", -10.4, true),
+        ];
+        apply_pronoun_symmetry(
+            "男：你跟你同屋的关系怎么样? 女：自打那次吵完架后，",
+            &mut cands2,
+        );
+        assert_eq!(cands2[0].text, "我一直想同她和好");
     }
 }
