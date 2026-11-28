@@ -88,6 +88,20 @@ impl Lexicon {
         if raw.len() > 512 || raw.chars().take(81).count() > 80 {
             return None;
         }
+        self.verse_match(raw)
+            .map_or_else(|| self.term_suggestion(raw), |best| best.result(raw))
+    }
+
+    /// Whole-verse lookup, without the legacy term fallback. Used before neural term review.
+    #[must_use]
+    pub fn voice_verse_suggestion(&self, raw: &str) -> Option<String> {
+        self.verse_match(raw)?.result(raw)
+    }
+
+    fn verse_match(&self, raw: &str) -> Option<Best> {
+        if raw.len() > 512 || raw.chars().count() > 80 {
+            return None;
+        }
         let heard: Vec<_> = raw.chars().filter(|&c| !separator(c)).collect();
         let mut best = Best::default();
         if (8..=40).contains(&heard.len()) && heard.iter().all(|c| c.to_pinyin().is_some()) {
@@ -125,14 +139,46 @@ impl Lexicon {
                     }
                 }
             }
-            if best.score.is_some() {
-                return best.result(raw);
-            }
         }
-        self.term_suggestion(raw)
+        best.score.map(|_| best)
     }
 
     fn term_suggestion(&self, raw: &str) -> Option<String> {
+        let mut best = Best::default();
+        self.visit_term_candidates(raw, 4, |length, text| {
+            best.offer(length, &text);
+            true
+        });
+        best.result(raw)
+    }
+
+    /// Small batch of full transcripts, original first. Each alternative changes only one
+    /// character in a locally attested 3+ syllable word. Abstain on overly broad matches.
+    #[must_use]
+    pub fn voice_pinyin_candidates(&self, raw: &str) -> Vec<String> {
+        if raw.len() > 256 || !(4..=64).contains(&raw.chars().count()) {
+            return Vec::new();
+        }
+        let mut batch = vec![raw.to_owned()];
+        self.visit_term_candidates(raw, 3, |_, text| {
+            if !batch.contains(&text) {
+                batch.push(text);
+            }
+            batch.len() <= 8
+        });
+        if (2..=8).contains(&batch.len()) {
+            batch
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn visit_term_candidates(
+        &self,
+        raw: &str,
+        min_len: usize,
+        mut visit: impl FnMut(usize, String) -> bool,
+    ) {
         let chars: Vec<_> = raw
             .char_indices()
             .map(|(at, c)| {
@@ -143,13 +189,12 @@ impl Lexicon {
                 )
             })
             .collect();
-        let mut best = Best::default();
         for start in 0..chars.len() {
             let mut ids: Vec<SyllableId> = Vec::new();
             for &(at, c, id) in chars[start..].iter().take(16) {
                 let Some(id) = id else { break };
                 ids.push(id);
-                if ids.len() < 4 {
+                if ids.len() < min_len {
                     continue;
                 }
                 let end = at + c.len_utf8();
@@ -162,13 +207,23 @@ impl Lexicon {
                     if e.surface.chars().count() != ids.len() {
                         continue;
                     }
-                    // Never change a digit/negation, and require at least three literal anchors.
+                    // Never propose a change to a digit or negation.
                     let changes: Vec<_> = span
                         .chars()
                         .zip(e.surface.chars())
                         .filter(|(a, b)| a != b)
                         .collect();
+                    // An imported entry can carry arbitrary surface text. Check the changed
+                    // character really has the same reading, not just the entry's index key.
                     if changes.len() != 1
+                        || !changes[0].1.to_pinyin_multi().is_some_and(|readings| {
+                            readings.into_iter().any(|p| {
+                                changes[0]
+                                    .0
+                                    .to_pinyin()
+                                    .is_some_and(|h| h.plain() == p.plain())
+                            })
+                        })
                         || changes.iter().any(|(a, b)| {
                             [*a, *b].iter().any(|c| {
                                 "不没无未非勿莫别零〇一二两三四五六七八九十百千万亿".contains(*c)
@@ -177,14 +232,15 @@ impl Lexicon {
                     {
                         continue;
                     }
-                    best.offer(
+                    if !visit(
                         ids.len(),
-                        &format!("{}{}{}", &raw[..chars[start].0], e.surface, &raw[end..]),
-                    );
+                        format!("{}{}{}", &raw[..chars[start].0], e.surface, &raw[end..]),
+                    ) {
+                        return;
+                    }
                 }
             }
         }
-        best.result(raw)
     }
 }
 
@@ -228,6 +284,32 @@ mod tests {
             assert_eq!(lex.voice_suggestion(raw), None, "{raw}");
         }
     }
+    #[test]
+    fn bounded_pinyin_edits_preserve_original_and_protected_tokens() {
+        let mut lex = Lexicon::new();
+        for (word, py) in [
+            ("数据库", "shu ju ku"),
+            ("数X库", "shu ju ku"),
+            ("无线上网", "wu xian shang wang"),
+            ("一心一意", "yi xin yi yi"),
+        ] {
+            lex.insert_pinyin_word(word, py, -2., false);
+        }
+        assert_eq!(
+            lex.voice_pinyin_candidates("API 3.14 的数剧库。"),
+            ["API 3.14 的数剧库。", "API 3.14 的数据库。"]
+        );
+        for raw in [
+            "API 3.14 的数据库。",
+            "我用吴线上网。",
+            "我已心一意。",
+            "无山",
+            &"数剧库".repeat(30),
+        ] {
+            assert!(lex.voice_pinyin_candidates(raw).is_empty(), "{raw}");
+        }
+    }
+
     #[test]
     fn suggestions_follow_mounted_layers_and_keep_surrounding_text()
     -> Result<(), Box<dyn std::error::Error>> {

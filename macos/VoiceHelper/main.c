@@ -4,6 +4,7 @@
  * Reply: uint32 byte count + cumulative UTF-8 text (including empty text). */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "sherpa-onnx/c-api/c-api.h"
 
@@ -27,7 +28,41 @@ static int punctuate(void) {
     return ok ? 0 : 1;
 }
 
+/* Optional final pass in an independent process. PCM never leaves anonymous pipes.
+ * Do not run unbounded offline attention on minutes of speech. */
+static int sense_final(void) {
+    uint32_t n = 0;
+    if (fread(&n, sizeof(n), 1, stdin) != 1 || n < 16000 || n > 45 * 16000) return 2;
+    float *pcm = malloc((size_t)n * sizeof(*pcm));
+    if (!pcm || fread(pcm, sizeof(*pcm), n, stdin) != n) { free(pcm); return 2; }
+    SherpaOnnxOfflineRecognizerConfig cfg = {0};
+    cfg.feat_config.sample_rate = 16000;
+    cfg.feat_config.feature_dim = 80;
+    cfg.model_config.sense_voice.model = "model.int8.onnx";
+    cfg.model_config.sense_voice.language = "zh";
+    cfg.model_config.sense_voice.use_itn = 1;
+    cfg.model_config.tokens = "tokens.txt";
+    cfg.model_config.num_threads = 2;
+    cfg.model_config.provider = "cpu";
+    cfg.decoding_method = "greedy_search";
+    const SherpaOnnxOfflineRecognizer *rec = SherpaOnnxCreateOfflineRecognizer(&cfg);
+    const SherpaOnnxOfflineStream *s = rec ? SherpaOnnxCreateOfflineStream(rec) : NULL;
+    int ok = 0;
+    if (s) {
+        SherpaOnnxAcceptWaveformOffline(s, 16000, pcm, (int32_t)n);
+        SherpaOnnxDecodeOfflineStream(rec, s);
+        const char *json = SherpaOnnxGetOfflineStreamResultAsJson(s);
+        ok = json && fputs(json, stdout) >= 0 && fflush(stdout) == 0;
+        if (json) SherpaOnnxDestroyOfflineStreamResultJson(json);
+        SherpaOnnxDestroyOfflineStream(s);
+    }
+    if (rec) SherpaOnnxDestroyOfflineRecognizer(rec);
+    free(pcm);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--sense-final") == 0) return sense_final();
     if (argc == 2 && strcmp(argv[1], "--punctuate") == 0) return punctuate();
     if (argc != 1) return 2;
     SherpaOnnxOnlineRecognizerConfig config = {0};

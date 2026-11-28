@@ -115,6 +115,10 @@ pub struct VoiceConfig {
     pub tidy_dictation: bool,
     /// Offer a dictionary correction on strong matches; never apply it automatically.
     pub lexicon_suggestions: bool,
+    /// Opt-in: score local homophone proposals against the final transcript with the keyboard LM.
+    pub pinyin_rerank: bool,
+    /// Optional local `SenseVoice-Small` INT8 directory for final-only Mandarin recognition.
+    pub sense_final_dir: String,
     /// Show recognized text live while speaking.
     pub live_preview: bool,
     /// Minimum gap between live-preview requests (`200..=5000` ms).
@@ -136,8 +140,10 @@ impl Default for VoiceConfig {
             language: "zh".to_string(),
             prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。".to_string(),
             auto_punctuation: true,
-            tidy_dictation: false,
+            tidy_dictation: true,
             lexicon_suggestions: true,
+            pinyin_rerank: true,
+            sense_final_dir: String::new(),
             live_preview: true,
             partial_interval_ms: 700,
             request_timeout_ms: 20_000,
@@ -369,7 +375,10 @@ mod tests {
         assert_eq!(cfg.voice, VoiceConfig::default());
         assert!(!cfg.voice.enabled);
         assert!(cfg.voice.auto_punctuation);
-        assert!(!cfg.voice.tidy_dictation);
+        // The settings UI exposes these as one switch, so defaults must agree.
+        assert!(
+            cfg.voice.tidy_dictation && cfg.voice.lexicon_suggestions && cfg.voice.pinyin_rerank
+        );
         assert_eq!(cfg.voice.backend, VoiceBackend::Paraformer);
         let legacy = ChimeConfig::from_toml_str("[voice]\nbackend = \"bundled\"\n")
             .unwrap_or_else(|_| std::process::abort());

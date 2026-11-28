@@ -12,6 +12,7 @@
 
 mod client;
 mod format;
+mod second_pass;
 mod session;
 mod streaming;
 mod text;

@@ -196,6 +196,7 @@ dependencies = [
  "chime-lexicon",
  "chime-neural",
  "chime-phonetics",
+ "flume",
  "serde",
  "serde_json",
  "tempfile",

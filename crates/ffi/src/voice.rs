@@ -141,18 +141,24 @@ pub unsafe extern "C" fn chime_voice_start(
 }
 
 /// Starts a local 16 kHz stream using separately installed weights without reading HTTP settings or
-/// credentials.
+/// credentials. A non-empty `sense_dir` adds an optional whole-utterance `SenseVoice` final;
+/// `punctuation` keeps its marks and `layout` adds paragraphs and digit spacing.
 ///
 /// # Safety
-/// `voice` must be valid; both paths must be valid NUL-terminated UTF-8.
+/// `voice` must be valid; `contents` and `model_dir` must be valid NUL-terminated UTF-8, and
+/// `sense_dir` null or NUL-terminated UTF-8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn chime_voice_start_local(
     voice: *mut ChimeVoiceHandle,
     contents: *const c_char,
     model_dir: *const c_char,
+    sense_dir: *const c_char,
+    punctuation: bool,
+    layout: bool,
     preview: bool,
     seconds: u64,
 ) -> *mut c_char {
+    let sense = unsafe { opt_str(sense_dir) };
     let (Some(handle), Some(path)) = (unsafe { voice.as_ref() }, unsafe { opt_str(contents) })
     else {
         return to_c_string("missing voice handle or app bundle");
@@ -160,11 +166,14 @@ pub unsafe extern "C" fn chime_voice_start_local(
     let Some(dir) = (unsafe { opt_str(model_dir) }) else {
         return to_c_string("missing local model directory");
     };
-    match StreamingSession::start(
+    match StreamingSession::start_with_final(
         std::path::Path::new(&path),
         std::path::Path::new(&dir),
         preview,
         seconds,
+        sense
+            .as_deref()
+            .map(|dir| (std::path::Path::new(dir), punctuation, layout)),
     ) {
         Ok(s) => {
             *handle.lock() = Some(Session::Bundled(s));

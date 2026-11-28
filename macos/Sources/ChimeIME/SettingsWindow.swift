@@ -494,11 +494,13 @@ struct ChimeSettingsView: View {
                     Text("Fn / 🌐").tag("fn")
                 }
                 Toggle("边说边出字", isOn: $config.voice.live_preview)
-                Toggle("松键后智能补标点、断句", isOn: $config.voice.auto_punctuation)
-                Toggle("整理口述：删去重复表达和口头填充词", isOn: $config.voice.tidy_dictation)
-                Toggle("词库纠错建议（按 Tab 采用，不自动替换）", isOn: $config.voice.lexicon_suggestions)
-                Text("只处理本次口述的最终稿，不改已输入的文字。关闭整理可保留原话。")
+                Toggle("松键后智能整理最终稿", isOn: smartFinal)
+                Text("补标点和分段，删去重复与口头填充词；词库和内置千问发现同音错字时在浮窗给出建议，轻点 \(ChimeVoiceController.hotkeyLabel(config.voice.hotkey)) 采用（已在「辅助功能」授权 Chime 时也可按 Tab），Esc 保留原稿。只处理本次口述，不改已输入的文字。关闭后按原话上屏。")
                     .font(.caption).foregroundStyle(.secondary)
+                if smartFinalMixed {
+                    Text("当前沿用旧设置，只开启了部分整理功能；打开开关后全部启用。")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 Text("按住 \(ChimeVoiceController.hotkeyLabel(config.voice.hotkey)) 约 0.3 秒开始录音，识别结果实时显示在光标处；松开后最终结果上屏，按 Esc 取消。密码框中不会启用录音。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -557,6 +559,23 @@ struct ChimeSettingsView: View {
                         Button("移除", role: .destructive) { voiceModels.remove() }
                     } message: { Text("不会删除词库、标点模型或 HTTP 设置。以后可以重新下载。") }
                     if let error = voiceModels.error { Text(error).foregroundStyle(.red) }
+                    HStack {
+                        Text("实验：SenseVoice 中文最终稿")
+                        Spacer()
+                        Button(config.voice.sense_final_dir.isEmpty ? "选择本地模型目录…" : "更换目录…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+                            guard panel.runModal() == .OK, let url = panel.url else { return }
+                            if ["model.int8.onnx", "tokens.txt"].allSatisfy({ FileManager.default.isReadableFile(atPath: url.appendingPathComponent($0).path) }) {
+                                config.voice.sense_final_dir = url.path
+                            } else {
+                                let alert = NSAlert(); alert.messageText = "请选择含 model.int8.onnx 和 tokens.txt 的 SenseVoice-Small 目录"; alert.runModal()
+                            }
+                        }
+                        if !config.voice.sense_final_dir.isEmpty { Button("停用") { config.voice.sense_final_dir = "" } }
+                    }
+                    Text("选定目录后，4–45 秒口述可在松键时整段复识别，预览仍用 Paraformer。开启整理会按停顿分段。模型未就绪、超时或录音过长时保留流式结果。不会自动下载或保存录音。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("仅点击下载时从 Hugging Face 获取模型文件；校验后保存在本机。听写不会联网。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -567,6 +586,28 @@ struct ChimeSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// One switch for every final-transcript step; the underlying config keys stay separate.
+    private var smartFinal: Binding<Bool> {
+        Binding(
+            get: {
+                let v = config.voice
+                return v.auto_punctuation && v.tidy_dictation && v.lexicon_suggestions && v.pinyin_rerank
+            },
+            set: { on in
+                config.voice.auto_punctuation = on
+                config.voice.tidy_dictation = on
+                config.voice.lexicon_suggestions = on
+                config.voice.pinyin_rerank = on
+            }
+        )
+    }
+
+    private var smartFinalMixed: Bool {
+        let v = config.voice
+        let flags = [v.auto_punctuation, v.tidy_dictation, v.lexicon_suggestions, v.pinyin_rerank]
+        return flags.contains(true) && flags.contains(false)
     }
 
     private var voiceHTTPSettings: some View {

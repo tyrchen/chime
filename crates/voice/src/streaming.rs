@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-use crate::{VoiceSnapshot, VoiceState};
+use crate::{VoiceSnapshot, VoiceState, second_pass::SecondPass};
 
 const RATE: usize = 16_000;
 
@@ -32,6 +32,23 @@ impl StreamingSession {
     /// # Errors
     /// Returns an error if the resources, helper or worker cannot be opened.
     pub fn start(contents: &Path, dir: &Path, preview: bool, seconds: u64) -> io::Result<Self> {
+        Self::start_with_final(contents, dir, preview, seconds, None)
+    }
+
+    /// Like `start`, optionally refine a bounded final on the worker using existing local weights.
+    /// # Errors
+    /// Returns an error if the streaming helper or first-pass resources cannot be opened.
+    #[allow(clippy::too_many_lines)]
+    pub fn start_with_final(
+        contents: &Path,
+        dir: &Path,
+        preview: bool,
+        seconds: u64,
+        final_pass: Option<(&Path, bool, bool)>,
+    ) -> io::Result<Self> {
+        let mut pass = final_pass.and_then(|(dir, punctuation, layout)| {
+            SecondPass::new(contents, dir, punctuation, layout)
+        });
         for name in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
             std::fs::File::open(dir.join(name)).map_err(|e| {
                 io::Error::new(
@@ -100,7 +117,26 @@ impl StreamingSession {
                             text.trim().clone_into(&mut s.text);
                         }
                         if frame.is_empty() {
+                            // Publish the streaming final first so typing during the optional
+                            // second pass commits it. Never hold the UI lock across helper IO.
+                            drop(s);
+                            if !text.trim().is_empty()
+                                && let Some(refined) = pass.take().and_then(|p| {
+                                    p.finish(&text, &child, || {
+                                        lock(&state).state != VoiceState::Finishing
+                                    })
+                                })
+                            {
+                                let mut s = lock(&state);
+                                if s.state == VoiceState::Finishing {
+                                    s.text = refined;
+                                }
+                            }
                             break;
+                        }
+                        drop(s);
+                        if pass.as_mut().is_some_and(|p| !p.append(&frame)) {
+                            pass = None;
                         }
                     }
                     Ok(())

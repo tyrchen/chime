@@ -9,6 +9,7 @@ pub mod emoji;
 pub mod personalize;
 pub mod punctuation;
 pub mod sanitize;
+pub mod voice_review;
 
 use std::{
     collections::VecDeque,

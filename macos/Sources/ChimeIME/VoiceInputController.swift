@@ -4,6 +4,7 @@ import Carbon
 import CChimeFFI
 import Foundation
 import InputMethodKit
+import OSLog
 import Security
 
 /// Options sent to `chime_voice_start` / `chime_voice_test_endpoint` (mirrors Rust `VoiceSettings`).
@@ -227,6 +228,7 @@ public final class ChimeVoiceController {
         case recording
         case finishing
         case formatting
+        case ranking
         case reviewing
     }
 
@@ -255,6 +257,14 @@ public final class ChimeVoiceController {
     private var formatTask: Task<Void, Never>?
     private var reviewTimeout: Task<Void, Never>?
     private var alternative: String?
+    private var neuralAlternative = false
+    private static let reviewLog = Logger(subsystem: "app.tyrchen.inputmethod.Chime", category: "VoiceReview")
+    private var utteranceStart: Int?
+    private var inlinePreview: String?
+    private var reviewSite: VoiceReviewSite?
+    private let reviewTabTap = VoiceReviewTabTap()
+    private var reviewID: UUID?
+    private var reviewHoldTask: Task<Void, Never>?
     private var autoPunctuation = true
     private var tidyDictation = false
     private var target: (key: ObjectIdentifier, client: IMKTextInput)?
@@ -320,11 +330,24 @@ public final class ChimeVoiceController {
                 finishRecording()
             }
         case .reviewing:
-            if down && !hotkeyDown && !otherHeld {
-                resolveSuggestion(accept: false)
-                beginArming(spec)
+            // A fresh short tap confirms without sending Tab. A hold still starts the next
+            // dictation; neither the release that ended recording nor a chord confirms.
+            if otherHeld {
+                reviewHoldTask?.cancel(); reviewHoldTask = nil
+            } else if down && !hotkeyDown {
+                reviewHoldTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: Self.holdThreshold)
+                    guard let self, !Task.isCancelled, self.phase == .reviewing else { return }
+                    let held = NSEvent.modifierFlags
+                    guard held.contains(spec.flag), held.intersection(Self.chordModifiers.subtracting(spec.flag)).isEmpty,
+                          NSEvent.pressedMouseButtons == 0 else { return }
+                    self.reviewHoldTask = nil
+                    if self.resolveSuggestion(accept: false) { self.startRecording(spec) }
+                }
+            } else if !down && hotkeyDown && reviewHoldTask != nil {
+                resolveSuggestion(accept: true)
             }
-        case .finishing, .formatting:
+        case .finishing, .formatting, .ranking:
             break
         }
         hotkeyDown = down
@@ -344,12 +367,19 @@ public final class ChimeVoiceController {
                 cancelSession()
             }
             return true
+        case .ranking:
+            // A real key takes priority. No invisible candidate can be adopted.
+            if keyCode == Self.escKeyCode && flags.intersection(Self.chordModifiers).isEmpty {
+                resolveSuggestion(accept: false)
+                return true
+            }
+            resolveSuggestion(accept: false)
+            return false
         case .reviewing:
             let plain = flags.intersection(Self.chordModifiers).isEmpty
-            let adopt = plain && keyCode == 0x30
             let keep = plain && keyCode == Self.escKeyCode
-            let resolved = resolveSuggestion(accept: adopt)
-            return resolved && (adopt || keep)
+            resolveSuggestion(accept: false)
+            return keep
         case .finishing, .formatting:
             if keyCode == Self.escKeyCode {
                 cancelSession()
@@ -462,7 +492,10 @@ public final class ChimeVoiceController {
             let contents = Bundle.main.bundleURL.appendingPathComponent("Contents")
             errPtr = contents.path.withCString { appPath in
                 VoiceModelManager.shared.pack.directory.path.withCString { modelPath in
-                    chime_voice_start_local(handle, appPath, modelPath, config.voice.live_preview, config.voice.max_record_secs)
+                    config.voice.sense_final_dir.withCString { finalDir in
+                        chime_voice_start_local(handle, appPath, modelPath, finalDir, config.voice.auto_punctuation, config.voice.tidy_dictation,
+                                                config.voice.live_preview, config.voice.max_record_secs)
+                    }
                 }
             }
         }
@@ -493,6 +526,8 @@ public final class ChimeVoiceController {
         autoPunctuation = config.voice.auto_punctuation
         tidyDictation = config.voice.tidy_dictation
         target = active
+        let selection = active.client.selectedRange()
+        utteranceStart = selection.location == NSNotFound ? nil : selection.location
         activeSpec = spec
         hasMarkedText = false
         lastText = ""
@@ -519,10 +554,17 @@ public final class ChimeVoiceController {
     }
 
     /// Commits `text` (if any) to the target client and returns to idle.
-    private func endSession(commit text: String?, error: String?) {
+    private func endSession(commit text: String?, error: String?, replacement: NSRange = NSRange(location: NSNotFound, length: 0)) {
+        reviewID = nil
+        reviewTabTap.endReview()
+        reviewHoldTask?.cancel(); reviewHoldTask = nil
+        reviewSite = nil
+        inlinePreview = nil
+        utteranceStart = nil
         reviewTimeout?.cancel()
         reviewTimeout = nil
         alternative = nil
+        neuralAlternative = false
         formatTask?.cancel()
         formatTask = nil
         pollTask?.cancel()
@@ -539,12 +581,12 @@ public final class ChimeVoiceController {
         let committed = text ?? ""
         if let client {
             if !committed.isEmpty {
-                client.insertText(committed, replacementRange: NSRange(location: NSNotFound, length: NSNotFound))
+                client.insertText(committed, replacementRange: replacement)
             } else if hasMarkedText {
                 client.setMarkedText(
                     "",
                     selectionRange: NSRange(location: 0, length: 0),
-                    replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                    replacementRange: NSRange(location: NSNotFound, length: 0)
                 )
             }
         }
@@ -630,6 +672,7 @@ public final class ChimeVoiceController {
     private func completeRecognition(_ snap: VoiceSnapshotDTO) {
         let raw = snap.text
         guard snap.error == nil, !raw.isEmpty else {
+            Self.reviewLog.info("review skipped: ASR error or empty final")
             endSession(commit: raw, error: snap.error)
             return
         }
@@ -664,22 +707,68 @@ public final class ChimeVoiceController {
 
     private func offerSuggestion(for text: String) {
         let bridge = ChimeEngineBridge.shared
-        guard bridge.currentConfig.voice.lexicon_suggestions,
-              let candidate = bridge.voiceLexiconSuggestion(text) else {
+        guard bridge.currentConfig.voice.lexicon_suggestions else {
+            Self.reviewLog.info("review disabled")
             endSession(commit: text, error: nil)
             return
         }
+        if let candidate = bridge.voiceLexiconSuggestion(text) {
+            presentSuggestion(candidate, original: text, neural: false)
+            return
+        }
+        guard bridge.currentConfig.voice.pinyin_rerank, let job = bridge.startVoiceReview(text) else {
+            Self.reviewLog.info("no dictionary suggestion or neural job")
+            endSession(commit: text, error: nil)
+            return
+        }
+        phase = .ranking
+        guard prepareReview(text) else {
+            chime_voice_review_free(job)
+            cancelSession()
+            return
+        }
+        VoiceInputPanel.shared.update(text: text, level: 0, hint: "比较同音候选…", isError: false, listening: false)
+        formatTask = Task { @MainActor [weak self] in
+            defer { chime_voice_review_free(job) }
+            while !Task.isCancelled, let self, self.phase == .ranking {
+                var ptr: UnsafeMutablePointer<CChar>?
+                if chime_voice_review_poll(job, &ptr) {
+                    defer { if let ptr { chime_string_free(ptr) } }
+                    guard self.reviewTargetIsCurrent(),
+                          bridge.currentConfig.voice.lexicon_suggestions, bridge.currentConfig.voice.pinyin_rerank,
+                          let ptr else { self.resolveSuggestion(accept: false); return }
+                    self.presentSuggestion(String(cString: ptr), original: text, neural: true)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(12))
+            }
+        }
+    }
+
+    private func presentSuggestion(_ candidate: String, original text: String, neural: Bool) {
+        guard prepareReview(text) else { cancelSession(); return }
         phase = .reviewing
-        lastText = text
         alternative = candidate
-        showInline(text) // the original stays marked; only plain Tab commits the alternative
-        guard let client = target?.client, ownsReviewMark(client) else {
-            // Nonstandard clients may not support querying preedit. Keep normal dictation
-            // behavior there rather than leaving a timer that can edit a moved caret.
-            endSession(commit: text, error: nil)
-            return
+        neuralAlternative = neural
+        let label = neural ? "同音建议" : "词库建议"
+        Self.reviewLog.info("show suggestion HUD; copy-only: \(self.reviewSite == .copyOnly, privacy: .public)")
+        let id = UUID()
+        reviewID = id
+        let confirm: () -> Void = { [weak self] in
+            guard let self, self.phase == .reviewing, self.reviewID == id else { return }
+            self.resolveSuggestion(accept: true)
         }
-        VoiceInputPanel.shared.update(text: candidate, level: 0, hint: "词库建议 · Tab 采用 · Esc 或稍候保留原文", isError: false, listening: false)
+        let action = reviewSite == .copyOnly ? "复制" : "采用"
+        let fallbackHint = "\(label) · 轻点\(activeSpec?.label ?? "语音键")\(action) · Esc 保留原文"
+        let showFallback = { [weak self] in
+            guard self?.reviewID == id else { return }
+            VoiceInputPanel.shared.showReview(text: candidate, hint: fallbackHint, button: action, adopt: confirm)
+        }
+        if reviewTabTap.begin(bundleID: target?.client.bundleIdentifier(), adopt: confirm, unavailable: showFallback) {
+            VoiceInputPanel.shared.showReview(text: candidate, hint: "\(label) · Tab \(action) · Esc 保留原文", button: action, adopt: confirm)
+        } else {
+            showFallback()
+        }
         reviewTimeout = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled, self?.phase == .reviewing else { return }
@@ -687,29 +776,84 @@ public final class ChimeVoiceController {
         }
     }
 
-    private func ownsReviewMark(_ client: IMKTextInput) -> Bool {
-        let range = client.markedRange()
-        return range.location != NSNotFound && range.length == (lastText as NSString).length
-            && client.attributedSubstring(from: range)?.string == lastText
+    private func site(for text: String, client: IMKTextInput) -> VoiceReviewSite {
+        VoiceReviewSite.probe(text: text, start: utteranceStart, marked: client.markedRange(), selected: client.selectedRange()) {
+            client.attributedSubstring(from: $0)?.string
+        }
+    }
+
+    private func prepareReview(_ text: String) -> Bool {
+        guard reviewTargetIsCurrent(), let client = target?.client else {
+            Self.reviewLog.info("review skipped: focus or secure-input guard")
+            return false
+        }
+        if reviewSite != nil { return true } // ranking -> HUD, don't write twice
+        lastText = text
+        if inlinePreview == nil { showInline(text) }
+        var current = site(for: text, client: client)
+        if current == .copyOnly, let inlinePreview {
+            switch site(for: inlinePreview, client: client) {
+            case .marked:
+                showInline(text)
+                current = site(for: text, client: client)
+            case .committed(let range):
+                // Host already committed the partial. Update only that verified span, once.
+                client.insertText(text, replacementRange: range)
+                current = site(for: text, client: client)
+                hasMarkedText = false
+                reviewSite = current
+                return true
+            case .copyOnly: break
+            }
+        }
+        if current == .copyOnly {
+            // Preserve the old normal dictation commit, but *still* offer the suggestion.
+            // If we can verify what was inserted, confirmation may replace that exact range.
+            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            current = site(for: text, client: client)
+            if case .marked = current { current = .copyOnly }
+        }
+        if case .marked = current { hasMarkedText = true } else { hasMarkedText = false }
+        reviewSite = current
+        return true
+    }
+
+    private func reviewTargetIsCurrent() -> Bool {
+        let bridge = ChimeEngineBridge.shared
+        guard !IsSecureEventInputEnabled(), bridge.currentConfig.voice.enabled,
+              let active = bridge.activeTextClient(), let target else { return false }
+        return active.key == target.key && (active.client as AnyObject) === (target.client as AnyObject)
     }
 
     @discardableResult
     private func resolveSuggestion(accept: Bool) -> Bool {
-        let bridge = ChimeEngineBridge.shared
-        guard !IsSecureEventInputEnabled(), bridge.currentConfig.voice.enabled,
-              let active = bridge.activeTextClient(), let target, active.key == target.key,
-              (active.client as AnyObject) === (target.client as AnyObject) else {
+        let config = ChimeEngineBridge.shared.currentConfig.voice
+        guard reviewTargetIsCurrent(), let target else {
             cancelSession()
             return false
         }
-        // Some hosts commit marked text themselves on a mouse click. Do not insert a
-        // second copy (or replace an unrelated selection) after the caret has moved.
-        guard ownsReviewMark(active.client) else {
-            self.target = nil
+        let adopt = accept && config.lexicon_suggestions && (!neuralAlternative || config.pinyin_rerank)
+        if reviewSite == .copyOnly {
+            if adopt, let alternative {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(alternative, forType: .string)
+            }
+            endSession(commit: nil, error: nil) // fallback has already committed the original
+            return true
+        }
+        let current = site(for: lastText, client: target.client)
+        switch (reviewSite, current) {
+        case (.marked(let old), .marked(let now)) where old == now:
+            endSession(commit: adopt ? alternative : lastText, error: nil)
+        case (.marked(let old), .committed(let now)) where old == now,
+             (.committed(let old), .committed(let now)) where old == now:
+            hasMarkedText = false
+            endSession(commit: adopt ? alternative : nil, error: nil, replacement: now)
+        default:
+            self.target = nil // caret moved or text changed; never clear another composition
             endSession(commit: nil, error: nil)
             return false
         }
-        endSession(commit: accept && bridge.currentConfig.voice.lexicon_suggestions ? alternative : lastText, error: nil)
         return true
     }
 
@@ -720,12 +864,13 @@ public final class ChimeVoiceController {
 
     private func showInline(_ text: String) {
         guard let client = target?.client else { return }
+        inlinePreview = text.isEmpty ? nil : text
         if text.isEmpty {
             guard hasMarkedText else { return }
             client.setMarkedText(
                 "",
                 selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                replacementRange: NSRange(location: NSNotFound, length: 0)
             )
             hasMarkedText = false
             return
@@ -733,7 +878,7 @@ public final class ChimeVoiceController {
         client.setMarkedText(
             text,
             selectionRange: NSRange(location: (text as NSString).length, length: 0),
-            replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+            replacementRange: NSRange(location: NSNotFound, length: 0)
         )
         hasMarkedText = true
     }

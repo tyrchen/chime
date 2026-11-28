@@ -53,6 +53,8 @@ final class VoiceInputPanel: NSPanel {
     private let levelView = VoiceLevelView()
     private let textLabel = NSTextField(wrappingLabelWithString: "")
     private let hintLabel = NSTextField(labelWithString: "")
+    private let reviewButton = NSButton()
+    private var onReviewClick: (() -> Void)?
     private var anchorRect: NSRect?
     private var hideTask: Task<Void, Never>?
 
@@ -93,7 +95,12 @@ final class VoiceInputPanel: NSPanel {
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 3
-        let row = NSStackView(views: [levelView, column])
+        reviewButton.target = self
+        reviewButton.action = #selector(reviewClicked)
+        reviewButton.bezelStyle = .rounded
+        reviewButton.controlSize = .small
+        reviewButton.isHidden = true
+        let row = NSStackView(views: [levelView, column, reviewButton])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
@@ -117,9 +124,29 @@ final class VoiceInputPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
+    @objc private func reviewClicked() { onReviewClick?() }
+
+    private func clearReviewAction() {
+        onReviewClick = nil
+        reviewButton.isHidden = true
+        ignoresMouseEvents = true
+    }
+
+    /// Mouse confirmation doesn't send a key event to (or take focus from) the editor.
+    func showReview(text: String, hint: String, button: String, adopt: @escaping () -> Void) {
+        hideTask?.cancel()
+        onReviewClick = adopt
+        reviewButton.title = button
+        reviewButton.isHidden = false
+        ignoresMouseEvents = false
+        levelView.listening = false
+        apply(text: text, hint: hint, isError: false)
+    }
+
     /// Shows the panel for a new recording anchored below `anchor` (the caret).
     func present(anchor: NSRect, hint: String) {
         hideTask?.cancel()
+        clearReviewAction()
         anchorRect = anchor
         levelView.reset()
         levelView.listening = true
@@ -135,6 +162,7 @@ final class VoiceInputPanel: NSPanel {
     /// Shows a short message, then fades out.
     func flash(message: String, anchor: NSRect?, isError: Bool) {
         hideTask?.cancel()
+        clearReviewAction()
         if let anchor {
             anchorRect = anchor
         }
@@ -149,6 +177,7 @@ final class VoiceInputPanel: NSPanel {
     }
 
     func dismiss(after delay: Duration = .zero) {
+        clearReviewAction()
         hideTask?.cancel()
         hideTask = Task { @MainActor [weak self] in
             if delay > .zero {

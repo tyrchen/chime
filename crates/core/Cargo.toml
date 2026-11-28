@@ -13,6 +13,7 @@ workspace = true
 chime-decoder = { workspace = true }
 chime-lexicon = { workspace = true }
 chime-neural = { workspace = true }
+flume.workspace = true
 chime-phonetics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
