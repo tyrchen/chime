@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use chime_lexicon::{Lexicon, UserStore, WordEntry, annotate_chinese_word};
 use chime_phonetics::{
     CodeSwitchSignal, FuzzyConfig, ShuangpinScheme, SyllableId, classify_code_switch,
-    expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
+    expand_shuangpin_initial, expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -330,7 +330,9 @@ impl LatticeDecoder {
 
         // Reuse prefix lattice edges & beam states when monotonically appending to a cached long
         // sentence with identical context/settings!
-        let can_reuse = self.reranker.is_none()
+        // Another key can change admissible Shuangpin abbreviations at the very start.
+        let can_reuse = ctx.scheme == ShuangpinScheme::Full
+            && self.reranker.is_none()
             && !cache.raw_input.is_empty()
             && raw_input.len() > cache.raw_input.len()
             && raw_input.starts_with(&cache.raw_input)
@@ -646,7 +648,7 @@ impl LatticeDecoder {
         );
 
         // Persist cache for incremental appending on the next keystroke!
-        if self.reranker.is_none() && n >= 8 {
+        if ctx.scheme == ShuangpinScheme::Full && self.reranker.is_none() && n >= 8 {
             cache.raw_input.clear();
             cache.raw_input.push_str(raw_input);
             cache.left_context.clear();
@@ -1465,11 +1467,13 @@ impl LatticeDecoder {
         let full_already_exact = n >= 10 && full_is_canonical;
         let mut spans: Vec<Vec<(usize, SyllableId, f32, MatchKind)>> = vec![Vec::new(); n];
 
+        let initial_mask = (ctx.scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(ctx.scheme, bytes));
         for i in start_from..n {
             if bytes[i] == b'\'' {
                 continue;
             }
-            if ctx.scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if i + 2 <= n {
                     for id in expand_shuangpin_pair(ctx.scheme, bytes[i], bytes[i + 1]) {
                         spans[i].push((i + 2, id, 0.0, MatchKind::Exact));
@@ -1477,6 +1481,16 @@ impl LatticeDecoder {
                         for (fid, pen) in ctx.fuzzy.expand(canonical) {
                             spans[i].push((i + 2, fid, -pen, MatchKind::Fuzzy));
                         }
+                    }
+                }
+                if mask[i] {
+                    for id in expand_shuangpin_initial(ctx.scheme, bytes[i]) {
+                        spans[i].push((
+                            i + 1,
+                            id,
+                            chime_phonetics::shuangpin::initial_log_cost(i + 1, n),
+                            MatchKind::Abbreviation,
+                        ));
                     }
                 }
                 continue;
@@ -1994,6 +2008,8 @@ const fn combine_beam_kind(prev: MatchKind, next: MatchKind) -> MatchKind {
         MatchKind::TypoCorrected
     } else if matches!(prev, MatchKind::Fuzzy) || matches!(next, MatchKind::Fuzzy) {
         MatchKind::Fuzzy
+    } else if matches!(prev, MatchKind::Abbreviation) || matches!(next, MatchKind::Abbreviation) {
+        MatchKind::Abbreviation
     } else if matches!(prev, MatchKind::CodeSwitch) && matches!(next, MatchKind::CodeSwitch) {
         MatchKind::CodeSwitch
     } else {
@@ -2006,6 +2022,8 @@ const fn merge_match_kind(a: MatchKind, b: MatchKind) -> MatchKind {
         MatchKind::TypoCorrected
     } else if matches!(a, MatchKind::Fuzzy) || matches!(b, MatchKind::Fuzzy) {
         MatchKind::Fuzzy
+    } else if matches!(a, MatchKind::Abbreviation) || matches!(b, MatchKind::Abbreviation) {
+        MatchKind::Abbreviation
     } else {
         MatchKind::Exact
     }
@@ -2833,6 +2851,85 @@ pub fn apply_anti_jitter_freeze_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shuangpin_mixes_multiple_omitted_finals_with_complete_pairs() {
+        let mut lex = Lexicon::default();
+        for (text, pinyin) in [
+            ("第一", "di yi"),
+            ("个", "ge"),
+            ("是", "shi"),
+            ("什么", "shen me"),
+            ("东西", "dong xi"),
+            ("呢", "ne"),
+        ] {
+            lex.insert_pinyin_word(text, pinyin, -2.0, false);
+        }
+        let dec = LatticeDecoder::new();
+        let store = UserStore::new();
+        for scheme in [
+            ShuangpinScheme::Xiaohe,
+            ShuangpinScheme::Ziranma,
+            ShuangpinScheme::Microsoft,
+        ] {
+            let ctx = DecodeContext {
+                scheme,
+                ..Default::default()
+            };
+            for (keys, kind) in [
+                ("dyigeuiufmdsxne", MatchKind::Abbreviation),
+                ("dyigeuiufmedsxne", MatchKind::Abbreviation),
+                ("d'yigeuiufmdsxne", MatchKind::Abbreviation),
+                ("diyigeuiufmedsxine", MatchKind::Exact),
+            ] {
+                let cands = dec.decode(keys, &lex, &store, &ctx);
+                assert_eq!(
+                    (&*cands[0].text, cands[0].kind, cands[0].consumed_bytes),
+                    ("第一个是什么东西呢", kind, keys.len()),
+                    "{scheme:?}: {keys}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shuangpin_trailing_initial_is_selectable_until_the_final_is_typed() {
+        let mut lex = Lexicon::default();
+        for (text, pinyin) in [
+            ("的", "de"),
+            ("大", "da"),
+            ("时候", "shi hou"),
+            ("其他", "qi ta"),
+        ] {
+            lex.insert_pinyin_word(text, pinyin, -2.0, false);
+        }
+        let dec = LatticeDecoder::new();
+        let store = UserStore::new();
+        for scheme in [
+            ShuangpinScheme::Xiaohe,
+            ShuangpinScheme::Ziranma,
+            ShuangpinScheme::Microsoft,
+        ] {
+            let ctx = DecodeContext {
+                scheme,
+                ..Default::default()
+            };
+            for (keys, expected) in [("d", "的"), ("d", "大"), ("uih", "时候"), ("qit", "其他")]
+            {
+                let cands = dec.decode(keys, &lex, &store, &ctx);
+                assert!(
+                    cands.iter().take(5).any(|c| c.text == expected
+                        && c.consumed_bytes == keys.len()
+                        && c.kind == MatchKind::Abbreviation),
+                    "{scheme:?}: {keys} -> {cands:?}"
+                );
+            }
+            let complete = dec.decode("de", &lex, &store, &ctx);
+            assert_eq!(complete[0].text, "的");
+            assert_eq!(complete[0].kind, MatchKind::Exact);
+            assert!(!complete.iter().any(|c| c.text == "大"));
+        }
+    }
 
     #[test]
     fn test_should_decode_modeless_chinese_english_mixed_sentence() {

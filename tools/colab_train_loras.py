@@ -222,6 +222,7 @@ class Qwen3FrozenBaseWithLora(nn.Module):
 class GreedyCompactTokenizer:
     def __init__(self, vocab_strings: list[str]) -> None:
         self.p2i = {p: i for i, p in enumerate(vocab_strings)}
+        self.max_len = min(16, max((len(p) for p in vocab_strings), default=6))
         self.unk = 1
 
     def encode(self, text: str) -> list[int]:
@@ -229,10 +230,7 @@ class GreedyCompactTokenizer:
         n = len(text)
         i = 0
         while i < n:
-            if text[i].isspace():
-                i += 1
-                continue
-            max_span = min(6, n - i)
+            max_span = min(self.max_len, n - i)
             matched_id = -1
             matched_span = 1
             for span in range(max_span, 0, -1):
@@ -244,6 +242,8 @@ class GreedyCompactTokenizer:
             if matched_id >= 0:
                 out.append(matched_id)
                 i += matched_span
+            elif text[i].isspace():
+                i += 1
             else:
                 out.append(self.unk)
                 i += 1
@@ -252,7 +252,12 @@ class GreedyCompactTokenizer:
 
 def collect_benchmark_5grams() -> set[str]:
     forbidden: set[str] = set()
-    for p in (Path("benchmarks/dev_suite.tsv"), Path("benchmarks/test_holdout.tsv")):
+    for p in (
+        Path("benchmarks/dev_suite.tsv"),
+        Path("benchmarks/test_holdout.tsv"),
+        Path("benchmarks/dev_suite_10k.tsv"),
+        Path("benchmarks/test_holdout_10k.tsv"),
+    ):
         if not p.exists():
             continue
         for line in p.read_text(encoding="utf-8").splitlines():
@@ -269,12 +274,23 @@ def collect_benchmark_5grams() -> set[str]:
 
 def augment_tech_corpus_from_hf(seed_lines: list[str], target_chars: int = 2_200_000) -> list[str]:
     forbidden_5grams = collect_benchmark_5grams()
-    lines = list(seed_lines[:24])
+    # Keep deduplicated local seed passages (5-gram filtered) plus bilingual Chinese+English tech prose.
+    lines: list[str] = []
+    for s in dict.fromkeys(seed_lines):
+        cjk = "".join(c for c in s if "\u4e00" <= c <= "\u9fa5")
+        if any(cjk[i : i + 5] in forbidden_5grams for i in range(max(0, len(cjk) - 4))):
+            continue
+        lines.append(s)
+    lines = lines * 2
     chars = sum(len(s) for s in lines)
-    tech_keywords = (
+    en_tech_keywords = (
+        "Rust", "Python", "Swift", "Linux", "macOS", "GitHub", "API", "SQL", "GPU", "Docker",
+        "Kubernetes", "TypeScript", "JavaScript", "PostgreSQL", "Redis", "PyTorch", "CUDA",
+        "Metal", "Git", "HTTP", "JSON", "gRPC", "LLM", "LoRA", "CI/CD", "PR", "CLI", "SDK",
+    )
+    zh_tech_keywords = (
         "代码", "编译", "内存", "线程", "并发", "接口", "模型", "推理", "集群", "数据库",
         "函数", "算法", "架构", "服务器", "缓存", "协议", "部署", "容器", "索引", "延迟",
-        "Rust", "Python", "Swift", "Linux", "macOS", "GitHub", "API", "SQL", "GPU", "Docker",
     )
     sources = [
         ("opencsg/FineWeb-Edu-Chinese-V2.1", None, ["text"]),
@@ -293,7 +309,9 @@ def augment_tech_corpus_from_hf(seed_lines: list[str], target_chars: int = 2_200
                 txt = " ".join(str(row.get(f, "")).strip() for f in fields if row.get(f)).strip()
                 if len(txt) < 30:
                     continue
-                if any(kw in txt for kw in tech_keywords):
+                if any(kw in txt for kw in en_tech_keywords) or sum(
+                    1 for kw in zh_tech_keywords if kw in txt
+                ) >= 2:
                     snippet = txt[:500].replace("\n\n", "\n")
                     cjk = "".join(c for c in snippet if "\u4e00" <= c <= "\u9fa5")
                     if any(cjk[i : i + 5] in forbidden_5grams for i in range(max(0, len(cjk) - 4))):
@@ -318,7 +336,13 @@ def tokenize_into_blocks(lines: list[str], tok: GreedyCompactTokenizer, seq_len:
     flat: list[int] = []
     sep = tok.p2i.get("。", 0)
     for ln in shuffled:
-        ids = [i for i in tok.encode(ln) if i != tok.unk]
+        raw_ids = tok.encode(ln)
+        if not raw_ids:
+            continue
+        unk_cnt = sum(1 for i in raw_ids if i == tok.unk)
+        if unk_cnt / len(raw_ids) > 0.08:
+            continue
+        ids = [i for i in raw_ids if i != tok.unk]
         if len(ids) >= 6:
             flat.extend(ids)
             if flat[-1] != sep:
@@ -362,6 +386,8 @@ def train_one_lora(
         return sum(losses) / max(1, len(losses))
 
     base_nll = eval_nll()
+    best_nll = base_nll
+    best_state: dict[str, torch.Tensor] | None = None
     print(f"\n=== [{name}] Training Rank-8 LoRA ({steps} steps, blocks={n_total}) | base_val_nll={base_nll:.4f} ===", flush=True)
     t0 = time.time()
 
@@ -385,16 +411,21 @@ def train_one_lora(
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
 
-        if step % 150 == 0 or step == steps:
+        if step % 50 == 0 or step == steps:
             val_nll = eval_nll()
+            if val_nll < best_nll:
+                best_nll = val_nll
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items() if "lora_" in k}
             print(
                 f"  [{name}] step {step:4d}/{steps} | train_nll={loss.item():.4f} | "
-                f"val_nll={val_nll:.4f} (delta={val_nll - base_nll:+.4f}) | {time.time() - t0:.1f}s",
+                f"val_nll={val_nll:.4f} (delta={val_nll - base_nll:+.4f}, best={best_nll:.4f}) | {time.time() - t0:.1f}s",
                 flush=True,
             )
 
+    if best_state is not None:
+        model.load_state_dict(best_state, strict=False)
     mb = model.export_lora_fp16(out_path)
-    print(f"=== [{name}] Saved {out_path} ({mb:.2f} MB) ===", flush=True)
+    print(f"=== [{name}] Saved {out_path} ({mb:.2f} MB, best_val_nll={best_nll:.4f}) ===", flush=True)
 
 
 def main() -> None:
@@ -433,13 +464,6 @@ def main() -> None:
         dev_label = "CPU"
     print(f"Device: {device} ({dev_label}, dtype={compute_dtype})", flush=True)
 
-    snap = Path(
-        snapshot_download(
-            "Qwen/Qwen3-0.6B-Base",
-            allow_patterns=["config.json", "tokenizer*", "vocab.json", "merges.txt", "model.safetensors"],
-        )
-    )
-    orig_cfg = json.loads((snap / "config.json").read_text(encoding="utf-8"))
     vocab_strings = json.loads(args.vocab.read_text(encoding="utf-8"))
 
     if args.q4_model_dir is not None and (args.q4_model_dir / "model.safetensors").exists():
@@ -447,16 +471,22 @@ def main() -> None:
         import numpy as np
 
         q4_cfg = json.loads((args.q4_model_dir / "config.json").read_text(encoding="utf-8"))
+        orig_cfg = q4_cfg
         q_gs = q4_cfg["quantization"]["group_size"]
         q_bits = q4_cfg["quantization"]["bits"]
+        emb_gs = q4_cfg["quantization"].get("embed_group_size", q_gs)
+        emb_bits = q4_cfg["quantization"].get("embed_bits", q_bits)
         q4_w = mx.load(str(args.q4_model_dir / "model.safetensors"))
-        emb_deq = mx.dequantize(
-            q4_w["model.embed_tokens.weight"],
-            q4_w["model.embed_tokens.scales"],
-            q4_w["model.embed_tokens.biases"],
-            q_gs,
-            q_bits,
-        ).astype(mx.float16)
+        if "model.embed_tokens.scales" in q4_w:
+            emb_deq = mx.dequantize(
+                q4_w["model.embed_tokens.weight"],
+                q4_w["model.embed_tokens.scales"],
+                q4_w["model.embed_tokens.biases"],
+                emb_gs,
+                emb_bits,
+            ).astype(mx.float16)
+        else:
+            emb_deq = q4_w["model.embed_tokens.weight"].astype(mx.float16)
         mx.eval(emb_deq)
         embed_pruned = torch.from_numpy(np.array(emb_deq)).contiguous()
         student_st: dict[str, torch.Tensor] = {
@@ -497,10 +527,18 @@ def main() -> None:
                         np.array(q4_w[f"{p}.{proj}.bias"].astype(mx.float16))
                     ).contiguous()
         print(
-            f"Loaded exact dequantized 4-bit runtime manifold from {args.q4_model_dir} (group_size={q_gs}, bits={q_bits})",
+            f"Loaded exact dequantized {num_layers}L runtime manifold from {args.q4_model_dir} "
+            f"(embed={emb_bits}b/g{emb_gs}, layers={q_bits}b/g{q_gs})",
             flush=True,
         )
     else:
+        snap = Path(
+            snapshot_download(
+                "Qwen/Qwen3-0.6B-Base",
+                allow_patterns=["config.json", "tokenizer*", "vocab.json", "merges.txt", "model.safetensors"],
+            )
+        )
+        orig_cfg = json.loads((snap / "config.json").read_text(encoding="utf-8"))
         hf_tok = AutoTokenizer.from_pretrained(str(snap))
         bos_id = 151643
         selected_old_ids = [bos_id, bos_id]
@@ -539,7 +577,7 @@ def main() -> None:
 
     if args.tech_txt.exists():
         t_seed = [ln.strip() for ln in args.tech_txt.read_text(encoding="utf-8").splitlines() if len(ln.strip()) >= 8]
-        t_lines = t_seed * 12 if args.skip_hf_tech else augment_tech_corpus_from_hf(t_seed, target_chars=1_200_000)
+        t_lines = t_seed * 12 if args.skip_hf_tech else augment_tech_corpus_from_hf(t_seed, target_chars=600_000)
         t_blocks = tokenize_into_blocks(t_lines, compact_tok, seq_len=96)
         train_one_lora(
             "tech",
@@ -550,6 +588,7 @@ def main() -> None:
             args.out_dir / "tech_lora.safetensors",
             steps=args.steps,
             batch_size=args.batch_size,
+            lr=6e-5,
             device=device,
         )
 

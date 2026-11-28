@@ -37,6 +37,7 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
-        )
+        ),
+        .testTarget(name: "ChimeIMETests", dependencies: ["ChimeIME"])
     ]
 )

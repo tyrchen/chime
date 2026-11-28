@@ -50,6 +50,19 @@ public final class ChimeSettingsWindowController {
             CoreMLStatefulReranker.shared.loadInstalledModelIfPresent()
         }
     }
+
+    public func presentTier2ModelFolderPanel() -> String? {
+        let panel = NSOpenPanel()
+        panel.title = "选择本地 MLX 4-bit Qwen3-Base 模型目录（含 config.json / vocab.json / merges.txt）"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            return url.path
+        }
+        return nil
+    }
 }
 
 private enum SettingsTab: String, CaseIterable, Identifiable {
@@ -302,10 +315,68 @@ struct ChimeSettingsView: View {
                     LabeledContent(
                         "端侧神经解码引擎",
                         value: (status.neural_loaded || CoreMLStatefulReranker.shared.isLoaded)
-                            ? "Qwen3 28L 4-bit MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
+                            ? "Qwen3 BI-18L 混合精度 MLX Metal 已就绪（激活 \(status.active_loras ?? 0) 个 LoRA）"
                             : "统计双轨模式"
                     )
+                    LabeledContent(
+                        "高精度重排器 (Two-Tier)",
+                        value: (status.tier2_loaded ?? false)
+                            ? "已挂载本地 4-bit MLX 重排器"
+                            : (config.tier2_enabled ? "已开启（等待有效模型目录）" : "未启用")
+                    )
                 }
+            }
+
+            Section("高精度本地两阶段重排（Two-Tier · 可选 · 100% 离线）") {
+                Toggle(
+                    "启用置信度门控 Two-Tier 本地重排（低置信度长句自动精排）",
+                    isOn: $config.tier2_enabled
+                )
+
+                LabeledContent("本地模型目录") {
+                    Text(
+                        config.tier2_model_dir.isEmpty
+                            ? ((status?.tier2_model_dir?.isEmpty == false)
+                                ? (status?.tier2_model_dir ?? "")
+                                : "默认：~/Library/Application Support/Chime/models/tier2")
+                            : config.tier2_model_dir
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
+
+                HStack(spacing: 10) {
+                    Button("选择本地模型目录…") {
+                        if let chosen = ChimeSettingsWindowController.shared.presentTier2ModelFolderPanel() {
+                            config.tier2_model_dir = chosen
+                            config.tier2_enabled = true
+                        }
+                    }
+                    if !config.tier2_model_dir.isEmpty {
+                        Button("恢复默认目录") {
+                            config.tier2_model_dir = ""
+                        }
+                    }
+                    Spacer()
+                }
+
+                Picker("置信度触发阈值 (margin)", selection: $config.tier2_margin_threshold) {
+                    Text("保守 (1.5 · 仅极低置信度)").tag(1.5)
+                    Text("平衡 (3.0 · 推荐)").tag(3.0)
+                    Text("积极 (4.5 · 更多长句精排)").tag(4.5)
+                }
+
+                Picker("Tier-2 语义融合权重 (alpha)", selection: $config.tier2_alpha) {
+                    Text("温和 (0.50)").tag(0.50)
+                    Text("均衡 (0.65 · 推荐)").tag(0.65)
+                    Text("偏重 Tier-2 (0.85)").tag(0.85)
+                }
+
+                Text("16 GB+ 统一内存推荐 Qwen3-4B-Base 4-bit (~2.3 GB)；8–16 GB 推荐 Qwen3-1.7B-Base 4-bit (~1.0 GB)。仅在 Tier-1 前两名分差低于阈值时触发，并自动保护「的/地/得」语法精度。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("官方扩展卡带一键安装与更新（SHA-256 校验 · 热挂载免重启）") {

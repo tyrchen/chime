@@ -4,13 +4,57 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use chime_phonetics::{
-    FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact, canonical_syllable,
+    FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact,
+    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_initial,
     expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
 };
 use serde::Deserialize;
 use smallvec::SmallVec;
 
 use crate::NeuralError;
+
+/// Acoustic and keystroke channel log-probability parameters for [`TokenPinyinIndex`] lattice
+/// construction (centralized to eliminate scattered magic numbers and length cliffs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelConfig {
+    /// Additional log-prob cost layered on top of `FuzzyConfig::fuzzy_penalty`.
+    pub fuzzy_extra_cost: f32,
+    /// Base channel cost for typo recovery on non-canonical spans (`shaung`, `meo`, `tonh`).
+    pub typo_noncanonical_base_cost: f32,
+    /// Base channel cost for immediate QWERTY neighbor recovery on canonical syllables.
+    pub typo_canonical_neighbor_base_cost: f32,
+    /// Maximum Euclidean keyboard edit cost accepted for canonical-syllable neighbor recovery.
+    pub max_canonical_neighbor_dist_cost: f32,
+    /// Channel cost for shared-boundary nasal/velar consonant elision (`chunuan -> chun+nuan`).
+    pub geminate_elision_cost: f32,
+    /// Log-prob penalty applied to Traditional-only CJK tokens when left context is Simplified.
+    pub traditional_penalty: f32,
+    /// Maximum motor-typo syllables permitted inside a single multi-syllable vocabulary token.
+    pub max_typos_per_token: u8,
+    /// When `true`, also expand immediate QWERTY neighbor-key substitutions on already-valid
+    /// canonical syllables (`shuruga -> shurufa`). Enabled on-demand via surprisal-spike rescue so
+    /// clean sentences pay zero fan-out overhead regardless of sentence length.
+    pub enable_canonical_neighbor_typos: bool,
+    /// Optional byte window `(start, end)` restricting canonical neighbor-key expansion to the
+    /// localized surprisal-spike region (`None` expands across the full buffer).
+    pub canonical_neighbor_window: Option<(usize, usize)>,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            fuzzy_extra_cost: 0.85,
+            typo_noncanonical_base_cost: 2.10,
+            typo_canonical_neighbor_base_cost: 3.80,
+            max_canonical_neighbor_dist_cost: 1.35,
+            geminate_elision_cost: 2.40,
+            traditional_penalty: 4.80,
+            max_typos_per_token: 1,
+            enable_canonical_neighbor_typos: false,
+            canonical_neighbor_window: None,
+        }
+    }
+}
 
 /// A single phonetically valid token transition spanning `start..end` in the raw keystroke buffer.
 #[derive(Debug, Clone, Copy)]
@@ -239,14 +283,26 @@ impl TokenPinyinIndex {
         // Build syllable edges for `0..n.min(18)` (suffix of a 2-4 char token is at most 3 syls).
         let cap = n.min(18);
         let mut syl_edges: Vec<Vec<(usize, SyllableId, f32, bool)>> = vec![Vec::new(); cap];
+        let initial_mask = (scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(scheme, bytes));
         for start in 0..cap {
             if bytes[start] == b'\'' {
                 continue;
             }
-            if scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if start + 2 <= cap && bytes[start + 1] != b'\'' {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true));
+                    }
+                }
+                if mask[start] {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((
+                            start + 1,
+                            sid,
+                            chime_phonetics::shuangpin::initial_log_cost(start + 1, n),
+                            false,
+                        ));
                     }
                 }
                 continue;
@@ -413,16 +469,35 @@ impl TokenPinyinIndex {
             .map_or("", String::as_str)
     }
 
-    /// Builds the acoustic syllable lattice and expands it through the Pinyin-to-Token Trie to
-    /// produce `edges_by_start[pos]` for every byte position `0..raw_input.len()`.
+    /// Builds the acoustic syllable lattice using default [`ChannelConfig`] and expands it through
+    /// the Pinyin-to-Token Trie to produce `edges_by_start[pos]` for `0..raw_input.len()`.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn build_token_lattice(
         &self,
         raw_input: &str,
         scheme: ShuangpinScheme,
         fuzzy: FuzzyConfig,
         allow_traditional: bool,
+    ) -> Vec<Vec<TokenEdge>> {
+        self.build_token_lattice_with_config(
+            raw_input,
+            scheme,
+            fuzzy,
+            allow_traditional,
+            ChannelConfig::default(),
+        )
+    }
+
+    /// Builds the acoustic syllable lattice with explicit [`ChannelConfig`] parameters.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn build_token_lattice_with_config(
+        &self,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        allow_traditional: bool,
+        cfg: ChannelConfig,
     ) -> Vec<Vec<TokenEdge>> {
         type SylEdge = (usize, SyllableId, f32, bool, bool);
         type TrieWalkState = (usize, usize, f32, bool, u8, u8);
@@ -434,31 +509,77 @@ impl TokenPinyinIndex {
         }
         let lower = raw_input.to_ascii_lowercase();
         let bytes = lower.as_bytes();
-        let full_is_canonical = scheme == ShuangpinScheme::Full && can_segment_exact(&lower);
+        let full_is_canonical =
+            scheme == ShuangpinScheme::Full && can_segment_strict_orthography(&lower);
+
+        // Pre-mark byte spans covered by exact curated non-Pinyin tech/English words (`len >= 5`,
+        // e.g. `obsidian`, `tokio`, `vscode`, `cloudflare`, `swiftui`, `kubernetes`) so motor-typo
+        // CJK recovery never invents bogus phonetic Chinese (`ob -> bo` -> `博士点`, `to -> ti` ->
+        // `提括`) directly over an exact non-Pinyin English word, without blocking short accidental
+        // repeat typos inside Pinyin (`shuruffa` accidentally overlapping 4-letter `ruff`).
+        let mut in_non_pinyin_en = vec![false; n];
+        if scheme == ShuangpinScheme::Full {
+            for s in 0..n {
+                if !bytes[s].is_ascii_alphabetic() {
+                    continue;
+                }
+                let max_e = (s + 16).min(n);
+                for e in (s + 5)..=max_e {
+                    if !bytes[e - 1].is_ascii_alphanumeric() {
+                        break;
+                    }
+                    let sl = &lower[s..e];
+                    if (self.en_multi.contains_key(sl) || self.en_canonical_case.contains_key(sl))
+                        && !can_segment_exact(sl)
+                    {
+                        for flag in &mut in_non_pinyin_en[s..e] {
+                            *flag = true;
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Build syllable-level acoustic channel edges: `(end, SyllableId, channel_cost,
         //    is_exact, is_typo)`
         let mut syl_edges: Vec<Vec<SylEdge>> = vec![Vec::new(); n];
+        let initial_mask = (scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(scheme, bytes));
         for start in 0..n {
             if bytes[start] == b'\'' {
                 continue;
             }
-            if scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if start + 2 <= n && bytes[start] != b'\'' && bytes[start + 1] != b'\'' {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true, false));
                     }
                 }
+                if mask[start] {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((
+                            start + 1,
+                            sid,
+                            chime_phonetics::shuangpin::initial_log_cost(start + 1, n),
+                            false,
+                            false,
+                        ));
+                    }
+                }
                 continue;
             }
 
-            let max_end = (start + 6).min(n);
+            let max_end = (start + 7).min(n);
             for end in (start + 1)..=max_end {
                 if bytes[end - 1] == b'\'' {
                     break;
                 }
                 let slice = &lower[start..end];
-                let canonical = lookup_syllable(slice);
+                let canonical = if slice.len() <= 6 {
+                    lookup_syllable(slice)
+                } else {
+                    None
+                };
                 if let Some(sid) = canonical {
                     syl_edges[start].push((end, sid, 0.0, true, false));
                     // Shared-boundary nasal/velar elision (`chunuan -> chun + nuan`,
@@ -470,55 +591,107 @@ impl TokenPinyinIndex {
                         && end < n
                         && matches!(bytes[end], b'a' | b'e' | b'i' | b'o' | b'u' | b'v')
                     {
-                        syl_edges[start].push((end - 1, sid, -2.40, false, true));
+                        syl_edges[start].push((
+                            end - 1,
+                            sid,
+                            -cfg.geminate_elision_cost,
+                            false,
+                            true,
+                        ));
                     }
-                    // Tight single-key QWERTY neighbor recovery on valid syllables (`shulufa ->
-                    // shurufa`, `shuruga -> shurufa`, `biyao -> buyao`, `landaoni -> kandaoni`) at
-                    // a strong `-4.45` channel cost, restricted to immediate physical neighbors
-                    // (`edit.cost() <= 1.35`) so clean long sentences stay fast and never misfire!
-                    if n <= 28 && slice.len() >= 2 {
+                    // Tight single-key QWERTY neighbor recovery on valid syllables (only when
+                    // explicitly enabled by surprisal-spike rescue — zero overhead on clean
+                    // sentences and zero arbitrary sentence-length cutoff!).
+                    let in_neighbor_window = cfg
+                        .canonical_neighbor_window
+                        .is_none_or(|(lo, hi)| end > lo && start < hi);
+                    if cfg.enable_canonical_neighbor_typos && in_neighbor_window && slice.len() >= 2
+                    {
                         for (tid_syl, edit) in generate_typo_variants(slice) {
                             if tid_syl != sid
-                                && matches!(edit, TypoEdit::NeighborKey { cost } if cost <= 1.35)
+                                && matches!(
+                                    edit,
+                                    TypoEdit::NeighborKey { cost }
+                                        if cost <= cfg.max_canonical_neighbor_dist_cost
+                                )
                             {
-                                let cost = -edit.cost() - 4.55;
+                                let cost = -edit.cost() - cfg.typo_canonical_neighbor_base_cost;
+                                syl_edges[start].push((end, tid_syl, cost, false, true));
+                            } else if tid_syl != sid
+                                && matches!(edit, TypoEdit::AdjacentSwap { .. })
+                            {
+                                let cost =
+                                    -edit.cost() - (cfg.typo_canonical_neighbor_base_cost - 0.35);
                                 syl_edges[start].push((end, tid_syl, cost, false, true));
                             }
                         }
                     }
                 }
-                // Always run fuzzy expansion for `len >= 2` EVEN when `slice` itself is NOT a
+                // Always run fuzzy expansion for `2..=6` EVEN when `slice` itself is NOT a
                 // canonical Mandarin syllable (e.g. `suang -> shuang`, `diang -> dian`,
                 // `zuang -> zhuang`, `cuang -> chuang`, `tiang -> tian`)!
-                if slice.len() >= 2 {
+                // On a standalone canonical single-syllable input (`gen`), exact-pinyin characters
+                // must strongly lead fuzzy equivalents (`geng -> 更`) so cold-start unigram skew
+                // never usurps Slot #1.
+                let mut has_single_fuzzy = false;
+                if (2..=6).contains(&slice.len()) {
+                    let single_syl_exact_extra = if start == 0 && end == n && canonical.is_some() {
+                        2.0
+                    } else {
+                        0.0
+                    };
                     for (fid, fcost) in fuzzy.expand(slice) {
                         if Some(fid) != canonical {
-                            syl_edges[start].push((end, fid, -fcost - 0.85, false, false));
+                            if fcost <= fuzzy.fuzzy_penalty + 0.05 {
+                                has_single_fuzzy = true;
+                            }
+                            syl_edges[start].push((
+                                end,
+                                fid,
+                                -fcost - cfg.fuzzy_extra_cost - single_syl_exact_extra,
+                                false,
+                                false,
+                            ));
                         }
                     }
                 }
-                if canonical.is_none() && slice.len() >= 2 {
+                if canonical.is_none() && slice.len() >= 2 && !in_non_pinyin_en[start] {
                     // Always allow transposition (`tina -> tian`, `yuo -> you`, `zia -> zai`,
                     // `yign -> ying`) and extra-repeat typos on non-syllable spans; allow QWERTY
-                    // neighbor substitutions on non-canonical inputs. Also chain fuzzy expansion
-                    // after typo repair so `mohuyign -> ying (typo) -> yin (fuzzy)` recovers!
+                    // neighbor substitutions whenever strict orthography fails (`suoyicaimeoqu`)
+                    // OR inside an on-demand localized surprisal-spike rescue window (e.g.
+                    // `qianean` falsely segmenting as `qian+e+an` while intending `qian+wan`).
+                    // Skip cheap non-canonical neighbor substitution when `slice` is already a
+                    // valid 1-edit Southern fuzzy Pinyin syllable (`suang -> shuang`,
+                    // `zuang -> zhuang`, `diang -> dian`) so `suangpin` does not prefer `商品`
+                    // over `双拼`.
+                    let in_neighbor_window = cfg
+                        .canonical_neighbor_window
+                        .is_none_or(|(lo, hi)| end > lo && start < hi);
+                    let allow_neighbor = !has_single_fuzzy
+                        && (!full_is_canonical
+                            || (cfg.enable_canonical_neighbor_typos && in_neighbor_window));
+                    let allow_repeat = !full_is_canonical
+                        || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
                     for (tid_syl, edit) in generate_typo_variants(slice) {
-                        let is_swap_or_rep = matches!(
-                            edit,
-                            TypoEdit::AdjacentSwap { .. } | TypoEdit::ExtraRepeat { .. }
-                        );
-                        if !full_is_canonical || is_swap_or_rep {
-                            let cost = -edit.cost() - 2.10;
+                        let allowed = match edit {
+                            TypoEdit::AdjacentSwap { .. } => true,
+                            TypoEdit::ExtraRepeat { .. } => allow_repeat,
+                            TypoEdit::NeighborKey { .. } => allow_neighbor,
+                        };
+                        if allowed {
+                            let base_cost = if full_is_canonical
+                                && matches!(edit, TypoEdit::ExtraRepeat { .. })
+                            {
+                                cfg.typo_canonical_neighbor_base_cost
+                            } else {
+                                cfg.typo_noncanonical_base_cost
+                            };
+                            let cost = -edit.cost() - base_cost;
                             syl_edges[start].push((end, tid_syl, cost, false, true));
                             for (fid, fcost) in fuzzy.expand(canonical_syllable(tid_syl)) {
                                 if fid != tid_syl {
-                                    syl_edges[start].push((
-                                        end,
-                                        fid,
-                                        cost - fcost - 0.85,
-                                        false,
-                                        true,
-                                    ));
+                                    syl_edges[start].push((end, fid, cost - fcost, false, true));
                                 }
                             }
                         }
@@ -548,7 +721,7 @@ impl TokenPinyinIndex {
                 let node = &self.nodes[node_idx];
                 for &tid in &node.token_ids {
                     let trad_pen = if !allow_traditional && self.is_traditional_token(tid) {
-                        -4.80
+                        -cfg.traditional_penalty
                     } else {
                         0.0
                     };
@@ -576,7 +749,7 @@ impl TokenPinyinIndex {
                             // `zici -> 支持`) inside a multi-syllable token, while capping motor
                             // typos to at most 1 per token!
                             let next_typos = typo_cnt + u8::from(is_typo2);
-                            if next_typos > 1 {
+                            if next_typos > cfg.max_typos_per_token {
                                 continue;
                             }
                             if let Some(&child) = node.children.get(&sid2) {
@@ -607,25 +780,41 @@ impl TokenPinyinIndex {
                     if let Some((_, mtids)) = self.en_multi.get(slice)
                         && let Some(&first_tid) = mtids.first()
                     {
-                        // Multi-token tech proper noun (`ChatGPT`, `Kubernetes`, `TypeScript`,
-                        // `Redis`, `PyTorch`, `WebSocket`, `Protobuf`, `Safetensors`, `Colab`,
-                        // `Cloudflare`, `Swift`, `macOS`): prefer canonical full-word span over
-                        // fragmented subwords (`py` + `torch`, `saf` + `特` + `ensors`).
+                        // Multi-token tech/English word (`Obsidian`, `ChatGPT`, `Kubernetes`,
+                        // `TypeScript`, `PyTorch`, `VSCode`, `gRPC`, `WebSocket`, `Cloudflare`,
+                        // `SwiftUI`, `Tokio`, ...): beam search advances the KV-cache through
+                        // every token in `mtids`. When `slice` cannot be canonically segmented as
+                        // Pinyin (`obsidian`, `tokio`, `vscode`, `cloudflare`, ...), compensate
+                        // mildly for BPE sub-word fragmentation so bogus typo-decoded Chinese
+                        // (`博士点`, `提括`) never beats an exact curated non-Pinyin tech word.
+                        #[allow(clippy::cast_precision_loss)]
+                        let en_multi_prior = if can_segment_exact(slice) {
+                            1.15
+                        } else {
+                            1.15 + 1.10 * (mtids.len().saturating_sub(1) as f32)
+                        };
                         let entry = best_map.entry((first_tid, end)).or_insert((
                             f32::NEG_INFINITY,
                             false,
                             true,
                         ));
-                        if 3.05 > entry.0 {
-                            *entry = (3.05, true, true);
+                        if en_multi_prior > entry.0 {
+                            *entry = (en_multi_prior, true, true);
                         }
                     } else if let Some(tids) = self.en_exact.get(slice) {
+                        let is_embedded_lower =
+                            !(start == 0 && end == n) && &raw_input[start..end] == slice;
                         let en_pen = if is_known_tech {
                             0.35
                         } else if slice.len() <= 2 && lookup_syllable(slice).is_some() {
                             -2.80
                         } else if slice.len() <= 3 && can_segment_exact(slice) {
                             -1.80
+                        } else if is_embedded_lower
+                            && chime_phonetics::classify_code_switch(slice)
+                                == chime_phonetics::CodeSwitchSignal::AmbiguousAscii
+                        {
+                            -2.20
                         } else {
                             -0.65
                         };
@@ -659,5 +848,295 @@ impl TokenPinyinIndex {
         }
 
         edges_by_start
+    }
+
+    /// Strips Pangu ASCII spaces at CJK/ASCII boundaries while preserving spaces between
+    /// consecutive ASCII alphanumerics so split English candidates (`vs code`) cannot silently
+    /// match an unsplit curated compound edge (`VSCode`).
+    fn strip_pangu_spaces(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        for (i, &c) in chars.iter().enumerate() {
+            if c == ' ' {
+                let prev_ascii = i > 0 && chars[i - 1].is_ascii_alphanumeric();
+                let next_ascii = i + 1 < chars.len() && chars[i + 1].is_ascii_alphanumeric();
+                if prev_ascii && next_ascii && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Aligns `candidate_text` against a pre-built token lattice, returning the minimum phonetic /
+    /// keystroke channel cost `(channel_cost, is_exact)`.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn exact_channel_cost_with_lattice(
+        &self,
+        raw_input: &str,
+        candidate_text: &str,
+        lattice: &[Vec<TokenEdge>],
+    ) -> Option<(f32, bool)> {
+        type AlignState = (usize, Option<usize>, f32, bool);
+
+        let n = raw_input.len();
+        if n == 0 || candidate_text.is_empty() || lattice.len() != n {
+            return None;
+        }
+        let compact = Self::strip_pangu_spaces(candidate_text);
+        let m = compact.len();
+        if m == 0 {
+            return None;
+        }
+        let lower_raw = raw_input.to_ascii_lowercase();
+        let raw_b = raw_input.as_bytes();
+        // Sparse DP over `(raw_pos, text_byte_pos, prev_en_start) -> (best_cost, is_exact)`.
+        // When a Stage-1 proposal splits a curated compound tech word (`vscode` -> `vs code`,
+        // `swiftui` -> `Swift UI`, `cloudflare` -> `Cloud Fl are`) into consecutive English edges
+        // without an actual space, apply the exact same `-3.60` penalty as Route A beam search
+        // while leaving legitimate multi-word English phrases (`git push`) untouched!
+        let mut dp: HashMap<(usize, usize, Option<usize>), (f32, bool)> = HashMap::new();
+        dp.insert((0, 0, None), (0.0, true));
+        for pos in 0..n {
+            let mut cur_states: SmallVec<[AlignState; 8]> = SmallVec::new();
+            for (&(rp, tp, prev_en_start), &(cost, ex)) in &dp {
+                if rp == pos {
+                    cur_states.push((tp, prev_en_start, cost, ex));
+                }
+            }
+            if cur_states.is_empty() {
+                continue;
+            }
+            if raw_b[pos] == b'\'' {
+                for (tp, prev_en_start, cost, ex) in cur_states {
+                    let e = dp
+                        .entry((pos + 1, tp, prev_en_start))
+                        .or_insert((f32::NEG_INFINITY, false));
+                    if cost > e.0 {
+                        *e = (cost, ex);
+                    }
+                }
+                continue;
+            }
+            for (tp, prev_en_start, cost, ex) in cur_states {
+                let rem = &compact[tp..];
+                if rem.is_empty() {
+                    continue;
+                }
+                let en_space_skip = usize::from(prev_en_start.is_some() && rem.starts_with(' '));
+                let en_rem = &rem[en_space_skip..];
+                for edge in &lattice[pos] {
+                    let matched_len = if edge.is_english {
+                        let surf = self
+                            .canonical_en_case(&lower_raw[pos..edge.end])
+                            .unwrap_or_else(|| {
+                                self.token_str(edge.token_id).trim_start_matches(' ')
+                            });
+                        if !surf.is_empty()
+                            && en_rem.len() >= surf.len()
+                            && en_rem.is_char_boundary(surf.len())
+                            && en_rem[..surf.len()].eq_ignore_ascii_case(surf)
+                        {
+                            Some(en_space_skip + surf.len())
+                        } else {
+                            None
+                        }
+                    } else {
+                        let tok = self.token_str(edge.token_id);
+                        if !tok.is_empty() && rem.starts_with(tok) {
+                            Some(tok.len())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(mlen) = matched_len {
+                        let next_tp = tp + mlen;
+                        let splits_curated_en = edge.is_english
+                            && prev_en_start.is_some_and(|s0| {
+                                let joined = &lower_raw[s0..edge.end];
+                                self.en_multi.contains_key(joined)
+                                    || self.en_canonical_case.contains_key(joined)
+                            });
+                        let en_split_pen = if splits_curated_en { -3.60 } else { 0.0 };
+                        let next_cost = cost + edge.channel_cost + en_split_pen;
+                        let next_ex = ex && edge.is_exact;
+                        let next_en_start = if edge.is_english {
+                            Some(prev_en_start.unwrap_or(pos))
+                        } else {
+                            None
+                        };
+                        let e = dp
+                            .entry((edge.end, next_tp, next_en_start))
+                            .or_insert((f32::NEG_INFINITY, false));
+                        if next_cost > e.0 || ((next_cost - e.0).abs() < 1e-6 && next_ex && !e.1) {
+                            *e = (next_cost, next_ex);
+                        }
+                    }
+                }
+            }
+        }
+        let mut best: Option<(f32, bool)> = None;
+        for (&(rp, tp, _), &val) in &dp {
+            if rp == n
+                && tp == m
+                && best.is_none_or(|b| val.0 > b.0 || ((val.0 - b.0).abs() < 1e-6 && val.1 && !b.1))
+            {
+                best = Some(val);
+            }
+        }
+        best
+    }
+
+    /// Computes the exact minimum acoustic/keystroke channel cost `(channel_cost, is_exact)` for
+    /// aligning `candidate_text` to `raw_input` under the exact same [`ChannelConfig`] &
+    /// [`FuzzyConfig`] used by Route A beam search.
+    #[must_use]
+    pub fn exact_channel_cost(
+        &self,
+        raw_input: &str,
+        candidate_text: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        allow_traditional: bool,
+        cfg: ChannelConfig,
+    ) -> Option<(f32, bool)> {
+        let primary_lattice =
+            self.build_token_lattice_with_config(raw_input, scheme, fuzzy, allow_traditional, cfg);
+        if let Some(res) =
+            self.exact_channel_cost_with_lattice(raw_input, candidate_text, &primary_lattice)
+        {
+            return Some(res);
+        }
+        if !cfg.enable_canonical_neighbor_typos && scheme == ShuangpinScheme::Full {
+            let neighbor_lattice = self.build_token_lattice_with_config(
+                raw_input,
+                scheme,
+                fuzzy,
+                allow_traditional,
+                ChannelConfig {
+                    enable_canonical_neighbor_typos: true,
+                    canonical_neighbor_window: None,
+                    ..cfg
+                },
+            );
+            return self.exact_channel_cost_with_lattice(
+                raw_input,
+                candidate_text,
+                &neighbor_lattice,
+            );
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn test_index() -> TokenPinyinIndex {
+        // Minimal vocabulary:
+        // 0: "在", 1: "里", 2: "用", 3: "吧", 4: "vs", 5: "code", 6: "VS", 7: "Code", 8: "git", 9:
+        // "push"
+        let id_to_token: Vec<String> = [
+            "在", "里", "用", "吧", "vs", "code", "VS", "Code", "git", "push",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let is_trad = vec![false; id_to_token.len()];
+
+        let mut nodes = vec![TrieNode::default()];
+        for (tid, syl) in [(0u32, "zai"), (1, "li"), (2, "yong"), (3, "ba")] {
+            let Some(sid) = lookup_syllable(syl) else {
+                panic!("invalid test syllable: {syl}");
+            };
+            let idx = nodes.len();
+            nodes.push(TrieNode {
+                children: HashMap::new(),
+                token_ids: vec![tid],
+            });
+            nodes[0].children.insert(sid, idx);
+        }
+
+        let mut en_exact = HashMap::new();
+        en_exact.insert("vs".to_string(), vec![4]);
+        en_exact.insert("code".to_string(), vec![5]);
+        en_exact.insert("git".to_string(), vec![8]);
+        en_exact.insert("push".to_string(), vec![9]);
+
+        let mut en_canonical_case = HashMap::new();
+        en_canonical_case.insert("vscode".to_string(), "VSCode".to_string());
+
+        let mut en_multi = HashMap::new();
+        en_multi.insert("vscode".to_string(), ("VSCode".to_string(), vec![6, 7]));
+
+        TokenPinyinIndex {
+            id_to_token,
+            is_trad,
+            nodes,
+            by_first_char: HashMap::new(),
+            skeleton_exact: HashMap::new(),
+            skeleton_single: std::array::from_fn(|_| Vec::new()),
+            en_exact,
+            en_canonical_case,
+            en_multi,
+        }
+    }
+
+    #[test]
+    fn curated_en_split_penalized_while_multiword_en_preserved() {
+        let idx = test_index();
+        let cfg = ChannelConfig::default();
+        let fuzzy = FuzzyConfig::default();
+
+        // Curated compound `vscode`: unsplit `VSCode` beats split `vs code` by > 5 log-prob.
+        let raw_vs = "zaivscodeli";
+        let lat_vs =
+            idx.build_token_lattice_with_config(raw_vs, ShuangpinScheme::Full, fuzzy, false, cfg);
+        let Some((unsplit_cost, unsplit_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_vs, "在 VSCode 里", &lat_vs)
+        else {
+            panic!("unsplit VSCode should align");
+        };
+        let Some((split_cost, split_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_vs, "在 vs code 里", &lat_vs)
+        else {
+            panic!("split vs code should align");
+        };
+        assert!(unsplit_exact);
+        assert!(split_exact);
+        assert!(
+            unsplit_cost - split_cost > 5.0,
+            "expected VSCode ({unsplit_cost}) to strongly beat split vs code ({split_cost})"
+        );
+
+        // Legitimate multi-word English phrase `git push`: sum of individual edge costs with ZERO
+        // `-3.60` curated split penalty.
+        let raw_gp = "yonggitpushba";
+        let lat_gp =
+            idx.build_token_lattice_with_config(raw_gp, ShuangpinScheme::Full, fuzzy, false, cfg);
+        let Some((gp_cost, gp_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_gp, "用 git push 吧", &lat_gp)
+        else {
+            panic!("git push should align");
+        };
+        assert!(gp_exact);
+        let expected_gp = lat_gp[4]
+            .iter()
+            .find(|e| e.is_english && e.end == 7)
+            .map_or(0.0, |e| e.channel_cost)
+            + lat_gp[7]
+                .iter()
+                .find(|e| e.is_english && e.end == 11)
+                .map_or(0.0, |e| e.channel_cost);
+        assert!(
+            (gp_cost - expected_gp).abs() < 1e-4,
+            "legitimate multi-word English phrase should not receive curated split penalty: got \
+             {gp_cost}, expected {expected_gp}"
+        );
     }
 }

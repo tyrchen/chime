@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 pub use crate::{
-    shuangpin::{ShuangpinScheme, expand_shuangpin_pair},
+    shuangpin::{ShuangpinScheme, expand_shuangpin_initial, expand_shuangpin_pair},
     syllables::{SyllableId, canonical_syllable, is_valid_syllable, lookup_syllable},
     typo::{TypoEdit, generate_typo_variants, keyboard_substitution_cost},
 };
@@ -281,6 +281,53 @@ pub fn can_segment_exact(input: &str) -> bool {
     reachable[n]
 }
 
+/// Checks whether `input` can be segmented under strict GB/T 16159 Pinyin orthography:
+/// forbids un-apostrophed medial single-letter zero-initial vowels (`a`, `e`, `o`) immediately
+/// following a vowel-ending syllable (e.g. `meo` in `suoyicaimeoqu` or `gouo` in
+/// `daodishuiyagouoshengri`), so motor-typo recovery is not masked by bogus lone-vowel splits.
+#[must_use]
+pub fn can_segment_strict_orthography(input: &str) -> bool {
+    if input.is_empty() {
+        return true;
+    }
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+    // `reach[i]`: bit 0 = reachable ending on consonant/apostrophe/start,
+    //             bit 1 = reachable ending on a vowel (`a/e/i/o/u/v`).
+    let mut reach = vec![0u8; n + 1];
+    reach[0] = 1;
+
+    for i in 0..n {
+        let state = reach[i];
+        if state == 0 {
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            reach[i + 1] |= 1;
+            continue;
+        }
+        let max_len = (n - i).min(6);
+        for len in 1..=max_len {
+            let sub = &input[i..i + len];
+            if !is_valid_syllable(sub) {
+                continue;
+            }
+            let end = i + len;
+            // Disallow un-apostrophed bare `a`/`e`/`o` immediately after a vowel-ending syllable:
+            // sentence-final `a`/`o` (`weidaa -> 伟大啊`) remain valid, while bare `e` after a
+            // vowel (`xincue -> cu+e`) is never a natural Mandarin syllable boundary.
+            let is_illegal_bare_vowel =
+                len == 1 && (bytes[i] == b'e' || (end < n && matches!(bytes[i], b'a' | b'o')));
+            if is_illegal_bare_vowel && (state & 1) == 0 {
+                continue;
+            }
+            let ends_vowel = matches!(bytes[end - 1], b'a' | b'e' | b'i' | b'o' | b'u' | b'v');
+            reach[end] |= if ends_vowel { 2 } else { 1 };
+        }
+    }
+    reach[n] != 0
+}
+
 /// Extracts the initial key (1-char or `zh`/`ch`/`sh`) of a canonical syllable.
 #[must_use]
 pub fn extract_initial_head(syllable: &str) -> &str {
@@ -305,6 +352,11 @@ pub fn format_segmented_preedit(raw: &str, scheme: ShuangpinScheme) -> String {
     }
     let lower = raw.to_ascii_lowercase();
     if scheme != ShuangpinScheme::Full {
+        let possible_initials = shuangpin::shuangpin_initial_mask(scheme, lower.as_bytes());
+        if raw.contains('\'') || possible_initials[..raw.len() - 1].contains(&true) {
+            // Boundaries depend on the selected candidate; don't show misleading fixed pairs.
+            return raw.to_owned();
+        }
         let mut parts = Vec::new();
         let mut i = 0usize;
         while i < raw.len() {
@@ -363,6 +415,16 @@ pub fn format_segmented_preedit(raw: &str, scheme: ShuangpinScheme) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_should_reject_unapostrophed_medial_bare_vowels_in_strict_orthography() {
+        assert!(!can_segment_strict_orthography("suoyicaimeoqu"));
+        assert!(!can_segment_strict_orthography("daodishuiyagouoshengri"));
+        assert!(!can_segment_strict_orthography("duiqingzhulezijixincue"));
+        assert!(can_segment_strict_orthography("aiqingzenweidaa"));
+        assert!(can_segment_strict_orthography("xi'an"));
+        assert!(can_segment_strict_orthography("suoyicaimeiqu"));
+    }
 
     #[test]
     fn test_should_expand_fuzzy_pinyin_without_invalid_syllables() {

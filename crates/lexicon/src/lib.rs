@@ -165,16 +165,18 @@ impl Lexicon {
             is_tech_term,
         };
 
-        if ids.len() >= 2 {
+        if (2..=4).contains(&ids.len()) && (log_prob >= -5.25 || is_tech_term) {
             let compact_initials: String = ids
                 .iter()
                 .filter_map(|id| canonical_syllable(*id).chars().next())
                 .collect();
             Self::upsert_sorted(
-                self.skeleton_map.entry(compact_initials).or_default(),
+                self.skeleton_map
+                    .entry(compact_initials.clone())
+                    .or_default(),
                 &entry,
             );
-            if skeleton != entry.surface {
+            if skeleton != compact_initials && skeleton != entry.surface {
                 Self::upsert_sorted(self.skeleton_map.entry(skeleton).or_default(), &entry);
             }
         }

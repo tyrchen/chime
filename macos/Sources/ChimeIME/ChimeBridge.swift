@@ -253,6 +253,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var kaomoji_suggestions: Bool
     public var suppress_emoji_in_ide: Bool
     public var voice: ChimeVoiceConfigDTO
+    public var tier2_enabled: Bool
+    public var tier2_model_dir: String
+    public var tier2_margin_threshold: Double
+    public var tier2_alpha: Double
 
     public static let `default` = ChimeConfigDTO(
         scheme: "full",
@@ -277,7 +281,11 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         emoji_suggestions: true,
         kaomoji_suggestions: true,
         suppress_emoji_in_ide: false,
-        voice: .default
+        voice: .default,
+        tier2_enabled: false,
+        tier2_model_dir: "",
+        tier2_margin_threshold: 3.0,
+        tier2_alpha: 0.65
     )
 
     public init(
@@ -303,7 +311,11 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         emoji_suggestions: Bool,
         kaomoji_suggestions: Bool,
         suppress_emoji_in_ide: Bool,
-        voice: ChimeVoiceConfigDTO = .default
+        voice: ChimeVoiceConfigDTO = .default,
+        tier2_enabled: Bool = false,
+        tier2_model_dir: String = "",
+        tier2_margin_threshold: Double = 3.0,
+        tier2_alpha: Double = 0.65
     ) {
         self.scheme = scheme
         self.fuzzy = fuzzy
@@ -328,6 +340,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.kaomoji_suggestions = kaomoji_suggestions
         self.suppress_emoji_in_ide = suppress_emoji_in_ide
         self.voice = voice
+        self.tier2_enabled = tier2_enabled
+        self.tier2_model_dir = tier2_model_dir
+        self.tier2_margin_threshold = tier2_margin_threshold
+        self.tier2_alpha = tier2_alpha
     }
 
     public init(from decoder: Decoder) throws {
@@ -355,6 +371,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.kaomoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .kaomoji_suggestions) ?? true
         self.suppress_emoji_in_ide = try c.decodeIfPresent(Bool.self, forKey: .suppress_emoji_in_ide) ?? false
         self.voice = try c.decodeIfPresent(ChimeVoiceConfigDTO.self, forKey: .voice) ?? .default
+        self.tier2_enabled = try c.decodeIfPresent(Bool.self, forKey: .tier2_enabled) ?? false
+        self.tier2_model_dir = try c.decodeIfPresent(String.self, forKey: .tier2_model_dir) ?? ""
+        self.tier2_margin_threshold = try c.decodeIfPresent(Double.self, forKey: .tier2_margin_threshold) ?? 3.0
+        self.tier2_alpha = try c.decodeIfPresent(Double.self, forKey: .tier2_alpha) ?? 0.65
     }
 }
 
@@ -373,6 +393,8 @@ public struct ChimeStatusDTO: Decodable, Sendable, Equatable {
     public let word_entries: Int
     public let learned_habits: Int
     public let neural_loaded: Bool
+    public let tier2_loaded: Bool?
+    public let tier2_model_dir: String?
     public let installed_packs: Int?
     public let active_loras: Int?
     public let pack_details: [ChimeInstalledPackDTO]?
@@ -470,8 +492,7 @@ public final class ChimeEngineBridge {
         // over `IMKInputSession` IPC!
         NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             let type = event.type
-            let keyCode = event.keyCode
-            let flags = event.modifierFlags
+            let input = ChimeKeyInput(event)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if type == .leftMouseDown || type == .rightMouseDown {
@@ -482,15 +503,16 @@ public final class ChimeEngineBridge {
                     }
                     return
                 }
-                ChimeVoiceController.shared.handleFlagsChanged(keyCode: keyCode, flags: flags)
+                guard let input else { return }
                 guard Self.isChimeSelectedInTIS() else {
                     self.syncMenuBarEnBadge()
                     return
                 }
+                ChimeVoiceController.shared.handleFlagsChanged(keyCode: input.keyCode, flags: input.flags)
                 if let resp = self.pollModifierToggle(
                     controllerKey: self.activeControllerKey,
-                    keyCode: keyCode,
-                    flags: flags
+                    keyCode: input.keyCode,
+                    flags: input.flags
                 ) {
                     if let key = self.activeControllerKey {
                         self.applyResponseToStoredClient(controllerKey: key, resp: resp)
@@ -970,6 +992,14 @@ public final class ChimeEngineBridge {
         slots[controllerKey] = slot
     }
 
+    /// Share the marked-text lifecycle between keyboard and candidate-panel selection.
+    func nextMarkUpdate(controllerKey: ObjectIdentifier, resp: ChimeResponse) -> ClientMarkUpdate {
+        let update = ClientMarkUpdate(previouslyMarked: hadMarkedPreedit(for: controllerKey),
+                                      committed: resp.committed_text, preedit: resp.preedit_text)
+        setHadMarkedPreedit(for: controllerKey, value: !resp.preedit_text.isEmpty)
+        return update
+    }
+
     public func applyResponseToStoredClient(controllerKey: ObjectIdentifier, resp: ChimeResponse) {
         guard let slot = slots[controllerKey], let client = slot.lastClientObject as? IMKTextInput else {
             return
@@ -977,23 +1007,10 @@ public final class ChimeEngineBridge {
         if !resp.committed_text.isEmpty {
             client.insertText(
                 resp.committed_text,
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                replacementRange: NSRange(location: NSNotFound, length: 0)
             )
         }
-        if resp.preedit_text.isEmpty {
-            client.setMarkedText(
-                "",
-                selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
-        } else {
-            let nsPreedit = resp.preedit_text as NSString
-            client.setMarkedText(
-                resp.preedit_text,
-                selectionRange: NSRange(location: nsPreedit.length, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
-        }
+        nextMarkUpdate(controllerKey: controllerKey, resp: resp).apply(to: client)
         if resp.candidates.isEmpty && resp.ghost_text.isEmpty {
             CandidatePanel.shared.hide()
         } else {

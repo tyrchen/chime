@@ -25,8 +25,12 @@ use chime_lexicon::{
     import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes,
     parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode};
-use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
+use chime_neural::{
+    AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode, Tier2Config,
+};
+use chime_phonetics::{
+    ShuangpinScheme, format_segmented_preedit, shuangpin::shuangpin_initial_mask,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -153,6 +157,12 @@ pub struct EngineStatus {
     pub learned_habits: usize,
     /// True if a Stage-2 `Safetensors` neural reranker is active.
     pub neural_loaded: bool,
+    /// True if an optional local Tier-2 MLX reranker (`Qwen3-1.7B/4B-Base` 4-bit) is mounted.
+    #[serde(default)]
+    pub tier2_loaded: bool,
+    /// Resolved path of the mounted or detected local Tier-2 model directory, if any.
+    #[serde(default)]
+    pub tier2_model_dir: String,
     /// Number of installed `.imepack` cartridges mounted from `packs/`.
     #[serde(default)]
     pub installed_packs: usize,
@@ -448,11 +458,52 @@ impl ChimeEngine {
                         worker: worker.clone(),
                     })));
                 self.async_reranker = Some(worker);
+                self.sync_tier2_worker();
             } else {
                 self.decoder.set_reranker(None);
             }
         }
         self.lexicon = lex;
+    }
+
+    fn resolve_tier2_dir(&self, cfg: &ChimeConfig) -> Option<PathBuf> {
+        let configured = cfg.tier2_model_dir.trim();
+        let candidate = if configured.is_empty() {
+            self.app_support_dir
+                .as_ref()
+                .map(|d| d.join("models/tier2"))
+        } else if let Some(rest) = configured.strip_prefix("~/") {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(rest))
+        } else {
+            Some(PathBuf::from(configured))
+        }?;
+        if candidate.join("config.json").is_file()
+            && candidate.join("vocab.json").is_file()
+            && candidate.join("merges.txt").is_file()
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    fn sync_tier2_worker(&self) {
+        let Some(worker) = &self.async_reranker else {
+            return;
+        };
+        let t2_cfg = Tier2Config {
+            margin_threshold: self.config.tier2_margin_threshold,
+            alpha: self.config.tier2_alpha,
+            ..Tier2Config::default()
+        };
+        let target_dir = if self.config.tier2_enabled {
+            self.resolve_tier2_dir(&self.config)
+        } else {
+            None
+        };
+        let _ = worker.configure_tier2(target_dir.as_deref(), t2_cfg);
     }
 
     /// Updates the runtime configuration and persists it if `app_support_dir` is configured.
@@ -461,10 +512,17 @@ impl ChimeEngine {
     ///
     /// Returns [`EngineError::Config`] if saving `config.toml` fails.
     pub fn update_config(&mut self, config: ChimeConfig) -> Result<(), EngineError> {
+        let tier2_changed = self.config.tier2_enabled != config.tier2_enabled
+            || self.config.tier2_model_dir != config.tier2_model_dir
+            || (self.config.tier2_margin_threshold - config.tier2_margin_threshold).abs() > 1e-4
+            || (self.config.tier2_alpha - config.tier2_alpha).abs() > 1e-4;
         if let Some(dir) = &self.app_support_dir {
             config.save(&dir.join("config.toml"))?;
         }
         self.config = config;
+        if tier2_changed {
+            self.sync_tier2_worker();
+        }
         Ok(())
     }
 
@@ -477,12 +535,20 @@ impl ChimeEngine {
     /// Returns a live status snapshot for UI diagnostics.
     #[must_use]
     pub fn status(&self) -> EngineStatus {
+        let detected_t2 = self
+            .resolve_tier2_dir(&self.config)
+            .map_or_default(|p| p.display().to_string());
         EngineStatus {
             scheme: self.config.scheme,
             pinyin_keys: self.lexicon.pinyin_key_count(),
             word_entries: self.lexicon.total_word_entries(),
             learned_habits: self.user_store.habit_count(),
             neural_loaded: self.async_reranker.is_some(),
+            tier2_loaded: self
+                .async_reranker
+                .as_ref()
+                .is_some_and(AsyncRerankHandle::has_tier2),
+            tier2_model_dir: detected_t2,
             installed_packs: self.installed_packs_count,
             active_loras: self
                 .async_reranker
@@ -1514,17 +1580,32 @@ impl ChimeEngine {
             && chime_phonetics::is_valid_syllable(&lower_raw);
         let is_single_syl_ctx = has_left_ctx && is_single_syl;
 
-        let mut extra_exact_candidates: Vec<String> = Vec::new();
+        let mut extra_stage1_candidates: Vec<(String, f32, bool)> = Vec::new();
         let mut has_stage1_exact = false;
+        let bm_cfg = chime_neural::BeamSearchConfig::default();
         for lc in stage1_cands {
-            if lc.consumed_bytes == raw_clone.len() && lc.kind == MatchKind::Exact {
-                has_stage1_exact = true;
-                if raw_clone.len() >= 6
+            if lc.consumed_bytes == raw_clone.len()
+                && matches!(
+                    lc.kind,
+                    MatchKind::Exact | MatchKind::Fuzzy | MatchKind::TypoCorrected
+                )
+            {
+                let (chan_cost, is_exact) = match lc.kind {
+                    MatchKind::Exact => {
+                        has_stage1_exact = true;
+                        (0.0, true)
+                    }
+                    MatchKind::Fuzzy => (-(self.config.fuzzy.fuzzy_penalty + 0.85), false),
+                    _ => (bm_cfg.swap_channel_cost, false),
+                };
+                if raw_clone.len() >= 2
                     && !is_single_syl
-                    && extra_exact_candidates.len() < 4
-                    && !extra_exact_candidates.contains(&lc.text)
+                    && extra_stage1_candidates.len() < 8
+                    && !extra_stage1_candidates
+                        .iter()
+                        .any(|(t, _, _)| t == &lc.text)
                 {
-                    extra_exact_candidates.push(lc.text.clone());
+                    extra_stage1_candidates.push((lc.text.clone(), chan_cost, is_exact));
                 }
             }
         }
@@ -1564,9 +1645,9 @@ impl ChimeEngine {
             {
                 4
             } else {
-                5
+                6
             },
-            extra_exact_candidates,
+            extra_stage1_candidates,
         };
         let Some(ncands) =
             worker.decode_route_a_timed_or_async(session_id, generation_id, req, sync_budget)
@@ -1597,8 +1678,7 @@ impl ChimeEngine {
         ncands: Vec<chime_neural::NeuralBeamCandidate>,
     ) -> Vec<Candidate> {
         let lower_raw = raw_clone.to_ascii_lowercase();
-        let has_left_ctx = !effective_left.trim().is_empty();
-        let is_single_syl_ctx = has_left_ctx
+        let is_single_syl_ctx = !effective_left.trim().is_empty()
             && self.config.scheme == ShuangpinScheme::Full
             && !raw_clone.contains('\'')
             && chime_phonetics::is_valid_syllable(&lower_raw);
@@ -1631,6 +1711,9 @@ impl ChimeEngine {
 
         let mut merged_full: Vec<Candidate> = Vec::with_capacity(ncands.len() + stage1_full.len());
         let mut min_neural_score = f32::INFINITY;
+        // An omitted final (including inside the sentence) is not a spelling correction.
+        let abbreviated = self.config.scheme != ShuangpinScheme::Full
+            && shuangpin_initial_mask(self.config.scheme, lower_raw.as_bytes()).contains(&true);
         for nc in ncands {
             let habit_bonus = if nc.is_exact && nc.text.chars().count() >= 2 {
                 self.user_store
@@ -1647,6 +1730,8 @@ impl ChimeEngine {
                 consumed_bytes: raw_clone.len(),
                 kind: if nc.is_exact {
                     MatchKind::Exact
+                } else if abbreviated {
+                    MatchKind::Abbreviation
                 } else {
                     MatchKind::TypoCorrected
                 },

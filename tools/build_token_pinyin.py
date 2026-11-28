@@ -278,6 +278,22 @@ TECH_EN_TERMS: list[str] = [
     "cache", "token", "prompt", "context", "model", "weight", "batch", "stream",
     "server", "client", "worker", "queue", "thread", "mutex", "channel", "socket",
     "buffer", "memory", "latency", "throughput", "p50", "p95", "p99", "zero-copy",
+    # Unambiguous everyday work, web/UI, and developer code-switching terms (never valid Pinyin!)
+    "VIP", "SVIP", "CEO", "CTO", "CFO", "COO", "PM", "QA", "SRE", "DevOps", "UI", "UX",
+    "KPI", "OKR", "ROI", "SaaS", "CRM", "ERP", "HR", "RFC", "PRD", "PoC", "MVP",
+    "SLA", "SLO", "QPS", "TPS", "FPS", "USB", "HDMI", "WiFi", "NFC", "GPS", "SSD", "NVMe",
+    "URL", "URI", "DOM", "AST", "JIT", "CORS", "CSRF", "XSS", "SEO", "SSR", "PWA",
+    "SPA", "MCP", "VLM", "QLoRA", "RLHF", "DPO", "GRPO", "SFT", "RoPE", "GQA",
+    "FP16", "BF16", "INT8", "INT4", "GGUF", "Triton", "vLLM", "Ollama", "Llama", "Modal",
+    "hover", "click", "focus", "blur", "scroll", "toast", "tooltip", "navbar",
+    "sidebar", "dropdown", "checkbox", "button", "input", "form", "grid", "flex", "theme",
+    "login", "logout", "OAuth", "cookie", "session", "header", "footer", "router", "hook",
+    "state", "props", "Bun", "pnpm", "yarn", "npm", "Deno", "Node", "Svelte", "Nuxt",
+    "Prisma", "tRPC", "kubectl", "Helm", "Grafana", "Sentry", "tmux", "zsh", "bash", "curl",
+    "pytest", "ruff", "ESLint", "Prettier", "Vitest", "Jest", "Playwright", "Discord",
+    "Teams", "Lark", "PayPal", "PDF", "CSV", "TSV", "XML",
+    "HTML", "CSS", "SVG", "PNG", "JPG", "WebP", "MP4", "MP3", "GIF", "ZIP", "UUID",
+    "SSO", "MFA", "RBAC", "TCP", "UDP", "DNS", "VPN", "App", "OOM", "EOF", "LTS",
 ]
 
 

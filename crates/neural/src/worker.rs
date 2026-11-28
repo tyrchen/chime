@@ -2,7 +2,11 @@
 //! sidecar adapters, communicating strictly via `flume` channels.
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -11,6 +15,7 @@ use flume::{Receiver, Sender, TrySendError};
 
 use crate::{
     LoraMountSpec, ModelConfig, NeuralBeamCandidate, NeuralError, SafetensorsReranker, ScoringMode,
+    Tier2Config,
 };
 
 /// Request for Route A (Pinyin-constrained autoregressive neural beam search + exact-lexicon
@@ -33,9 +38,10 @@ pub struct RouteADecodeRequest {
     pub scoring_mode: ScoringMode,
     /// Autoregressive beam width (typically `8`).
     pub beam_width: usize,
-    /// Optional exact-pinyin full-span lexicon / `.imepack` / user-custom phrase proposals scored
-    /// strictly on the exact same Bayesian `log P_LM(Y | C)` scale (zero static unigram bias).
-    pub extra_exact_candidates: Vec<String>,
+    /// Optional full-span Stage-1 lexicon / `.imepack` / fuzzy / typo proposals `(surface,
+    /// acoustic_channel_cost, is_exact)` scored strictly on the exact same Bayesian
+    /// `log P_LM(Y | C) + channel_cost` scale (zero static unigram bias).
+    pub extra_stage1_candidates: Vec<(String, f32, bool)>,
 }
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
@@ -108,6 +114,11 @@ enum ActorCmd {
         req: RouteADecodeRequest,
         sync_reply_tx: Sender<Vec<NeuralBeamCandidate>>,
     },
+    ConfigureTier2 {
+        model_dir: Option<PathBuf>,
+        config: Tier2Config,
+        reply_tx: Sender<Result<bool, String>>,
+    },
 }
 
 /// Thread-safe (`Send + Sync`) handle to the dedicated MLX Metal GPU actor thread.
@@ -119,6 +130,7 @@ pub struct AsyncRerankHandle {
     config: ModelConfig,
     lora_count: usize,
     has_constrained_decoder: bool,
+    tier2_active: Arc<AtomicBool>,
 }
 
 impl AsyncRerankHandle {
@@ -149,6 +161,8 @@ impl AsyncRerankHandle {
         let (cmd_tx, cmd_rx) = flume::bounded::<ActorCmd>(16);
         let (result_tx, result_rx) = flume::bounded::<RerankResult>(16);
         let (route_a_result_tx, route_a_result_rx) = flume::bounded::<RouteAResult>(16);
+        let tier2_active = Arc::new(AtomicBool::new(false));
+        let tier2_flag = Arc::clone(&tier2_active);
 
         std::thread::spawn(move || {
             let mut reranker = match SafetensorsReranker::load_dir_with_loras(&dir_owned, &loras) {
@@ -249,6 +263,19 @@ impl AsyncRerankHandle {
                                         });
                                     }
                                 }
+                                ActorCmd::ConfigureTier2 {
+                                    model_dir,
+                                    config,
+                                    reply_tx,
+                                } => {
+                                    apply_configure_tier2(
+                                        &mut reranker,
+                                        &tier2_flag,
+                                        model_dir.as_deref(),
+                                        config,
+                                        &reply_tx,
+                                    );
+                                }
                             }
                         }
                         let bonuses = reranker.score_candidates_with_scoring_mode(
@@ -315,6 +342,19 @@ impl AsyncRerankHandle {
                                     );
                                     let _ = s_tx.send(bonuses);
                                 }
+                                ActorCmd::ConfigureTier2 {
+                                    model_dir,
+                                    config,
+                                    reply_tx: t2_tx,
+                                } => {
+                                    apply_configure_tier2(
+                                        &mut reranker,
+                                        &tier2_flag,
+                                        model_dir.as_deref(),
+                                        config,
+                                        &t2_tx,
+                                    );
+                                }
                                 ActorCmd::Async(_)
                                 | ActorCmd::TimedOrAsync { .. }
                                 | ActorCmd::RouteATimedOrAsync { .. } => {}
@@ -369,6 +409,19 @@ impl AsyncRerankHandle {
                                     );
                                     let _ = s_tx.send(bonuses);
                                 }
+                                ActorCmd::ConfigureTier2 {
+                                    model_dir,
+                                    config,
+                                    reply_tx: t2_tx,
+                                } => {
+                                    apply_configure_tier2(
+                                        &mut reranker,
+                                        &tier2_flag,
+                                        model_dir.as_deref(),
+                                        config,
+                                        &t2_tx,
+                                    );
+                                }
                                 ActorCmd::Async(_) | ActorCmd::TimedOrAsync { .. } => {}
                             }
                         }
@@ -383,6 +436,19 @@ impl AsyncRerankHandle {
                                 elapsed_ms,
                             });
                         }
+                    }
+                    ActorCmd::ConfigureTier2 {
+                        model_dir,
+                        config,
+                        reply_tx,
+                    } => {
+                        apply_configure_tier2(
+                            &mut reranker,
+                            &tier2_flag,
+                            model_dir.as_deref(),
+                            config,
+                            &reply_tx,
+                        );
                     }
                 }
             }
@@ -399,7 +465,38 @@ impl AsyncRerankHandle {
             config,
             lora_count,
             has_constrained_decoder,
+            tier2_active,
         })
+    }
+
+    /// Hot-mounts or unloads an optional local Tier-2 MLX reranker (`Qwen3-1.7B/4B-Base` 4-bit) on
+    /// the dedicated Metal GPU worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if loading the Tier-2 model fails or the worker is disconnected.
+    pub fn configure_tier2(
+        &self,
+        model_dir: Option<&Path>,
+        config: Tier2Config,
+    ) -> Result<bool, String> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.cmd_tx
+            .send(ActorCmd::ConfigureTier2 {
+                model_dir: model_dir.map(Path::to_path_buf),
+                config,
+                reply_tx,
+            })
+            .map_err(|e| format!("worker channel closed: {e}"))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("tier2 reply channel closed: {e}"))?
+    }
+
+    /// Returns `true` when an optional local Tier-2 reranker is currently mounted.
+    #[must_use]
+    pub fn has_tier2(&self) -> bool {
+        self.tier2_active.load(Ordering::Relaxed)
     }
 
     /// Returns true if the loaded model bundle includes `token_pinyin.json` and supports Route A
@@ -596,11 +693,37 @@ impl AsyncRerankHandle {
     }
 }
 
+fn apply_configure_tier2(
+    reranker: &mut SafetensorsReranker,
+    flag: &AtomicBool,
+    model_dir: Option<&Path>,
+    config: Tier2Config,
+    reply_tx: &Sender<Result<bool, String>>,
+) {
+    let res = if let Some(dir) = model_dir {
+        match reranker.attach_tier2(dir, config) {
+            Ok(()) => {
+                flag.store(true, Ordering::Relaxed);
+                Ok(true)
+            }
+            Err(e) => {
+                flag.store(reranker.has_tier2(), Ordering::Relaxed);
+                Err(e.to_string())
+            }
+        }
+    } else {
+        reranker.detach_tier2();
+        flag.store(false, Ordering::Relaxed);
+        Ok(false)
+    };
+    let _ = reply_tx.send(res);
+}
+
 fn run_route_a_request(
     reranker: &mut SafetensorsReranker,
     req: &RouteADecodeRequest,
 ) -> Vec<NeuralBeamCandidate> {
-    let mut ncands = reranker.decode_constrained(
+    reranker.decode_constrained_with_proposals(
         &req.left_context,
         &req.app_bundle_id,
         &req.raw_input,
@@ -609,48 +732,6 @@ fn run_route_a_request(
         req.pangu_spacing,
         req.scoring_mode,
         req.beam_width,
-    );
-    if !req.extra_exact_candidates.is_empty() {
-        let mut to_score = Vec::new();
-        for txt in &req.extra_exact_candidates {
-            if !ncands.iter().any(|c| c.text == *txt) && !to_score.contains(txt) {
-                to_score.push(txt.clone());
-            }
-        }
-        if !to_score.is_empty() {
-            let lower_raw = req.raw_input.to_ascii_lowercase();
-            let is_single_syl = req.scheme == ShuangpinScheme::Full
-                && !req.raw_input.contains('\'')
-                && chime_phonetics::is_valid_syllable(&lower_raw);
-            let eff_mode = if is_single_syl
-                || (!req.left_context.trim().is_empty() && req.raw_input.len() <= 12)
-            {
-                ScoringMode::OpenContextual
-            } else {
-                req.scoring_mode
-            };
-            let lps = reranker.score_candidates_exact_bayesian_with_pinyin(
-                &req.left_context,
-                &req.app_bundle_id,
-                &req.raw_input,
-                req.scheme,
-                &to_score,
-                eff_mode,
-            );
-            for (txt, lp) in to_score.into_iter().zip(lps) {
-                if lp.is_finite() {
-                    ncands.push(NeuralBeamCandidate {
-                        text: txt,
-                        score: lp,
-                        lm_log_prob: lp,
-                        channel_cost: 0.0,
-                        is_exact: true,
-                        consumed_bytes: req.raw_input.len(),
-                    });
-                }
-            }
-            ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
-        }
-    }
-    ncands
+        &req.extra_stage1_candidates,
+    )
 }

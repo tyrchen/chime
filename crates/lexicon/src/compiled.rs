@@ -704,12 +704,15 @@ impl CompiledDictBuilder {
         for (k, v) in &lexicon.exact_map {
             let mut sorted = v.clone();
             sorted.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
+            if k.len() >= 2 {
+                sorted.truncate(10);
+            }
             builder.exact.insert(k.clone(), sorted);
         }
         for (k, v) in &lexicon.skeleton_map {
             let mut sorted = v.clone();
             sorted.sort_by(|a, b| b.log_prob.total_cmp(&a.log_prob));
-            sorted.truncate(8);
+            sorted.truncate(5);
             builder.skeletons.insert(k.clone(), sorted);
         }
         for (k, v) in &lexicon.english_casing {

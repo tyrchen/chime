@@ -12,24 +12,24 @@
 
 **Chime** 是一款专为 **macOS 15+（Apple Silicon）** 打造的 **100% 本地离线、零遥测**中文神经拼音输入法，使用 **Rust** 编写核心解码与推理引擎、**Swift 6** 编写原生 `InputMethodKit` 界面。
 
-在 **`v0.14.0`** 中，Chime 采用**零延迟快路径 + Route A 拼音约束自回归神经束搜索**架构：敲击任意按键时由 `< 0.8 ms` 的零拷贝 `mmap` 双轨词图（`CHIMED02`）瞬间出字不卡手；后台异步线程在 Apple Silicon 统一内存上运行经 **`Qwen3-14B-Base` 柔和 KL 蒸馏**的完整 **28 层 4-bit MLX `Qwen3-0.6B`（`256.7 MB`，无损 `36,864` 全中文词表）**，配合 **4.07× Metal 融合算子提速**与可热插拔的 **28L Rank-8 Multi-LoRA `.imepack` 卡带**，将严格盲测整句首项准确率推升至 **`90.00%`**（万条开放域盲测 **`79.70%`**）。
+在 **`v0.15.0`** 中，Chime 采用**零延迟快路径 + 第一性原理双提案贝叶斯 Route A 神经束搜索**架构：敲击任意按键时由 `< 0.8 ms` 的无损瘦身 `mmap` 双轨词图（`CHIMED02`，`19.7 MB`）瞬间出字不卡手；后台异步线程在 Apple Silicon 统一内存上运行经 **`Qwen3-14B-Base` 精确尾桶 Soft-KL 蒸馏**的 **BI-18L 混合精度 MLX `Qwen3`（`e8_l4`：8-bit 词表嵌入 + 4-bit 18 层，`190.3 MB`，无损 `36,864` 全中文词表）**，配合**局部惊异度尖峰纠错救援**与可热插拔的 **18L Rank-8 Multi-LoRA `.imepack` 卡带**，在安装包瘦身 **25%（`257 MB → 192 MB`）**、万条推理 `p50` 提速 **3.01×** 的同时，将严格盲测整句首项准确率推升至 **`90.59%`**（万条开放域严格盲测 **`80.93%`**，`Hit@5 90.58%`）。
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
 - **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.14.1`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **最新发布版本（`v0.15.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.14.1`）
+## 下载与安装（`v0.15.0`）
 
 系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.14.1-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `257 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.14.1-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `257 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
-| **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `24 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + 28L Rank-8 古文 LoRA（`9.66 MB`） |
-| **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `8.9 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + 28L Rank-8 技术 LoRA（`9.66 MB`） |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.15.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `192 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.15.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `192 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `17 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + 18L Rank-8 古文 LoRA（`6.21 MB`） |
+| **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `5.8 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + 18L Rank-8 技术 LoRA（`6.21 MB`） |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | 安装包与卡带完整性哈希校验值 |
 
 > **Apple 官方公证 + 零密码静默升级体验（v0.14.0 新增）**：
@@ -38,7 +38,7 @@
 
 ### 挂载 `.imepack` 领域扩展卡带（免重启热加载）
 
-- **偏好设置一键在线安装（推荐）**：点击右上角菜单栏 `[中]` -> **偏好设置…** -> **词库与 AI**，直接点击 **「一键安装」** 或 **「更新」** 即可自动完成下载、`SHA-256` 校验与免重启热挂载（应用升级后已安装的官方卡带也会自动同步到对应 28L 版本）。
+- **偏好设置一键在线安装（推荐）**：点击右上角菜单栏 `[中]` -> **偏好设置…** -> **词库与 AI**，直接点击 **「一键安装」** 或 **「更新」** 即可自动完成下载、`SHA-256` 校验与免重启热挂载（应用升级后已安装的官方卡带也会自动同步到对应 18L 版本）。
 - **本地文件导入**：在偏好设置中点击 **导入词库或 `.imepack`…**，选择本地 `.imepack.zip` 或搜狗 `.scel` / Rime `.dict.yaml`。
 - **命令行导入**：
   ```bash
@@ -46,16 +46,16 @@
   chime pack install ~/Downloads/tech-developer.imepack.zip
   chime pack list
   ```
-  所有扩展包存放在 `~/Library/Application Support/Chime/packs/` 下，与常驻统一内存的同一份 `256.7 MB` 28L 基础模型共享权重，不重复占用内存。
+  所有扩展包存放在 `~/Library/Application Support/Chime/packs/` 下，与常驻统一内存的同一份 `190.3 MB` BI-18L 基础模型共享权重，不重复占用内存。
 
 ---
 
 ## 核心特性
 
-1. **完整 28 层 `Qwen3-14B` 柔和蒸馏底座 + Route A 拼音约束自回归束搜索**：
-   - 保留 `Qwen/Qwen3-0.6B-Base` 全部 28 层深度预训练世界知识，以 `Qwen/Qwen3-14B-Base` 作为教师在 6,500 万 Token 零污染中文语料上进行柔和 Soft-KL 蒸馏（`36,864` 无损全中文词表，4-bit MLX `256.7 MB`）。
-   - Route A 引擎直接在确定性 `TokenPinyinIndex` 前缀树约束下执行增量束搜索（`RouteABeamCache`），天然具备跨多音节长程语义理解、未登录新词造词与复杂同音句消歧能力。
-   - **4.07× Metal 推理提速**：加载期将每层 `q/k/v` 融合为单次 `qkv_proj`、将 `gate/up` 融合为 `gate_up_proj`（每步减少 84 次 Metal GEMM 启动），并在单次 `eval()` 屏障内紧致物化子束 KV 缓存以切断跨步惰性 DAG 膨胀；交互态零阻塞异步渲染，音节输入中途 0 ms 瞬时响应。
+1. **BI-18L 混合精度 `Qwen3-14B` 蒸馏底座 + 第一性原理双提案贝叶斯 Route A 解码**：
+   - 基于 Block Influence 剪枝保留 18 层宽 MLP（`3072`）`Qwen3` 骨干，以 `Qwen/Qwen3-14B-Base` 作为教师在 8,000 万 Token 零污染语料上进行精确尾桶 Soft-KL 蒸馏（零 Weight-Decay 词表保护），采用 **`e8_l4` 混合精度 MLX 量化**（8-bit 词表嵌入/共享输出头 + 4-bit 隐藏层，仅 **`190.3 MB`**），几乎零成本挽回 4-bit 词表同音字量化噪声。
+   - 统一贝叶斯联合目标 $Y^* = \arg\max_Y [\log P_{\text{LM}}(Y \mid C) + \log P_{\text{channel}}(X \mid Y)]$ 融合 Stage-1 词图提案（精确 / 模糊音 / 纠错）与 Route A 神经束搜索（`RouteABeamCache`），并引入因果 LM 局部惊异度尖峰救援，精准捕获合法音节假切分与 QWERTY 邻键误触。
+   - **更小更快**：相比 v0.14 28L 底座模型减重 **-66.4 MB**、核心词典 `core.imedict` 无损减重 **-46.5%（`36.8 MB → 19.7 MB`）**，整包 `.app` 缩减 **-83 MB**；融合 `qkv_proj`/`gate_up_proj` + 单屏障紧凑 KV 使万条测试集 `p50` 提速 **3.01×**、`p99` 提速 **2.15×**，线上实时束宽同步升至 `beam=6`。
 2. **原生 Swift 6 极致顺滑交互（v0.14.0 全面打磨）**：
    - **候选栏零跳动**：引入会话级垂直锚点与上下方向锁、紧凑单行等高布局，并在异步神经候选刷新时锁定窗口位置、关闭隐式 `CATransaction` 动画，彻底解决长句输入时候选栏上下乱跳问题。
    - **中英切换零重复浮窗**：使用 `deviceIndependentFlagsMask` 精确去重与 150 ms 防抖冷却，配合 `setMarkedText` 后的光标矩形有效性校验，根治 `Shift` 切换时 `中 / En` 徽章在屏幕两个位置重复闪现的问题；支持鼠标悬停高亮与四边多屏安全夹紧。
@@ -66,9 +66,9 @@
    - **双模式英文拼写自动纠错（退格键 `⌫` 一键撤回）**：零额外内存 `mmap` 二分探测覆盖中文混输与 `En` 直输模式（`reivew -> review`、`kubernets -> Kubernetes`、`definately -> definitely`），终端与驼峰标识符自动豁免。
    - **智能排版与标点**：支持中英文/数字前后自动加空格（默认开启可随时关闭）、`⌃.` 切换全半角标点（自动豁免 `3.14` 与 `12:30`）、自定义 `- / =` / `[ / ]` / `, / .` 翻页与 `; / '` 二三候选快选。
 4. **零拷贝 `CHIMED02` 词库、全篇「一路 `Tab`」诗词续写与多 LoRA 卡带**：
-   - `core.imedict` 内置 `660,000+` 中英词条与 16 字节有序 FNV-1a 续写哈希表，`< 0.8 ms` `mmap` 冷启动；支持唐诗宋词古文名篇逐句 `Tab` 续写、重首句消歧与防复读。
+   - `core.imedict` 内置 `400,000+` 无损瘦身核心中英词条（`19.7 MB`）与 16 字节有序 FNV-1a 续写哈希表，`< 0.8 ms` `mmap` 冷启动；支持唐诗宋词古文名篇逐句 `Tab` 续写、重首句消歧与防复读。
    - 原生纯 Rust 导入 **搜狗 `.scel`**、**百度 `.bdict`**、**Rime `.dict.yaml`**、**TSV** 与 **macOS 系统文本替换**，配合本地 `SQLite`（`WAL`）实时学习个人词频与退格负反馈。
-   - **秩堆叠 Multi-LoRA 旁路 + 律绝对仗单纯形路由**：多个 28L Rank-8 卡带预拼接为两次矩阵乘，按宿主应用 Bundle ID、文言虚词与五七言对仗韵律平滑调度。
+   - **秩堆叠 Multi-LoRA 旁路 + 律绝对仗单纯形路由**：多个 18L Rank-8 卡带预拼接为两次矩阵乘，按宿主应用 Bundle ID、文言虚词与五七言对仗韵律平滑调度。
 
 ---
 
@@ -80,11 +80,11 @@
                        ├────────────────────────────────────────────────┐
                        ▼                                                ▼
 ┌─────────────────────────────────────────────┐  ┌─────────────────────────────────────────────┐
-│ 快路径 · 零拷贝双轨网格 (< 0.8 ms · 0 阻塞) │  │ 异步精排 · Route A 拼音约束自回归神经束搜索  │
-│  • mmap CHIMED02 核心词图 + 挂载卡带词典    │  │  • 28L 4-bit MLX Qwen3 (14B 柔和蒸馏, 36K)  │
-│  • 模糊音代数 + 4 类错键容错 + SQLite 习惯  │  │  • 融合 QKV / Gate+Up + 单屏障紧凑 KV (4.07×) │
+│ 快路径 · 零拷贝双轨网格 (< 0.8 ms · 0 阻塞) │  │ 异步精排 · 双提案贝叶斯 Route A 神经束搜索   │
+│  • mmap CHIMED02 核心词图 (19.7 MB) + 卡带  │  │  • BI-18L 混合精度 e8_l4 (190.3 MB, 36K)    │
+│  • 模糊音代数 + 4 类错键容错 + SQLite 习惯  │  │  • 融合 QKV / Gate+Up + 局部惊异度尖峰救援   │
 │  • 按键瞬间即刻上屏候选，永不卡手           │  │  • 确定性 TokenPinyinIndex + 增量 Beam Cache │
-└──────────────────────┬──────────────────────┘  │  • 秩堆叠 28L Rank-8 Multi-LoRA 动态路由     │
+└──────────────────────┬──────────────────────┘  │  • 秩堆叠 18L Rank-8 Multi-LoRA 动态路由     │
                        │                         └──────────────────────┬──────────────────────┘
                        └───────────────────────┬────────────────────────┘
                                                ▼
@@ -100,18 +100,19 @@
 | `v0.10.0` · 6L `Qwen3-0.6B` Rerank (24K) | `64.2 MB` | — | `86.01%` | `70.89%` | — | — |
 | `v0.12.2` · 8L `Qwen3-4B` 蒸馏 Rerank (36K) | `87.8 MB` | — | `89.51%` | `75.84%` | — | `66.45%` |
 | `v0.13.0` · 8L `Qwen3-4B` 蒸馏 + Route A | `87.8 MB` | — | `91.49%` | `83.66%` | `77.00%` | `75.31%` |
-| **`v0.14.0` · 28L `Qwen3-14B` 蒸馏 + 4× 融合 Route A** | **`256.7 MB`** | **`93.33%`** (`Hit@3 98.3%`) | **`93.16%`** (`Hit@5 97.9%`) | **`90.00%`** (`+6.34%`) | **`81.34%`** (`+4.34%`) | **`79.70%`** (`+4.39%`) |
+| `v0.14.0` · 28L `Qwen3-14B` 蒸馏 + 4× 融合 Route A | `256.7 MB` | `93.33%` (`Hit@3 98.3%`) | `93.16%` (`Hit@5 97.9%`) | `90.00%` (`+6.34%`) | `81.34%` (`+4.34%`) | `79.70%` (`+4.39%`) |
+| **`v0.15.0` · BI-18L `e8_l4` 混合精度 + 贝叶斯双提案 Route A** | **`190.3 MB` (`-26%`)** | **`93.33%+`** | **`93.80%`** (`Hit@5 98.4%`) | **`90.59%`** (`Hit@5 95.5%`) | **`81.82%`** (`Hit@5 91.5%`) | **`80.93%`** (**`+1.23%`**, `Hit@5 90.6%`) |
 
-- **`v0.14.0` 细分维度亮点**：
-  - `test_holdout.tsv`（1,010 盲测）：科学医疗法律 `100%`、金融商业 `100%`、成语古典 `100%`、三大双拼方案 `100%`、模糊音方言 `97.50%`、语境对话 `95.00%`，`MRR 0.9100`。
-  - `test_holdout_10k.tsv`（10,000 盲测）：长句语境 `89.53%`、技术开发语境 `85.58%`、语境单字 `85.14%`、`Hit@5 87.36%`、`MRR 0.8303`。
-  - **4.07× Metal 推理提速（Apple Silicon）**：优化前后同模型（28L）`dev_suite` 总耗时 `351.8 s -> 86.5 s`，单句 `p50 278 ms -> 71.1 ms`，`contextual_open` 语境探针 `p50 21.2 ms -> 6.44 ms`。
+- **`v0.15.0` 细分维度亮点**：
+  - `test_holdout.tsv`（1,010 盲测）：**6 个子类满分 `100%`**（QWERTY 错键纠错 `100%`、多音字语境 `100%`、三大双拼 `100%`、成语古典 `100%`、科学医疗法律 `100%`、金融商业 `100%`），`Hit@3 94.95% (+3.07%)`、`Hit@5 95.54% (+3.16%)`、`MRR 0.9282`。
+  - `test_holdout_10k.tsv`（10,000 严格盲测）：首项准确率首次突破 `80%`（**`80.93%`**, `+1.23%`），`Hit@5` 首次突破 `90%`（**`90.58%`**, `+3.22%`），`MRR 0.8518 (+0.0215)`。
+  - **体积与速度双飞跃**：`.pkg` 安装包 `257 MB → 192 MB`（`-25.3%`），解压 `.app` `315 MB → 232 MB`（`-26.3%`），`core.imedict` 无损瘦身 `36.8 MB → 19.7 MB`（`-46.5%`）；万条盲测 `p50 293.4 ms → 97.6 ms`（**3.01× 提速**）、`p99 1044 ms → 484.9 ms`（**2.15× 提速**）。
 
 ---
 
 ## 训练只属于本机的私有文风 `.imepack` 卡带
 
-你可以用自己过去的 Markdown 博客或笔记，**100% 在本机 Apple Silicon GPU（`mps`）上断网微调**出专属的 28L Rank-8 私有文风卡带（`private_pack: true`），全程零数据出本机：
+你可以用自己过去的 Markdown 博客或笔记，**100% 在本机 Apple Silicon GPU（`mps`）上断网微调**出专属的 18L Rank-8 私有文风卡带（`private_pack: true`），全程零数据出本机：
 
 ```bash
 # 1. 在本地扫描并清洗历史 Markdown 文章（自动剔除链接、邮箱、API Key、代码块与 Frontmatter）
@@ -120,7 +121,7 @@ uv run --python 3.12 --no-project --with jieba --with pypinyin \
   --personal-posts ~/Notes/essays \
   --private-out /tmp/chime_private_personal
 
-# 2. 直接在本机 Apple Silicon Metal 上基于 28L 4-bit 流形训练 9.66 MB Rank-8 LoRA
+# 2. 直接在本机 Apple Silicon Metal 上基于 BI-18L e8_l4 流形训练 6.21 MB Rank-8 LoRA
 uv run --python 3.12 --no-project --with torch --with safetensors --with transformers \
   --with datasets --with huggingface_hub --with mlx --with numpy \
   python tools/colab_train_loras.py \
@@ -175,13 +176,13 @@ speaches / faster-whisper-server、vLLM、LocalAI 等服务填写其 `/v1/audio/
 | `crates/phonetics` | 汉语拼音音节代数、小鹤/自然码/微软双拼、动态模糊音、四类错键算子与中英混输音系判定 |
 | `crates/lexicon` | 零拷贝 `mmap` `CHIMED02` 二进制词典、$O(\log C)$ FNV-1a 诗词续写表、第三方词库导入与 `SQLite`（`WAL`）个人习惯库 |
 | `crates/decoder` | 双轨束搜索网格解码器、概率空间分离、上下文诗词续写晋升与防抖冻结窗口 |
-| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 4-bit 28L `Qwen3` 引擎、融合 `QKV`/`Gate+Up`、Route A 拼音约束自回归束搜索、秩堆叠多 LoRA 与律绝单纯形路由器 |
+| `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` 混合精度 BI-18L `Qwen3` 引擎、融合 `QKV`/`Gate+Up`、双提案 Route A 神经束搜索、秩堆叠多 LoRA 与律绝单纯形路由器 |
 | `crates/core` | 32 槽位 LRU 会话状态机、异步 Route A 调度器、智能标点、PII/密钥脱敏清洗器与 `.imepack` v2 卡带管理 |
 | `crates/voice` | 按住说话语音输入：能量 VAD 分句、边说边出字的实时预览，以及对接本地/私有化 ASR 服务（OpenAI 兼容转写接口）的客户端 |
 | `crates/ffi` | 无状态窄 C ABI 接口层，衔接 Rust 核心与 Swift 6 宿主 |
 | `apps/cli` | `chime` 命令行工具集（`decode`、`dict-build-base`、`dict-compile`、`pack`、`corpus-export`、`eval` 与全套 `bench` 评测） |
 | `macos/` | Swift 6 `@MainActor` 原生 `InputMethodKit` 应用包（`Chime.app`）、会话锚定候选栏、`5×5` 网格、零遥测自动更新器与偏好设置窗口 |
-| `tools/` | `Qwen3-14B` 柔和 KL 蒸馏（`modal_distill_qwen3.py`）、28L 多 LoRA 训练（`modal_train_loras.py` / `colab_train_loras.py`）与 4-bit MLX 量化工具 |
+| `tools/` | `Qwen3-14B` 精确尾桶 Soft-KL 蒸馏（`distill_v15_cached.py`）、18L 多 LoRA 训练（`colab_train_loras.py`）与混合精度 MLX 量化工具（`quantize_student_mlx.py`） |
 | `paper/` | Typst 学术论文源码（`chime-paper.typ`、`figures.typ`）、可复现实验结果及 arXiv LaTeX 投稿包（`paper/arxiv/`） |
 | `site/` | GitHub Pages 静态落地页、交互式诗词 `Tab` 续写演示、官方基准面板与 `.imepack` 下载中心 |
 
@@ -196,7 +197,7 @@ make bench-test
 # 从源码编译、签名并安装至 ~/Library/Input Methods/Chime.app
 make install-macos
 
-# 构建 .pkg 安装器、.zip 归档、公开 28L .imepack.zip 卡带与 SHA256SUMS.txt
+# 构建 .pkg 安装器、.zip 归档、公开 18L .imepack.zip 卡带与 SHA256SUMS.txt
 make release-artifacts
 
 # 编译 Typst 学术论文 PDF 与 arXiv pdflatex 源码包

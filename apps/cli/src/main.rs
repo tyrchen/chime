@@ -96,6 +96,16 @@ enum Commands {
         /// Optional neural reranker directory (`dist/base_neural`) for Stage-2 Metal GPU scoring.
         #[arg(long)]
         neural: Option<PathBuf>,
+        /// Optional local Tier-2 MLX 4-bit Qwen3-Base directory (`Qwen3-1.7B/4B-Base`) for
+        /// confidence-gated Top-K reranking.
+        #[arg(long)]
+        tier2: Option<PathBuf>,
+        /// Confidence margin threshold for escalating to Tier-2 (`score[0] - score[1] < margin`).
+        #[arg(long, default_value_t = 3.0)]
+        tier2_margin: f32,
+        /// Tier-2 LM interpolation weight (`0.65` => `0.35 * Tier1 + 0.65 * Tier2`).
+        #[arg(long, default_value_t = 0.65)]
+        tier2_alpha: f32,
         /// Use Route A (first-principles Pinyin-constrained autoregressive neural beam search).
         #[arg(long, default_value_t = false)]
         route_a: bool,
@@ -228,6 +238,19 @@ enum Commands {
         /// Optional neural reranker directory (`dist/base_neural`).
         #[arg(long)]
         neural: Option<PathBuf>,
+        /// Optional local Tier-2 MLX 4-bit Qwen3-Base directory (`Qwen3-1.7B/4B-Base`) for
+        /// confidence-gated Top-K reranking.
+        #[arg(long)]
+        tier2: Option<PathBuf>,
+        /// Confidence margin threshold for escalating to Tier-2 (`score[0] - score[1] < margin`).
+        #[arg(long, default_value_t = 3.0)]
+        tier2_margin: f32,
+        /// Tier-2 LM interpolation weight (`0.65` => `0.35 * Tier1 + 0.65 * Tier2`).
+        #[arg(long, default_value_t = 0.65)]
+        tier2_alpha: f32,
+        /// Disable the `{的, 地, 得}` grammatical guard on Tier-2 (for ablation).
+        #[arg(long, default_value_t = false)]
+        tier2_no_dedide_guard: bool,
         /// Optional path to write detailed failure rows TSV.
         #[arg(long)]
         failures_out: Option<PathBuf>,
@@ -306,6 +329,9 @@ fn main() -> Result<()> {
             dict,
             pack,
             neural,
+            tier2,
+            tier2_margin,
+            tier2_alpha,
             route_a,
             beam_width,
         } => {
@@ -324,6 +350,16 @@ fn main() -> Result<()> {
                     .context("--route-a requires --neural <model_dir>")?;
                 let mut slm =
                     chime_neural::SafetensorsReranker::load_dir_with_loras(np, &lora_specs)?;
+                if let Some(t2_dir) = tier2.as_deref() {
+                    slm.attach_tier2(
+                        t2_dir,
+                        chime_neural::Tier2Config {
+                            margin_threshold: tier2_margin,
+                            alpha: tier2_alpha,
+                            ..chime_neural::Tier2Config::default()
+                        },
+                    )?;
+                }
                 let sch: ShuangpinScheme = scheme.into();
                 let is_single_syl_ctx = !context.trim().is_empty()
                     && sch == ShuangpinScheme::Full
@@ -413,14 +449,7 @@ fn main() -> Result<()> {
             } else {
                 String::new()
             };
-            let default_eng = PathBuf::from("/usr/share/dict/words");
-            let eng_ref = english_words.as_deref().or_else(|| {
-                if default_eng.exists() {
-                    Some(default_eng.as_path())
-                } else {
-                    None
-                }
-            });
+            let eng_ref = english_words.as_deref();
 
             let t0 = Instant::now();
             let mut lex = build_comprehensive_lexicon(&jieba_text, eng_ref, min_freq);
@@ -634,18 +663,34 @@ fn main() -> Result<()> {
             dict,
             pack,
             neural,
+            tier2,
+            tier2_margin,
+            tier2_alpha,
+            tier2_no_dedide_guard,
             failures_out,
             record,
             tag,
             route_a,
             beam_width,
         } => {
+            let tier2_opt = tier2.as_deref().map(|dir| {
+                (
+                    dir,
+                    chime_neural::Tier2Config {
+                        margin_threshold: tier2_margin,
+                        alpha: tier2_alpha,
+                        guard_de_di_de: !tier2_no_dedide_guard,
+                        ..chime_neural::Tier2Config::default()
+                    },
+                )
+            });
             run_large_bench(
                 &mut stdout,
                 &tsv,
                 dict.as_deref(),
                 &pack,
                 neural.as_deref(),
+                tier2_opt,
                 failures_out.as_deref(),
                 record.as_deref(),
                 &tag,
@@ -1215,15 +1260,29 @@ fn run_golden_eval(
             {
                 comp.text.clone()
             } else {
-                let mut extra = Vec::new();
-                if c.keys.len() >= 6 {
+                let mut extra: Vec<(String, f32, bool)> = Vec::new();
+                if c.keys.len() >= 2 {
+                    let bm_cfg = chime_neural::BeamSearchConfig::default();
+                    let fuzzy_def = chime_phonetics::FuzzyConfig::default();
                     for lc in &stage1 {
                         if lc.consumed_bytes == c.keys.len()
-                            && lc.kind == chime_decoder::MatchKind::Exact
-                            && !extra.contains(&lc.text)
+                            && matches!(
+                                lc.kind,
+                                chime_decoder::MatchKind::Exact
+                                    | chime_decoder::MatchKind::Fuzzy
+                                    | chime_decoder::MatchKind::TypoCorrected
+                            )
+                            && !extra.iter().any(|(t, _, _)| t == &lc.text)
                         {
-                            extra.push(lc.text.clone());
-                            if extra.len() >= 4 {
+                            let (chan_cost, is_exact) = match lc.kind {
+                                chime_decoder::MatchKind::Exact => (0.0, true),
+                                chime_decoder::MatchKind::Fuzzy => {
+                                    (-(fuzzy_def.fuzzy_penalty + 0.85), false)
+                                }
+                                _ => (bm_cfg.swap_channel_cost, false),
+                            };
+                            extra.push((lc.text.clone(), chan_cost, is_exact));
+                            if extra.len() >= 8 {
                                 break;
                             }
                         }
@@ -1246,7 +1305,7 @@ fn run_golden_eval(
                         chime_neural::ScoringMode::ClosedSentence
                     },
                     beam_width: 8,
-                    extra_exact_candidates: extra,
+                    extra_stage1_candidates: extra,
                 };
                 route_a_worker
                     .decode_route_a_with_budget(req, std::time::Duration::from_millis(250))
@@ -1494,6 +1553,7 @@ fn run_large_bench(
     dict_path: Option<&Path>,
     pack_dirs: &[PathBuf],
     neural_path: Option<&Path>,
+    tier2_spec: Option<(&Path, chime_neural::Tier2Config)>,
     failures_out: Option<&Path>,
     record_path: Option<&Path>,
     tag: &str,
@@ -1514,10 +1574,11 @@ fn run_large_bench(
 
     let mut route_a_slm = if route_a {
         let np = neural_path.context("--route-a requires --neural <model_dir>")?;
-        Some(chime_neural::SafetensorsReranker::load_dir_with_loras(
-            np,
-            &lora_specs,
-        )?)
+        let mut slm = chime_neural::SafetensorsReranker::load_dir_with_loras(np, &lora_specs)?;
+        if let Some((t2_dir, t2_cfg)) = tier2_spec {
+            slm.attach_tier2(t2_dir, t2_cfg)?;
+        }
+        Some(slm)
     } else {
         None
     };
@@ -1579,75 +1640,56 @@ fn run_large_bench(
             } else {
                 chime_neural::ScoringMode::ClosedSentence
             };
-            let mut ncands = slm.decode_constrained(
-                left_ctx,
-                app,
-                keys,
-                scheme,
-                chime_phonetics::FuzzyConfig::default(),
-                true,
-                mode,
-                beam_width,
-            );
-            // Pure-Bayesian Exact-Lexicon Hypothesis Fusion:
-            // Collect exact-pinyin full-span dictionary/idiom/pack proposals (ZERO static unigram
-            // score!) and score them on the exact same `log P_LM(Y | C) (+ closure)` scale so
-            // rare-start 4-char idioms, classical verses, and `.imepack` terms never suffer beam
-            // horizon pruning!
+            let fuzzy_cfg = chime_phonetics::FuzzyConfig::default();
             let stage1_ctx = DecodeContext {
                 left_context: left_ctx,
                 app_bundle_id: app,
                 scheme,
-                fuzzy: chime_phonetics::FuzzyConfig::default(),
+                fuzzy: fuzzy_cfg,
                 pangu_spacing: true,
                 uppercase_triggers_english: true,
                 english_auto_correct: true,
                 now_epoch_secs: 1_000,
             };
-            if keys.len() >= 6 && !is_single_syl_ctx {
+            let mut extra_items: Vec<(String, f32, bool)> = Vec::new();
+            if keys.len() >= 2 && !is_single_syl_ctx {
                 let lex_cands = decoder.decode(keys, &base_lex, &user_store, &stage1_ctx);
-                let mut extra_texts: Vec<String> = Vec::new();
+                let bm_cfg = chime_neural::BeamSearchConfig::default();
                 for lc in lex_cands {
                     if lc.consumed_bytes == keys.len()
-                        && lc.kind == chime_decoder::MatchKind::Exact
-                        && !ncands.iter().any(|c| c.text == lc.text)
-                        && !extra_texts.contains(&lc.text)
+                        && matches!(
+                            lc.kind,
+                            chime_decoder::MatchKind::Exact
+                                | chime_decoder::MatchKind::Fuzzy
+                                | chime_decoder::MatchKind::TypoCorrected
+                        )
+                        && !extra_items.iter().any(|(t, _, _)| t == &lc.text)
                     {
-                        extra_texts.push(lc.text);
-                        if extra_texts.len() >= 4 {
+                        let (chan_cost, is_exact) = match lc.kind {
+                            chime_decoder::MatchKind::Exact => (0.0, true),
+                            chime_decoder::MatchKind::Fuzzy => {
+                                (-(fuzzy_cfg.fuzzy_penalty + 0.85), false)
+                            }
+                            _ => (bm_cfg.swap_channel_cost, false),
+                        };
+                        extra_items.push((lc.text, chan_cost, is_exact));
+                        if extra_items.len() >= 8 {
                             break;
                         }
                     }
                 }
-                if !extra_texts.is_empty() {
-                    let eff_mode = if !left_ctx.trim().is_empty() && keys.len() <= 12 {
-                        chime_neural::ScoringMode::OpenContextual
-                    } else {
-                        mode
-                    };
-                    let lps = slm.score_candidates_exact_bayesian_with_pinyin(
-                        left_ctx,
-                        app,
-                        keys,
-                        scheme,
-                        &extra_texts,
-                        eff_mode,
-                    );
-                    for (txt, lp) in extra_texts.into_iter().zip(lps) {
-                        if lp.is_finite() {
-                            ncands.push(chime_neural::NeuralBeamCandidate {
-                                text: txt,
-                                score: lp,
-                                lm_log_prob: lp,
-                                channel_cost: 0.0,
-                                is_exact: true,
-                                consumed_bytes: keys.len(),
-                            });
-                        }
-                    }
-                    ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
-                }
             }
+            let ncands = slm.decode_constrained_with_proposals(
+                left_ctx,
+                app,
+                keys,
+                scheme,
+                fuzzy_cfg,
+                true,
+                mode,
+                beam_width,
+                &extra_items,
+            );
             ncands.into_iter().map(|c| c.text).collect()
         } else {
             let ctx = DecodeContext {
@@ -1782,6 +1824,19 @@ fn run_large_bench(
         "Overall Hits: Top-1={hit1}/{total}, Top-3={hit3}/{total}, Top-5={hit5}/{total} | Latency \
          p50={p50} us, p95={p95} us, p99={p99} us"
     )?;
+    if let Some(slm) = route_a_slm.as_ref()
+        && let Some((esc, tot_q)) = slm.tier2_stats()
+    {
+        let rate = if tot_q > 0 {
+            100.0 * (esc as f64) / (tot_q as f64)
+        } else {
+            0.0
+        };
+        writeln!(
+            out,
+            "Tier-2 Reranker Escalations: {esc}/{tot_q} ({rate:.1}%)"
+        )?;
+    }
     if let Some(rec_file) = record_path {
         if let Some(parent) = rec_file.parent() {
             fs::create_dir_all(parent)?;

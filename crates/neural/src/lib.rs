@@ -6,6 +6,7 @@
 pub mod beam_decoder;
 pub mod mlx_backend;
 pub mod pinyin_trie;
+pub mod tier2;
 pub mod transformer;
 pub mod worker;
 
@@ -16,11 +17,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::{
-    beam_decoder::{NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam},
+    beam_decoder::{
+        BeamSearchConfig, NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam,
+    },
     mlx_backend::{
         LoraMountSpec, LoraRouting, MlxBeamKv, MlxLoraAdapter, MlxPrefixCache, MlxTransformer,
     },
-    pinyin_trie::{TokenEdge, TokenPinyinIndex},
+    pinyin_trie::{ChannelConfig, TokenEdge, TokenPinyinIndex},
+    tier2::{HfBpeTokenizer, Tier2Config, Tier2Reranker},
     transformer::{
         ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
     },
@@ -133,6 +137,7 @@ pub struct SafetensorsReranker {
     kv_cache: MlxPrefixCache,
     beam_cache: RouteABeamCache,
     pinyin_index: Option<TokenPinyinIndex>,
+    tier2: Option<Tier2Reranker>,
     closure_token_ids: Vec<u32>,
     closure_weight: f32,
     weight_scale: f32,
@@ -237,10 +242,40 @@ impl SafetensorsReranker {
             kv_cache,
             beam_cache: RouteABeamCache::default(),
             pinyin_index,
+            tier2: None,
             closure_token_ids,
             closure_weight,
             weight_scale: 1.02,
         })
+    }
+
+    /// Mounts an optional local Tier-2 MLX reranker (`Qwen3-1.7B/4B-Base` 4-bit) for
+    /// confidence-gated Top-K rescoring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError`] if loading the Tier-2 bundle fails.
+    pub fn attach_tier2(&mut self, model_dir: &Path, cfg: Tier2Config) -> Result<(), NeuralError> {
+        let t2 = Tier2Reranker::load_dir(model_dir, cfg)?;
+        self.tier2 = Some(t2);
+        Ok(())
+    }
+
+    /// Unloads any currently mounted Tier-2 reranker and releases its unified memory.
+    pub fn detach_tier2(&mut self) {
+        self.tier2 = None;
+    }
+
+    /// Returns `true` when an optional Tier-2 local reranker is mounted.
+    #[must_use]
+    pub const fn has_tier2(&self) -> bool {
+        self.tier2.is_some()
+    }
+
+    /// Returns `(escalations, total_queries)` for the mounted Tier-2 reranker, if any.
+    #[must_use]
+    pub fn tier2_stats(&self) -> Option<(u64, u64)> {
+        self.tier2.as_ref().map(Tier2Reranker::stats)
     }
 
     /// Returns true if `token_pinyin.json` was loaded and Route A constrained neural beam
@@ -334,9 +369,37 @@ impl SafetensorsReranker {
     }
 
     /// Runs Route A (First-Principles Pinyin-Constrained Autoregressive Neural Beam Search)
-    /// directly inside the on-device MLX Transformer + Multi-LoRA!
+    /// directly inside the on-device MLX Transformer + Multi-LoRA, optionally refined by Tier-2.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_constrained(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+    ) -> Vec<NeuralBeamCandidate> {
+        let mut cands = self.decode_constrained_inner(
+            left_context,
+            app_bundle_id,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+        );
+        if let Some(t2) = &mut self.tier2 {
+            t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut cands);
+        }
+        cands
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_constrained_inner(
         &mut self,
         left_context: &str,
         app_bundle_id: &str,
@@ -387,6 +450,155 @@ impl SafetensorsReranker {
             is_pc,
             cache_opt,
         )
+    }
+
+    /// Dual-Proposal Exact Bayesian Decoding: combines Route A autoregressive BPE neural beam
+    /// search with complementary Stage-1 word-level Viterbi proposals (`Exact`, `Fuzzy`,
+    /// `TypoCorrected`), scoring every novel proposal under the exact same Bayesian objective
+    /// `log P_LM(Y | C) + closure + exact_channel_cost(X | Y)`.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn decode_constrained_with_proposals(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+        extra_stage1_candidates: &[(String, f32, bool)],
+    ) -> Vec<NeuralBeamCandidate> {
+        let mut ncands = self.decode_constrained_inner(
+            left_context,
+            app_bundle_id,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+        );
+        if extra_stage1_candidates.is_empty() {
+            if let Some(t2) = &mut self.tier2 {
+                t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
+            }
+            return ncands;
+        }
+
+        let mut to_score: Vec<(String, f32, bool)> = Vec::new();
+        let ch_cfg = pinyin_trie::ChannelConfig::default();
+        let mut primary_lattice: Option<Vec<Vec<pinyin_trie::TokenEdge>>> = None;
+        let mut neighbor_lattice: Option<Vec<Vec<pinyin_trie::TokenEdge>>> = None;
+        let has_vowel_pinyin = raw_input.bytes().any(|b| {
+            matches!(
+                b.to_ascii_lowercase(),
+                b'a' | b'e' | b'i' | b'o' | b'u' | b'v'
+            )
+        });
+        let unk = self.vocab.unk_token;
+        for (txt, fallback_chan, fallback_exact) in extra_stage1_candidates {
+            if ncands.iter().any(|c| c.text == *txt)
+                || to_score.iter().any(|(existing, _, _)| existing == txt)
+            {
+                continue;
+            }
+            let aligned = self.pinyin_index.as_ref().and_then(|idx| {
+                let prim = primary_lattice.get_or_insert_with(|| {
+                    idx.build_token_lattice_with_config(raw_input, scheme, fuzzy, false, ch_cfg)
+                });
+                if let Some(res) = idx.exact_channel_cost_with_lattice(raw_input, txt, prim) {
+                    return Some(res);
+                }
+                if scheme == ShuangpinScheme::Full {
+                    let neigh = neighbor_lattice.get_or_insert_with(|| {
+                        idx.build_token_lattice_with_config(
+                            raw_input,
+                            scheme,
+                            fuzzy,
+                            false,
+                            pinyin_trie::ChannelConfig {
+                                enable_canonical_neighbor_typos: true,
+                                canonical_neighbor_window: None,
+                                ..ch_cfg
+                            },
+                        )
+                    });
+                    return idx.exact_channel_cost_with_lattice(raw_input, txt, neigh);
+                }
+                None
+            });
+            let (chan_cost, is_exact) = if let Some(res) = aligned {
+                res
+            } else {
+                // Skip unaligned non-exact Stage-1 proposals (`Fuzzy`/`TypoCorrected` like
+                // `nanning -> 南京`) that neither `primary_lattice` nor `neighbor_lattice`
+                // accepted, as well as standalone single-char archaic/bound ghost readings from
+                // `core.imedict` (`kuai -> 会`, `ji -> 给`) that `token_pinyin.json` excluded,
+                // while keeping multi-char Stage-1 exact compounds (`会计`, `便宜`, `给予`) intact!
+                let is_single_cjk = txt.chars().count() == 1
+                    && txt.chars().all(|c| ('\u{4E00}'..='\u{9FA5}').contains(&c));
+                let all_in_vocab = !self.vocab.encode(txt, false).contains(&unk);
+                if !ncands.is_empty()
+                    && all_in_vocab
+                    && (!*fallback_exact || (has_vowel_pinyin && is_single_cjk))
+                {
+                    continue;
+                }
+                (*fallback_chan, *fallback_exact)
+            };
+            to_score.push((txt.clone(), chan_cost, is_exact));
+        }
+
+        if !to_score.is_empty() {
+            let bcfg = beam_decoder::BeamSearchConfig::default();
+            let lower_raw = raw_input.to_ascii_lowercase();
+            let is_single_syl = scheme == ShuangpinScheme::Full
+                && !raw_input.contains('\'')
+                && chime_phonetics::is_valid_syllable(&lower_raw);
+            let eff_mode = if is_single_syl
+                || (!left_context.trim().is_empty()
+                    && raw_input.len() <= bcfg.contextual_short_phrase_max_bytes)
+            {
+                ScoringMode::OpenContextual
+            } else {
+                mode
+            };
+            let texts: Vec<String> = to_score.iter().map(|(t, _, _)| t.clone()).collect();
+            let lps = self.score_candidates_exact_bayesian_with_pinyin(
+                left_context,
+                app_bundle_id,
+                raw_input,
+                scheme,
+                &texts,
+                eff_mode,
+            );
+            let mut extra_scored: Vec<NeuralBeamCandidate> = Vec::new();
+            for ((txt, chan_cost, is_exact), lp) in to_score.into_iter().zip(lps) {
+                if lp.is_finite() {
+                    extra_scored.push(NeuralBeamCandidate {
+                        text: txt,
+                        score: lp + chan_cost,
+                        lm_log_prob: lp,
+                        channel_cost: chan_cost,
+                        is_exact,
+                        consumed_bytes: raw_input.len(),
+                    });
+                }
+            }
+            if !extra_scored.is_empty() {
+                // Apply the same Cache-LM left-context repetition prior to Stage-1 proposals so
+                // Route A and Stage-1 candidates compete on an identical Bayesian manifold!
+                beam_decoder::apply_left_context_cache_bonus(left_context, &mut extra_scored);
+                ncands.extend(extra_scored);
+                ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
+                beam_decoder::apply_pronoun_symmetry(left_context, &mut ncands);
+            }
+        }
+        if let Some(t2) = &mut self.tier2 {
+            t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
+        }
+        ncands
     }
 
     /// Computes exact unnormalized Bayesian log-likelihoods `log P_LM(Y | C) (+ closure)` on the
@@ -932,6 +1144,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_route_a_constrained_beam_and_incremental_kv_cache() {
         let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         TinyModelBuilder::write_demo_bundle(dir.path(), &[("今天", "使用"), ("使用", "模型")])
@@ -1013,6 +1226,45 @@ mod tests {
             "incremental RouteABeamCache score {} != fresh {}",
             inc[0].score,
             fresh[0].score
+        );
+
+        // Divergent sentence sharing a >6-byte prefix (`jintianshi...`) must never be corrupted by
+        // `RouteABeamCache` (regression guard for `feikuaidesudu...` -> `feikuaidipaoxiang...`).
+        let diverged = slm_inc.decode_constrained(
+            "",
+            "md.obsidian",
+            "jintianshiyongduance",
+            ShuangpinScheme::Full,
+            FuzzyConfig::default(),
+            true,
+            ScoringMode::ClosedSentence,
+            6,
+        );
+        let diverged_fresh = slm_fresh.decode_constrained(
+            "",
+            "md.obsidian",
+            "jintianshiyongduance",
+            ShuangpinScheme::Full,
+            FuzzyConfig::default(),
+            true,
+            ScoringMode::ClosedSentence,
+            6,
+        );
+        assert_eq!(
+            diverged.first().map(|c| c.text.as_str()),
+            Some("今天使用端侧"),
+            "divergent prefix decode should not lose cross-boundary prefix tokens"
+        );
+        assert_eq!(
+            diverged.first().map(|c| c.text.as_str()),
+            diverged_fresh.first().map(|c| c.text.as_str()),
+            "divergent prefix decode diverged from fresh decode"
+        );
+        assert!(
+            (diverged[0].score - diverged_fresh[0].score).abs() < 5e-3,
+            "divergent prefix score {} != fresh {}",
+            diverged[0].score,
+            diverged_fresh[0].score
         );
     }
 }
