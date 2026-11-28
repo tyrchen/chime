@@ -79,10 +79,10 @@ pub struct BeamSearchConfig {
 impl Default for BeamSearchConfig {
     fn default() -> Self {
         Self {
-            early_funnel_multiplier: 2,
-            max_early_beam: 12,
-            root_prune_margin: 14.0,
-            early_prune_margin: 11.5,
+            early_funnel_multiplier: 3,
+            max_early_beam: 18,
+            root_prune_margin: 14.5,
+            early_prune_margin: 12.5,
             late_prune_margin: 9.5,
             step_edge_margin: 12.5,
             swap_channel_cost: -2.60,
@@ -261,6 +261,105 @@ pub(crate) fn has_explicit_masculine_antecedent(left_context: &str) -> bool {
         || left_context.contains("小伙")
 }
 
+/// Mild Cache-LM repetition prior (Kuhn & De Mori 1990): when a decoded candidate reuses a
+/// non-trivial 2-character CJK lexical bigram that already appeared in `left_context` (e.g. a
+/// person/place name or domain term just mentioned earlier in the paragraph), give a small bounded
+/// log-prob boost (`+0.75` per distinct bigram, capped at `+1.50`) so a 0.32B static LM does not
+/// lose recently introduced entities to generic high-frequency homophones.
+pub(crate) fn apply_left_context_cache_bonus(
+    left_context: &str,
+    cands: &mut [NeuralBeamCandidate],
+) {
+    if left_context.is_empty() || cands.len() < 2 {
+        return;
+    }
+    let ctx_chars: Vec<char> = left_context.chars().collect();
+    if ctx_chars.len() < 2 {
+        return;
+    }
+    let is_cjk = |c: char| ('\u{4E00}'..='\u{9FA5}').contains(&c);
+    let is_function_char = |c: char| {
+        matches!(
+            c,
+            '的' | '地'
+                | '得'
+                | '了'
+                | '在'
+                | '是'
+                | '有'
+                | '和'
+                | '与'
+                | '为'
+                | '不'
+                | '也'
+                | '就'
+                | '都'
+                | '而'
+                | '及'
+                | '以'
+                | '于'
+                | '之'
+                | '一'
+                | '这'
+                | '那'
+                | '我'
+                | '你'
+                | '他'
+                | '她'
+                | '它'
+                | '们'
+                | '个'
+                | '中'
+                | '上'
+                | '下'
+        )
+    };
+    let mut ctx_bigrams: Vec<(char, char)> = Vec::new();
+    for w in ctx_chars.windows(2) {
+        if is_cjk(w[0]) && is_cjk(w[1]) && !(is_function_char(w[0]) && is_function_char(w[1])) {
+            ctx_bigrams.push((w[0], w[1]));
+        }
+    }
+    if ctx_bigrams.is_empty() {
+        return;
+    }
+    ctx_bigrams.sort_unstable();
+    ctx_bigrams.dedup();
+
+    let mut any_boosted = false;
+    for cand in cands.iter_mut() {
+        if !cand.is_exact {
+            continue;
+        }
+        let chars: Vec<char> = cand.text.chars().collect();
+        if chars.len() < 2 {
+            continue;
+        }
+        let mut matched: usize = 0;
+        let mut seen: Vec<(char, char)> = Vec::new();
+        for w in chars.windows(2) {
+            let pair = (w[0], w[1]);
+            if ctx_bigrams.binary_search(&pair).is_ok() && !seen.contains(&pair) {
+                seen.push(pair);
+                matched += 1;
+                if matched >= 2 {
+                    break;
+                }
+            }
+        }
+        if matched > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let bonus = (matched as f32 * 1.10).min(2.00);
+            cand.lm_log_prob += bonus;
+            cand.score += bonus;
+            any_boosted = true;
+        }
+    }
+    if any_boosted {
+        cands.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+}
+
 pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeamCandidate]) {
     if cands.len() < 2 {
         return;
@@ -393,6 +492,7 @@ pub fn decode_constrained_beam(
         is_pinyin_conditioned,
         bcfg,
         ChannelConfig::default(),
+        None,
         // A new key can change Shuangpin syllable boundaries before the cached prefix.
         beam_cache.filter(|_| scheme == ShuangpinScheme::Full),
     );
@@ -465,6 +565,7 @@ pub fn decode_constrained_beam(
             bcfg,
             ChannelConfig::default(),
             None,
+            None,
         );
         let prev_top_score = primary_out
             .cands
@@ -485,17 +586,81 @@ pub fn decode_constrained_beam(
         && lower_input.bytes().all(|b| b.is_ascii_lowercase())
         && chime_phonetics::can_segment_strict_orthography(&lower_input);
 
+    let top_ppl_catastrophic = is_ppl_catastrophic(&primary_out);
+    let has_ascii_code_switch = !top_ppl_catastrophic
+        && primary_out
+            .cands
+            .first()
+            .is_some_and(|c| c.text.bytes().any(|b| b.is_ascii_alphabetic()));
+
+    // 1b. Localized Spike-Window Garden-Path Re-Expansion:
+    // When a canonical non-code-switching sentence still exhibits an acute semantic surprisal
+    // spike (`>= 10.6 nats`) or global perplexity distress (`n <= 36`), widen ONLY the localized
+    // byte window around the spike (up to 18 beams inside the spike window, fast 6 beams outside)
+    // so mid-sentence garden-path traps (`飞快地抛向操场 -> 跑向`, `只能靠死跟畜畜 -> 四根触须`,
+    // `称为居里温度`, `这张画儿挂这儿可以吗`) recover with zero overhead on clean, code-switching,
+    // and non-canonical typo sentences!
+    if !is_pinyin_conditioned
+        && (8..=36).contains(&n)
+        && beam_width >= bcfg.rescue_beam_width
+        && !has_ascii_code_switch
+        && (is_strict_canonical || scheme != ShuangpinScheme::Full)
+        && (top_ppl_catastrophic || primary_out.top_spike1.surprisal >= 10.6)
+    {
+        let wide_win = if primary_out.top_spike1.end > primary_out.top_spike1.start {
+            let lo = primary_out.top_spike1.start.saturating_sub(9);
+            let hi = (primary_out.top_spike1.end + 3).min(n);
+            Some((lo, hi))
+        } else {
+            Some((0, (n / 2).clamp(8, 14)))
+        };
+        let escalated = decode_constrained_beam_single(
+            mlx_model,
+            kv_cache,
+            pinyin_index,
+            left_context,
+            app_bundle_id,
+            prefix_ids,
+            lora_scales,
+            closure_token_ids,
+            closure_weight,
+            raw_input,
+            &lower_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width.min(6),
+            allow_traditional,
+            is_pinyin_conditioned,
+            bcfg,
+            ChannelConfig::default(),
+            wide_win,
+            None,
+        );
+        let prev_top_score = primary_out
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        let esc_top_score = escalated
+            .cands
+            .first()
+            .map_or(f32::NEG_INFINITY, |c| c.score);
+        if esc_top_score > prev_top_score {
+            primary_out.top_spike1 = escalated.top_spike1;
+        }
+        merge_into_primary(&mut primary_out.cands, escalated.cands);
+    }
+
     // 2. Localized Surprisal-Spike Canonical Typo Rescue (NeighborKey + AdjacentSwap):
     // Fires ONLY when the sentence STILL exhibits strong semantic distress after garden-path
     // re-expansion and is NOT a fluent Chinese-English code-switching sentence.
     let top_ppl_catastrophic = is_ppl_catastrophic(&primary_out);
     let has_ascii_code_switch = !top_ppl_catastrophic
-        && (primary_out
+        && primary_out
             .cands
             .first()
-            .is_some_and(|c| c.text.bytes().any(|b| b.is_ascii_alphabetic()))
-            || chime_phonetics::classify_code_switch(&lower_input)
-                != chime_phonetics::CodeSwitchSignal::AmbiguousAscii);
+            .is_some_and(|c| c.text.bytes().any(|b| b.is_ascii_alphabetic()));
     if scheme == ShuangpinScheme::Full
         && n >= 4
         && !has_ascii_code_switch
@@ -538,6 +703,7 @@ pub fn decode_constrained_beam(
             is_pinyin_conditioned,
             bcfg,
             rescue_cfg,
+            None,
             None,
         );
         let prev_top_score = primary_out
@@ -597,6 +763,7 @@ pub fn decode_constrained_beam(
                     is_pinyin_conditioned,
                     bcfg,
                     ChannelConfig::default(),
+                    None,
                     None,
                 );
                 let adjusted: Vec<NeuralBeamCandidate> = rep_out
@@ -665,6 +832,7 @@ pub fn decode_constrained_beam(
                     bcfg,
                     ChannelConfig::default(),
                     None,
+                    None,
                 );
                 let adjusted: Vec<NeuralBeamCandidate> = rep_out
                     .cands
@@ -707,6 +875,7 @@ fn decode_constrained_beam_single(
     is_pinyin_conditioned: bool,
     bcfg: BeamSearchConfig,
     channel_cfg: ChannelConfig,
+    wide_beam_window: Option<(usize, usize)>,
     beam_cache: Option<&mut RouteABeamCache>,
 ) -> SingleDecodeOut {
     let empty_out = || SingleDecodeOut {
@@ -1061,7 +1230,9 @@ fn decode_constrained_beam_single(
         // Proportional early funnel window keeps garden-path openings alive while tapering cleanly
         // on long sentences without sacrificing sibling candidates.
         let early_limit = (n / 4).clamp(6, 8);
-        let in_early_funnel = !is_pinyin_conditioned && pos < n && pos <= early_limit;
+        let in_wide_window = wide_beam_window.is_some_and(|(lo, hi)| pos >= lo && pos <= hi);
+        let in_early_funnel =
+            !is_pinyin_conditioned && pos < n && (pos <= early_limit || in_wide_window);
         let pos_beam_cap = if in_early_funnel {
             (beam_width * bcfg.early_funnel_multiplier).min(bcfg.max_early_beam.max(beam_width))
         } else {
@@ -1123,6 +1294,7 @@ fn decode_constrained_beam_single(
                     consumed_bytes: n,
                 })
                 .collect();
+            apply_left_context_cache_bonus(left_context, &mut out);
             apply_pronoun_symmetry(left_context, &mut out);
             return SingleDecodeOut {
                 cands: out,
@@ -1314,5 +1486,40 @@ fn apply_closure_bonus(
             let closure_lp = (max_lp + sum_exp.max(1e-12).ln()).clamp(-9.5, 0.0);
             hyp.lm_lp += closure_weight * closure_lp;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_cand(text: &str, score: f32, is_exact: bool) -> NeuralBeamCandidate {
+        NeuralBeamCandidate {
+            text: text.to_string(),
+            score,
+            lm_log_prob: score,
+            channel_cost: 0.0,
+            is_exact,
+            consumed_bytes: 4,
+        }
+    }
+
+    #[test]
+    fn test_left_context_cache_bonus_promotes_repeated_entity() {
+        let mut cands = vec![mk_cand("演或", -5.0, true), mk_cand("演活", -5.8, true)];
+        apply_left_context_cache_bonus("她把这个角色演活了，观众觉得她真的", &mut cands);
+        assert_eq!(cands[0].text, "演活");
+    }
+
+    #[test]
+    fn test_left_context_cache_bonus_ignores_function_bigrams_and_inexact() {
+        let mut cands = vec![mk_cand("他的", -5.0, true), mk_cand("是的", -5.5, true)];
+        apply_left_context_cache_bonus("这是他的书，是的", &mut cands);
+        // Function-word bigrams (`是的`, `他的`) are filtered out, so order stays unchanged.
+        assert_eq!(cands[0].text, "他的");
+
+        let mut inexact = vec![mk_cand("演或", -5.0, true), mk_cand("演活", -5.5, false)];
+        apply_left_context_cache_bonus("演活了", &mut inexact);
+        assert_eq!(inexact[0].text, "演或");
     }
 }
