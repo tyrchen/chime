@@ -56,7 +56,72 @@ pub fn expand_shuangpin_pair(scheme: ShuangpinScheme, c1: u8, c2: u8) -> SmallVe
     out
 }
 
-/// Possible syllables while waiting for the second key of the last pair. Use the
+/// Positions where a one-key syllable participates in a parse with the fewest omitted finals.
+/// Keep *all* tied segmentations for language-model scoring. A valid sequence of complete
+/// pairs therefore never sprouts abbreviation candidates. Apostrophes are hard boundaries.
+#[must_use]
+pub fn shuangpin_initial_mask(scheme: ShuangpinScheme, keys: &[u8]) -> Vec<bool> {
+    let n = keys.len();
+    let mut singles = vec![false; n];
+    if scheme == ShuangpinScheme::Full || n == 0 {
+        return singles;
+    }
+    let pairs: Vec<bool> = keys
+        .windows(2)
+        .map(|p| !expand_shuangpin_pair(scheme, p[0], p[1]).is_empty())
+        .collect();
+    let initial = |i: usize| {
+        !map_initial(scheme, keys[i]).is_empty()
+            || (i + 1 == n && !expand_shuangpin_initial(scheme, keys[i]).is_empty())
+    };
+    // Minimum number of missing finals required to finish each suffix.
+    let mut cost = vec![usize::MAX; n + 1];
+    cost[n] = 0;
+    for i in (0..n).rev() {
+        if keys[i] == b'\'' {
+            cost[i] = cost[i + 1];
+            continue;
+        }
+        if initial(i) {
+            cost[i] = cost[i + 1].saturating_add(1);
+        }
+        if pairs.get(i) == Some(&true) {
+            cost[i] = cost[i].min(cost[i + 2]);
+        }
+    }
+    if cost[0] == usize::MAX {
+        // The lattice may start on the English track. Preserve trailing-initial completion.
+        singles[n - 1] = initial(n - 1);
+        return singles;
+    }
+    let mut reachable = vec![false; n + 1];
+    reachable[0] = true;
+    for i in 0..n {
+        if !reachable[i] {
+            continue;
+        }
+        if keys[i] == b'\'' {
+            reachable[i + 1] = true;
+            continue;
+        }
+        if pairs.get(i) == Some(&true) && cost[i] == cost[i + 2] {
+            reachable[i + 2] = true;
+        }
+        if initial(i) && cost[i] == cost[i + 1].saturating_add(1) {
+            singles[i] = true;
+            reachable[i + 1] = true;
+        }
+    }
+    singles
+}
+
+/// Prefer a still-unfinished trailing pair to reinterpreting an earlier complete pair.
+#[must_use]
+pub const fn initial_log_cost(end: usize, input_len: usize) -> f32 {
+    if end == input_len { -1.35 } else { -2.7 }
+}
+
+/// Possible syllables when the second key of a pair is omitted. Use the
 /// layout itself so retroflex initials, zero initials and Microsoft's `;` agree with exact input.
 #[must_use]
 pub fn expand_shuangpin_initial(scheme: ShuangpinScheme, first: u8) -> SmallVec<[SyllableId; 32]> {

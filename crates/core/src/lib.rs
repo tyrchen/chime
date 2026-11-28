@@ -26,7 +26,9 @@ use chime_lexicon::{
     parse_tsv_dict,
 };
 use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode};
-use chime_phonetics::{ShuangpinScheme, format_segmented_preedit};
+use chime_phonetics::{
+    ShuangpinScheme, format_segmented_preedit, shuangpin::shuangpin_initial_mask,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -1642,12 +1644,9 @@ impl ChimeEngine {
 
         let mut merged_full: Vec<Candidate> = Vec::with_capacity(ncands.len() + stage1_full.len());
         let mut min_neural_score = f32::INFINITY;
-        // A missing final on the last pair is intentional, not a spelling correction.
-        let pending_shuangpin_final = self.config.scheme != ShuangpinScheme::Full
-            && lower_raw
-                .rsplit('\'')
-                .next()
-                .is_some_and(|tail| tail.len() % 2 == 1);
+        // An omitted final (including inside the sentence) is not a spelling correction.
+        let abbreviated = self.config.scheme != ShuangpinScheme::Full
+            && shuangpin_initial_mask(self.config.scheme, lower_raw.as_bytes()).contains(&true);
         for nc in ncands {
             let habit_bonus = if nc.is_exact && nc.text.chars().count() >= 2 {
                 self.user_store
@@ -1664,7 +1663,7 @@ impl ChimeEngine {
                 consumed_bytes: raw_clone.len(),
                 kind: if nc.is_exact {
                     MatchKind::Exact
-                } else if pending_shuangpin_final {
+                } else if abbreviated {
                     MatchKind::Abbreviation
                 } else {
                     MatchKind::TypoCorrected

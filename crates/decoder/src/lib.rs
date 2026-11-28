@@ -330,7 +330,9 @@ impl LatticeDecoder {
 
         // Reuse prefix lattice edges & beam states when monotonically appending to a cached long
         // sentence with identical context/settings!
-        let can_reuse = self.reranker.is_none()
+        // Another key can change admissible Shuangpin abbreviations at the very start.
+        let can_reuse = ctx.scheme == ShuangpinScheme::Full
+            && self.reranker.is_none()
             && !cache.raw_input.is_empty()
             && raw_input.len() > cache.raw_input.len()
             && raw_input.starts_with(&cache.raw_input)
@@ -344,14 +346,7 @@ impl LatticeDecoder {
             && cache.raw_input.len() > 20;
 
         let reuse_until = if can_reuse {
-            // A 16-syllable word (with optional separators) may have consumed the old
-            // trailing initial. Rebuild its edge when the final arrives.
-            let lookback = if ctx.scheme == ShuangpinScheme::Full {
-                20
-            } else {
-                16 * 2 + 15
-            };
-            cache.raw_input.len().saturating_sub(lookback)
+            cache.raw_input.len().saturating_sub(20)
         } else {
             0
         };
@@ -653,7 +648,7 @@ impl LatticeDecoder {
         );
 
         // Persist cache for incremental appending on the next keystroke!
-        if self.reranker.is_none() && n >= 8 {
+        if ctx.scheme == ShuangpinScheme::Full && self.reranker.is_none() && n >= 8 {
             cache.raw_input.clear();
             cache.raw_input.push_str(raw_input);
             cache.left_context.clear();
@@ -1472,11 +1467,13 @@ impl LatticeDecoder {
         let full_already_exact = n >= 10 && full_is_canonical;
         let mut spans: Vec<Vec<(usize, SyllableId, f32, MatchKind)>> = vec![Vec::new(); n];
 
+        let initial_mask = (ctx.scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(ctx.scheme, bytes));
         for i in start_from..n {
             if bytes[i] == b'\'' {
                 continue;
             }
-            if ctx.scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if i + 2 <= n {
                     for id in expand_shuangpin_pair(ctx.scheme, bytes[i], bytes[i + 1]) {
                         spans[i].push((i + 2, id, 0.0, MatchKind::Exact));
@@ -1485,9 +1482,15 @@ impl LatticeDecoder {
                             spans[i].push((i + 2, fid, -pen, MatchKind::Fuzzy));
                         }
                     }
-                } else {
+                }
+                if mask[i] {
                     for id in expand_shuangpin_initial(ctx.scheme, bytes[i]) {
-                        spans[i].push((n, id, -1.35, MatchKind::Abbreviation));
+                        spans[i].push((
+                            i + 1,
+                            id,
+                            chime_phonetics::shuangpin::initial_log_cost(i + 1, n),
+                            MatchKind::Abbreviation,
+                        ));
                     }
                 }
                 continue;
@@ -2848,6 +2851,46 @@ pub fn apply_anti_jitter_freeze_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shuangpin_mixes_multiple_omitted_finals_with_complete_pairs() {
+        let mut lex = Lexicon::default();
+        for (text, pinyin) in [
+            ("第一", "di yi"),
+            ("个", "ge"),
+            ("是", "shi"),
+            ("什么", "shen me"),
+            ("东西", "dong xi"),
+            ("呢", "ne"),
+        ] {
+            lex.insert_pinyin_word(text, pinyin, -2.0, false);
+        }
+        let dec = LatticeDecoder::new();
+        let store = UserStore::new();
+        for scheme in [
+            ShuangpinScheme::Xiaohe,
+            ShuangpinScheme::Ziranma,
+            ShuangpinScheme::Microsoft,
+        ] {
+            let ctx = DecodeContext {
+                scheme,
+                ..Default::default()
+            };
+            for (keys, kind) in [
+                ("dyigeuiufmdsxne", MatchKind::Abbreviation),
+                ("dyigeuiufmedsxne", MatchKind::Abbreviation),
+                ("d'yigeuiufmdsxne", MatchKind::Abbreviation),
+                ("diyigeuiufmedsxine", MatchKind::Exact),
+            ] {
+                let cands = dec.decode(keys, &lex, &store, &ctx);
+                assert_eq!(
+                    (&*cands[0].text, cands[0].kind, cands[0].consumed_bytes),
+                    ("第一个是什么东西呢", kind, keys.len()),
+                    "{scheme:?}: {keys}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn shuangpin_trailing_initial_is_selectable_until_the_final_is_typed() {
