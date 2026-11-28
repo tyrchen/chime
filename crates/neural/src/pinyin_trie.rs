@@ -500,6 +500,34 @@ impl TokenPinyinIndex {
         let full_is_canonical =
             scheme == ShuangpinScheme::Full && can_segment_strict_orthography(&lower);
 
+        // Pre-mark byte spans covered by exact curated non-Pinyin tech/English words (`len >= 5`,
+        // e.g. `obsidian`, `tokio`, `vscode`, `cloudflare`, `swiftui`, `kubernetes`) so motor-typo
+        // CJK recovery never invents bogus phonetic Chinese (`ob -> bo` -> `博士点`, `to -> ti` ->
+        // `提括`) directly over an exact non-Pinyin English word, without blocking short accidental
+        // repeat typos inside Pinyin (`shuruffa` accidentally overlapping 4-letter `ruff`).
+        let mut in_non_pinyin_en = vec![false; n];
+        if scheme == ShuangpinScheme::Full {
+            for s in 0..n {
+                if !bytes[s].is_ascii_alphabetic() {
+                    continue;
+                }
+                let max_e = (s + 16).min(n);
+                for e in (s + 5)..=max_e {
+                    if !bytes[e - 1].is_ascii_alphanumeric() {
+                        break;
+                    }
+                    let sl = &lower[s..e];
+                    if (self.en_multi.contains_key(sl) || self.en_canonical_case.contains_key(sl))
+                        && !can_segment_exact(sl)
+                    {
+                        for flag in &mut in_non_pinyin_en[s..e] {
+                            *flag = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. Build syllable-level acoustic channel edges: `(end, SyllableId, channel_cost,
         //    is_exact, is_typo)`
         let mut syl_edges: Vec<Vec<SylEdge>> = vec![Vec::new(); n];
@@ -602,7 +630,7 @@ impl TokenPinyinIndex {
                         }
                     }
                 }
-                if canonical.is_none() && slice.len() >= 2 {
+                if canonical.is_none() && slice.len() >= 2 && !in_non_pinyin_en[start] {
                     // Always allow transposition (`tina -> tian`, `yuo -> you`, `zia -> zai`,
                     // `yign -> ying`) and extra-repeat typos on non-syllable spans; allow QWERTY
                     // neighbor substitutions whenever strict orthography fails (`suoyicaimeoqu`)
@@ -615,8 +643,9 @@ impl TokenPinyinIndex {
                     let in_neighbor_window = cfg
                         .canonical_neighbor_window
                         .is_none_or(|(lo, hi)| end > lo && start < hi);
-                    let allow_neighbor = (!full_is_canonical && !has_single_fuzzy)
-                        || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
+                    let allow_neighbor = !has_single_fuzzy
+                        && (!full_is_canonical
+                            || (cfg.enable_canonical_neighbor_typos && in_neighbor_window));
                     let allow_repeat = !full_is_canonical
                         || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
                     for (tid_syl, edit) in generate_typo_variants(slice) {
@@ -737,7 +766,7 @@ impl TokenPinyinIndex {
                         let en_multi_prior = if can_segment_exact(slice) {
                             1.15
                         } else {
-                            1.15 + 0.90 * (mtids.len().saturating_sub(1) as f32)
+                            1.15 + 1.10 * (mtids.len().saturating_sub(1) as f32)
                         };
                         let entry = best_map.entry((first_tid, end)).or_insert((
                             f32::NEG_INFINITY,
@@ -796,45 +825,70 @@ impl TokenPinyinIndex {
         edges_by_start
     }
 
+    /// Strips Pangu ASCII spaces at CJK/ASCII boundaries while preserving spaces between
+    /// consecutive ASCII alphanumerics so split English candidates (`vs code`) cannot silently
+    /// match an unsplit curated compound edge (`VSCode`).
+    fn strip_pangu_spaces(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        for (i, &c) in chars.iter().enumerate() {
+            if c == ' ' {
+                let prev_ascii = i > 0 && chars[i - 1].is_ascii_alphanumeric();
+                let next_ascii = i + 1 < chars.len() && chars[i + 1].is_ascii_alphanumeric();
+                if prev_ascii && next_ascii && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     /// Aligns `candidate_text` against a pre-built token lattice, returning the minimum phonetic /
     /// keystroke channel cost `(channel_cost, is_exact)`.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn exact_channel_cost_with_lattice(
         &self,
         raw_input: &str,
         candidate_text: &str,
         lattice: &[Vec<TokenEdge>],
     ) -> Option<(f32, bool)> {
+        type AlignState = (usize, Option<usize>, f32, bool);
+
         let n = raw_input.len();
         if n == 0 || candidate_text.is_empty() || lattice.len() != n {
             return None;
         }
-        // Strip Pangu ASCII spaces inserted between CJK/ASCII boundaries so pure token strings
-        // align cleanly against `self.id_to_token`.
-        let compact: String = candidate_text.chars().filter(|&c| c != ' ').collect();
+        let compact = Self::strip_pangu_spaces(candidate_text);
         let m = compact.len();
         if m == 0 {
             return None;
         }
         let lower_raw = raw_input.to_ascii_lowercase();
         let raw_b = raw_input.as_bytes();
-        // Sparse DP over `(raw_pos, text_byte_pos) -> (best_cost, is_exact)`.
-        let mut dp: HashMap<(usize, usize), (f32, bool)> = HashMap::new();
-        dp.insert((0, 0), (0.0, true));
+        // Sparse DP over `(raw_pos, text_byte_pos, prev_en_start) -> (best_cost, is_exact)`.
+        // When a Stage-1 proposal splits a curated compound tech word (`vscode` -> `vs code`,
+        // `swiftui` -> `Swift UI`, `cloudflare` -> `Cloud Fl are`) into consecutive English edges
+        // without an actual space, apply the exact same `-3.60` penalty as Route A beam search
+        // while leaving legitimate multi-word English phrases (`git push`) untouched!
+        let mut dp: HashMap<(usize, usize, Option<usize>), (f32, bool)> = HashMap::new();
+        dp.insert((0, 0, None), (0.0, true));
         for pos in 0..n {
-            let mut cur_states: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
-            for (&(rp, tp), &(cost, ex)) in &dp {
+            let mut cur_states: SmallVec<[AlignState; 8]> = SmallVec::new();
+            for (&(rp, tp, prev_en_start), &(cost, ex)) in &dp {
                 if rp == pos {
-                    cur_states.push((tp, cost, ex));
+                    cur_states.push((tp, prev_en_start, cost, ex));
                 }
             }
             if cur_states.is_empty() {
                 continue;
             }
             if raw_b[pos] == b'\'' {
-                for (tp, cost, ex) in cur_states {
+                for (tp, prev_en_start, cost, ex) in cur_states {
                     let e = dp
-                        .entry((pos + 1, tp))
+                        .entry((pos + 1, tp, prev_en_start))
                         .or_insert((f32::NEG_INFINITY, false));
                     if cost > e.0 {
                         *e = (cost, ex);
@@ -842,11 +896,13 @@ impl TokenPinyinIndex {
                 }
                 continue;
             }
-            for (tp, cost, ex) in cur_states {
+            for (tp, prev_en_start, cost, ex) in cur_states {
                 let rem = &compact[tp..];
                 if rem.is_empty() {
                     continue;
                 }
+                let en_space_skip = usize::from(prev_en_start.is_some() && rem.starts_with(' '));
+                let en_rem = &rem[en_space_skip..];
                 for edge in &lattice[pos] {
                     let matched_len = if edge.is_english {
                         let surf = self
@@ -855,11 +911,11 @@ impl TokenPinyinIndex {
                                 self.token_str(edge.token_id).trim_start_matches(' ')
                             });
                         if !surf.is_empty()
-                            && rem.len() >= surf.len()
-                            && rem.is_char_boundary(surf.len())
-                            && rem[..surf.len()].eq_ignore_ascii_case(surf)
+                            && en_rem.len() >= surf.len()
+                            && en_rem.is_char_boundary(surf.len())
+                            && en_rem[..surf.len()].eq_ignore_ascii_case(surf)
                         {
-                            Some(surf.len())
+                            Some(en_space_skip + surf.len())
                         } else {
                             None
                         }
@@ -873,10 +929,22 @@ impl TokenPinyinIndex {
                     };
                     if let Some(mlen) = matched_len {
                         let next_tp = tp + mlen;
-                        let next_cost = cost + edge.channel_cost;
+                        let splits_curated_en = edge.is_english
+                            && prev_en_start.is_some_and(|s0| {
+                                let joined = &lower_raw[s0..edge.end];
+                                self.en_multi.contains_key(joined)
+                                    || self.en_canonical_case.contains_key(joined)
+                            });
+                        let en_split_pen = if splits_curated_en { -3.60 } else { 0.0 };
+                        let next_cost = cost + edge.channel_cost + en_split_pen;
                         let next_ex = ex && edge.is_exact;
+                        let next_en_start = if edge.is_english {
+                            Some(prev_en_start.unwrap_or(pos))
+                        } else {
+                            None
+                        };
                         let e = dp
-                            .entry((edge.end, next_tp))
+                            .entry((edge.end, next_tp, next_en_start))
                             .or_insert((f32::NEG_INFINITY, false));
                         if next_cost > e.0 || ((next_cost - e.0).abs() < 1e-6 && next_ex && !e.1) {
                             *e = (next_cost, next_ex);
@@ -885,7 +953,16 @@ impl TokenPinyinIndex {
                 }
             }
         }
-        dp.get(&(n, m)).copied()
+        let mut best: Option<(f32, bool)> = None;
+        for (&(rp, tp, _), &val) in &dp {
+            if rp == n
+                && tp == m
+                && best.is_none_or(|b| val.0 > b.0 || ((val.0 - b.0).abs() < 1e-6 && val.1 && !b.1))
+            {
+                best = Some(val);
+            }
+        }
+        best
     }
 
     /// Computes the exact minimum acoustic/keystroke channel cost `(channel_cost, is_exact)` for
@@ -927,5 +1004,114 @@ impl TokenPinyinIndex {
             );
         }
         None
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn test_index() -> TokenPinyinIndex {
+        // Minimal vocabulary:
+        // 0: "在", 1: "里", 2: "用", 3: "吧", 4: "vs", 5: "code", 6: "VS", 7: "Code", 8: "git", 9:
+        // "push"
+        let id_to_token: Vec<String> = [
+            "在", "里", "用", "吧", "vs", "code", "VS", "Code", "git", "push",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let is_trad = vec![false; id_to_token.len()];
+
+        let mut nodes = vec![TrieNode::default()];
+        for (tid, syl) in [(0u32, "zai"), (1, "li"), (2, "yong"), (3, "ba")] {
+            let Some(sid) = lookup_syllable(syl) else {
+                panic!("invalid test syllable: {syl}");
+            };
+            let idx = nodes.len();
+            nodes.push(TrieNode {
+                children: HashMap::new(),
+                token_ids: vec![tid],
+            });
+            nodes[0].children.insert(sid, idx);
+        }
+
+        let mut en_exact = HashMap::new();
+        en_exact.insert("vs".to_string(), vec![4]);
+        en_exact.insert("code".to_string(), vec![5]);
+        en_exact.insert("git".to_string(), vec![8]);
+        en_exact.insert("push".to_string(), vec![9]);
+
+        let mut en_canonical_case = HashMap::new();
+        en_canonical_case.insert("vscode".to_string(), "VSCode".to_string());
+
+        let mut en_multi = HashMap::new();
+        en_multi.insert("vscode".to_string(), ("VSCode".to_string(), vec![6, 7]));
+
+        TokenPinyinIndex {
+            id_to_token,
+            is_trad,
+            nodes,
+            by_first_char: HashMap::new(),
+            skeleton_exact: HashMap::new(),
+            skeleton_single: std::array::from_fn(|_| Vec::new()),
+            en_exact,
+            en_canonical_case,
+            en_multi,
+        }
+    }
+
+    #[test]
+    fn curated_en_split_penalized_while_multiword_en_preserved() {
+        let idx = test_index();
+        let cfg = ChannelConfig::default();
+        let fuzzy = FuzzyConfig::default();
+
+        // Curated compound `vscode`: unsplit `VSCode` beats split `vs code` by > 5 log-prob.
+        let raw_vs = "zaivscodeli";
+        let lat_vs =
+            idx.build_token_lattice_with_config(raw_vs, ShuangpinScheme::Full, fuzzy, false, cfg);
+        let Some((unsplit_cost, unsplit_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_vs, "在 VSCode 里", &lat_vs)
+        else {
+            panic!("unsplit VSCode should align");
+        };
+        let Some((split_cost, split_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_vs, "在 vs code 里", &lat_vs)
+        else {
+            panic!("split vs code should align");
+        };
+        assert!(unsplit_exact);
+        assert!(split_exact);
+        assert!(
+            unsplit_cost - split_cost > 5.0,
+            "expected VSCode ({unsplit_cost}) to strongly beat split vs code ({split_cost})"
+        );
+
+        // Legitimate multi-word English phrase `git push`: sum of individual edge costs with ZERO
+        // `-3.60` curated split penalty.
+        let raw_gp = "yonggitpushba";
+        let lat_gp =
+            idx.build_token_lattice_with_config(raw_gp, ShuangpinScheme::Full, fuzzy, false, cfg);
+        let Some((gp_cost, gp_exact)) =
+            idx.exact_channel_cost_with_lattice(raw_gp, "用 git push 吧", &lat_gp)
+        else {
+            panic!("git push should align");
+        };
+        assert!(gp_exact);
+        let expected_gp = lat_gp[4]
+            .iter()
+            .find(|e| e.is_english && e.end == 7)
+            .map_or(0.0, |e| e.channel_cost)
+            + lat_gp[7]
+                .iter()
+                .find(|e| e.is_english && e.end == 11)
+                .map_or(0.0, |e| e.channel_cost);
+        assert!(
+            (gp_cost - expected_gp).abs() < 1e-4,
+            "legitimate multi-word English phrase should not receive curated split penalty: got \
+             {gp_cost}, expected {expected_gp}"
+        );
     }
 }

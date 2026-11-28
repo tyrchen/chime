@@ -26,3 +26,5 @@
 {"timestamp":1795835582,"version":"0.15.2","tag":"v0.15.2-route-a-holdout","suite":"test_holdout.tsv","cases":1010,"acc_at_1":91.09,"hit_at_3":95.64,"hit_at_5":96.34,"mrr":0.9344,"p50_us":141645,"p95_us":564440,"p99_us":725099}
 {"timestamp":1795840681,"version":"0.15.3","tag":"v0.15.3-route-a-dev","suite":"dev_suite.tsv","cases":1258,"acc_at_1":94.83,"hit_at_3":98.25,"hit_at_5":98.73,"mrr":0.9663,"p50_us":82283,"p95_us":338834,"p99_us":542644}
 {"timestamp":1795840887,"version":"0.15.3","tag":"v0.15.3-route-a-holdout","suite":"test_holdout.tsv","cases":1010,"acc_at_1":92.08,"hit_at_3":95.84,"hit_at_5":96.34,"mrr":0.9397,"p50_us":138286,"p95_us":540469,"p99_us":669082}
+{"timestamp":1795845942,"version":"0.15.4","tag":"v0.15.4-route-a-dev","suite":"dev_suite.tsv","cases":1258,"acc_at_1":95.31,"hit_at_3":98.41,"hit_at_5":98.89,"mrr":0.9693,"p50_us":86016,"p95_us":343977,"p99_us":550764}
+{"timestamp":1795846155,"version":"0.15.4","tag":"v0.15.4-route-a-holdout","suite":"test_holdout.tsv","cases":1010,"acc_at_1":92.28,"hit_at_3":95.84,"hit_at_5":96.34,"mrr":0.9409,"p50_us":145954,"p95_us":565687,"p99_us":701846}

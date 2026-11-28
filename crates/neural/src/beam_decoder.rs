@@ -127,6 +127,8 @@ struct BeamHyp {
     last_was_english: bool,
     /// Worst localized single-step surprisal spike along this path (`pos > 0`).
     spike1: SurprisalSpike,
+    /// Source byte position in `raw_input` from which this hypothesis was emitted (`0` at root).
+    src_pos: usize,
 }
 
 impl BeamHyp {
@@ -352,17 +354,31 @@ pub(crate) fn apply_left_context_cache_bonus(
     ctx_bigrams.sort_unstable();
     ctx_bigrams.dedup();
 
+    let prev_ctx_cjk = ctx_chars.last().copied().filter(|&c| is_cjk(c));
     let mut any_boosted = false;
     for cand in cands.iter_mut() {
         if !cand.is_exact {
             continue;
         }
         let chars: Vec<char> = cand.text.chars().collect();
-        if chars.len() < 2 {
+        if chars.is_empty() {
             continue;
         }
         let mut matched: usize = 0;
         let mut seen: Vec<(char, char)> = Vec::new();
+        // Check cross-boundary CJK repetition bigram `(last_ctx_char, first_cand_char)` so
+        // contextual single-char inputs (`纵向效益衡量和横向效益` + `heng -> 衡`, matching `益衡`)
+        // also benefit from Cache-LM repetition!
+        if let (Some(prev), Some(&first)) = (prev_ctx_cjk, chars.first())
+            && is_cjk(first)
+            && !(is_function_char(prev) && is_function_char(first))
+        {
+            let pair = (prev, first);
+            if ctx_bigrams.binary_search(&pair).is_ok() {
+                seen.push(pair);
+                matched += 1;
+            }
+        }
         for w in chars.windows(2) {
             let pair = (w[0], w[1]);
             if ctx_bigrams.binary_search(&pair).is_ok() && !seen.contains(&pair) {
@@ -438,8 +454,10 @@ fn advance_en_multi(
 }
 
 /// Incremental keystroke beam cache for Route A: when the user monotonically appends keystrokes
-/// (`zhejige -> zhejiged -> zhejigedo -> zhejigedou`), all beam states and their `MlxBeamKv`
-/// caches for the stable prefix `0..=reuse_until` are reused with ZERO Metal GPU recomputation!
+/// (`zhejige -> zhejiged -> zhejigedo -> zhejigedou`) or hits Backspace, all outgoing beam
+/// transitions emitted from the stable prefix `0..reuse_until` (including cross-boundary
+/// multi-character tokens landing at `dst >= reuse_until`) are replayed with ZERO Metal GPU
+/// recomputation and ZERO dropped tokens.
 #[derive(Debug, Default)]
 pub struct RouteABeamCache {
     left_context: String,
@@ -447,10 +465,13 @@ pub struct RouteABeamCache {
     scheme: ShuangpinScheme,
     fuzzy: FuzzyConfig,
     pangu_spacing: bool,
+    full_is_canonical: bool,
+    beam_width: usize,
     raw_input: String,
-    /// Saved `buckets[pos]` snapshot captured BEFORE expanding `pos`, for `pos in
-    /// 0..=raw_input.len()`.
-    saved_buckets: Vec<Vec<BeamHyp>>,
+    /// Outgoing `(dst_byte, BeamHyp)` transitions emitted from each source byte `src in
+    /// 0..raw_input.len()`. Replaying `src in 0..reuse_until` for `dst >= reuse_until` preserves
+    /// every multi-character token spanning across `reuse_until`.
+    saved_outgoing: Vec<Vec<(usize, BeamHyp)>>,
     /// Saved `root_kv` used for `parent_kv = None` hypotheses.
     saved_root_kv: Option<MlxBeamKv>,
 }
@@ -459,7 +480,7 @@ impl RouteABeamCache {
     /// Clears all cached beam states and KV handles.
     pub fn clear(&mut self) {
         self.raw_input.clear();
-        self.saved_buckets.clear();
+        self.saved_outgoing.clear();
         self.saved_root_kv = None;
     }
 }
@@ -810,9 +831,12 @@ pub fn decode_constrained_beam(
 
     // 3. Cross-syllable adjacent transposition recovery (`dgeuo -> deguo`, `qudnao -> qundao`,
     // `yagouo -> yaoguo`, `qiyjeia -> qiyejia`, `fayni -> fanyi`): triggered for ANY sentence
-    // length whenever strict GB/T 16159 Pinyin orthography fails!
+    // length whenever strict GB/T 16159 Pinyin orthography fails and the sentence did NOT already
+    // decode cleanly as Chinese-English code-switching (`zaiobsidianlixiewenzhang -> 在 Obsidian
+    // 里写文章`, avoiding bogus `ob -> bo` -> `在博士点里写文章`)!
     if scheme == ShuangpinScheme::Full
         && n >= 4
+        && !has_ascii_code_switch
         && lower_input.bytes().all(|b| b.is_ascii_lowercase())
         && !is_strict_canonical
     {
@@ -1064,13 +1088,23 @@ fn decode_constrained_beam_single(
     }
 
     let mut buckets: Vec<Vec<BeamHyp>> = vec![Vec::new(); n + 1];
+    let full_is_canonical = scheme == ShuangpinScheme::Full
+        && chime_phonetics::can_segment_strict_orthography(lower_input);
 
-    // Check if we can reuse prefix beam states & KV-Caches from `beam_cache` on monotonic
-    // keystroke appends (`zhejige` -> `zhejigedou`) OR Backspace shrinks (`zhejigedou` ->
-    // `zhejigedo`). Keep an 8-byte safety tail so any 2-3 char token spanning across the boundary
-    // is cleanly re-evaluated!
+    // Check if we can reuse prefix outgoing transitions & KV-Caches from `beam_cache` on TRUE
+    // monotonic keystroke appends (`zhejige` -> `zhejigedou`) OR Backspace shrinks (`zhejigedou`
+    // -> `zhejigedo`). Never cross-contaminate unrelated sentences that merely share a prefix
+    // (`feikuaidesudu...` -> `feikuaidipaoxiang...`), and replay EVERY outgoing edge `(src -> dst)`
+    // with `src < reuse_until && dst >= reuse_until` so cross-boundary multi-char tokens are never
+    // dropped!
     let mut start_pos = 1usize;
     let mut reused_prefix = false;
+    let mut next_saved_outgoing: Option<Vec<Vec<(usize, BeamHyp)>>> =
+        if beam_cache.is_some() && n >= 8 {
+            Some(vec![Vec::new(); n])
+        } else {
+            None
+        };
     if let Some(cache) = beam_cache.as_deref()
         && !cache.raw_input.is_empty()
         && cache.left_context == left_context
@@ -1078,18 +1112,25 @@ fn decode_constrained_beam_single(
         && cache.scheme == scheme
         && cache.fuzzy == fuzzy
         && cache.pangu_spacing == pangu_spacing
+        && cache.full_is_canonical == full_is_canonical
+        && cache.beam_width == beam_width
         && cache.saved_root_kv.is_some()
+        && (raw_input.starts_with(&cache.raw_input) || cache.raw_input.starts_with(raw_input))
     {
-        let common_prefix = raw_input
-            .bytes()
-            .zip(cache.raw_input.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        if common_prefix > 6 {
-            let reuse_until = common_prefix.saturating_sub(4);
-            if reuse_until >= 2 && cache.saved_buckets.len() > reuse_until {
-                for p in 1..=reuse_until {
-                    buckets[p].clone_from(&cache.saved_buckets[p]);
+        let common_prefix = raw_input.len().min(cache.raw_input.len());
+        if common_prefix > 8 {
+            let reuse_until = common_prefix.saturating_sub(8);
+            if reuse_until >= 2 && cache.saved_outgoing.len() >= reuse_until {
+                for src in 0..reuse_until {
+                    for &(dst, ref hyp) in &cache.saved_outgoing[src] {
+                        if dst >= reuse_until && dst <= n {
+                            buckets[dst].push(hyp.clone());
+                        } else if dst < reuse_until
+                            && let Some(ref mut snap) = next_saved_outgoing
+                        {
+                            snap[src].push((dst, hyp.clone()));
+                        }
+                    }
                 }
                 start_pos = reuse_until;
                 reused_prefix = true;
@@ -1164,6 +1205,7 @@ fn decode_constrained_beam_single(
                 is_exact: edge.is_exact,
                 last_was_english: edge.is_english,
                 spike1: root_spike,
+                src_pos: 0,
             });
         }
 
@@ -1190,22 +1232,11 @@ fn decode_constrained_beam_single(
                     is_exact: exact,
                     last_was_english: false,
                     spike1: SurprisalSpike::default(),
+                    src_pos: 0,
                 });
             }
         }
     }
-
-    let mut next_saved_buckets: Option<Vec<Vec<BeamHyp>>> = if beam_cache.is_some() && n >= 8 {
-        let mut snap = vec![Vec::new(); n + 1];
-        if reused_prefix && let Some(cache) = beam_cache.as_deref() {
-            for p in 1..start_pos {
-                snap[p].clone_from(&cache.saved_buckets[p]);
-            }
-        }
-        Some(snap)
-    } else {
-        None
-    };
 
     let is_single_syl_input = scheme == ShuangpinScheme::Full
         && !raw_input.contains('\'')
@@ -1248,6 +1279,7 @@ fn decode_constrained_beam_single(
                     existing.is_exact = hyp.is_exact;
                     existing.last_was_english = hyp.last_was_english;
                     existing.spike1 = hyp.spike1;
+                    existing.src_pos = hyp.src_pos;
                 }
                 existing.lm_lp = new_total_prob - existing.channel_cost;
             } else {
@@ -1255,7 +1287,11 @@ fn decode_constrained_beam_single(
             }
         }
         let mut active: Vec<BeamHyp> = merged_map.into_values().collect();
-        active.sort_by(|a, b| b.total_score().total_cmp(&a.total_score()));
+        active.sort_by(|a, b| {
+            b.total_score()
+                .total_cmp(&a.total_score())
+                .then_with(|| a.text.cmp(&b.text))
+        });
         // Proportional early funnel window keeps garden-path openings alive while tapering cleanly
         // on long sentences without sacrificing sibling candidates.
         let early_limit = (n / 4).clamp(6, 8);
@@ -1278,8 +1314,12 @@ fn decode_constrained_beam_single(
             active.retain(|h| h.total_score() >= best_active - prune_margin);
         }
 
-        if let Some(ref mut snap) = next_saved_buckets {
-            snap[pos].clone_from(&active);
+        if let Some(ref mut snap) = next_saved_outgoing {
+            for hyp in &active {
+                if hyp.src_pos < snap.len() {
+                    snap[hyp.src_pos].push((pos, hyp.clone()));
+                }
+            }
         }
 
         if pos == n {
@@ -1294,9 +1334,13 @@ fn decode_constrained_beam_single(
                     eff_closure_weight,
                     lora_scales,
                 );
-                active.sort_by(|a, b| b.total_score().total_cmp(&a.total_score()));
+                active.sort_by(|a, b| {
+                    b.total_score()
+                        .total_cmp(&a.total_score())
+                        .then_with(|| a.text.cmp(&b.text))
+                });
             }
-            if let (Some(cache), Some(snap)) = (beam_cache, next_saved_buckets) {
+            if let (Some(cache), Some(snap)) = (beam_cache, next_saved_outgoing) {
                 cache.left_context.clear();
                 cache.left_context.push_str(left_context);
                 cache.app_bundle_id.clear();
@@ -1304,9 +1348,11 @@ fn decode_constrained_beam_single(
                 cache.scheme = scheme;
                 cache.fuzzy = fuzzy;
                 cache.pangu_spacing = pangu_spacing;
+                cache.full_is_canonical = full_is_canonical;
+                cache.beam_width = beam_width;
                 cache.raw_input.clear();
                 cache.raw_input.push_str(raw_input);
-                cache.saved_buckets = snap;
+                cache.saved_outgoing = snap;
                 cache.saved_root_kv = Some(root_kv);
             }
             let top_spike1 = active
@@ -1332,7 +1378,10 @@ fn decode_constrained_beam_single(
         }
 
         if raw_bytes[pos] == b'\'' {
-            buckets[pos + 1].extend(active);
+            for mut hyp in active {
+                hyp.src_pos = pos;
+                buckets[pos + 1].push(hyp);
+            }
             continue;
         }
 
@@ -1441,6 +1490,7 @@ fn decode_constrained_beam_single(
                     is_exact: parent.is_exact && edge.is_exact,
                     last_was_english: edge.is_english,
                     spike1,
+                    src_pos: pos,
                 });
             }
         }
@@ -1548,6 +1598,13 @@ mod tests {
         let mut cands = vec![mk_cand("演或", -5.0, true), mk_cand("演活", -5.8, true)];
         apply_left_context_cache_bonus("她把这个角色演活了，观众觉得她真的", &mut cands);
         assert_eq!(cands[0].text, "演活");
+
+        let mut single = vec![mk_cand("哼", -4.0, true), mk_cand("衡", -4.6, true)];
+        apply_left_context_cache_bonus(
+            "，可以从两个方面来衡量：，纵向效益衡量和横向效益",
+            &mut single,
+        );
+        assert_eq!(single[0].text, "衡");
     }
 
     #[test]
