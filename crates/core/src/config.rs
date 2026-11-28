@@ -62,6 +62,104 @@ pub enum ShiftCommitMode {
     CommitKeepChinese,
 }
 
+/// Modifier key that is held down to dictate (push-to-talk).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceHotkey {
+    /// Right `Option` (`0x3D`).
+    #[default]
+    RightOption,
+    /// Right `Command` (`0x36`).
+    RightCommand,
+    /// Right `Control` (`0x3E`).
+    RightControl,
+    /// `Fn` / Globe (`0x3F`).
+    Fn,
+}
+
+/// Source of speech recognition for hold-to-talk dictation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceBackend {
+    /// Offline Streaming Paraformer installed on demand. Accept pre-model-pack configs.
+    #[default]
+    #[serde(alias = "bundled")]
+    Paraformer,
+    /// User-configured OpenAI-compatible speech service.
+    Http,
+}
+
+/// Hold-to-talk dictation (`[voice]` table).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // Independent, user-facing switches in config.toml.
+pub struct VoiceConfig {
+    /// Recognition backend; the default does not send audio over the network.
+    pub backend: VoiceBackend,
+    /// Master switch; microphone use is opt-in.
+    pub enabled: bool,
+    /// Modifier key held to dictate.
+    pub hotkey: VoiceHotkey,
+    /// OpenAI-compatible transcription URL (whisper.cpp `/inference`, speaches / vLLM / `LocalAI`
+    /// `/v1/audio/transcriptions`, …).
+    pub endpoint: String,
+    /// `model` form field sent to the server.
+    pub model: String,
+    /// Language hint (`zh`, `en`, …); empty means auto-detect.
+    pub language: String,
+    /// Optional decoding prompt (vocabulary / style hint).
+    pub prompt: String,
+    /// Restore punctuation on the final transcript locally.
+    pub auto_punctuation: bool,
+    /// Opt-in removal of redundant spoken phrases from the final transcript.
+    pub tidy_dictation: bool,
+    /// Offer a dictionary correction on strong matches; never apply it automatically.
+    pub lexicon_suggestions: bool,
+    /// Opt-in: score local homophone proposals against the final transcript with the keyboard LM.
+    pub pinyin_rerank: bool,
+    /// Optional local `SenseVoice-Small` INT8 directory for final-only Mandarin recognition.
+    pub sense_final_dir: String,
+    /// Show recognized text live while speaking.
+    pub live_preview: bool,
+    /// Minimum gap between live-preview requests (`200..=5000` ms).
+    pub partial_interval_ms: u64,
+    /// Per-request timeout (`2000..=120000` ms).
+    pub request_timeout_ms: u64,
+    /// Recording stops automatically after this many seconds (`10..=600`).
+    pub max_record_secs: u64,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: VoiceBackend::Paraformer,
+            hotkey: VoiceHotkey::RightOption,
+            endpoint: "http://127.0.0.1:8000/v1/audio/transcriptions".to_string(),
+            model: "whisper-1".to_string(),
+            language: "zh".to_string(),
+            prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。".to_string(),
+            auto_punctuation: true,
+            tidy_dictation: true,
+            lexicon_suggestions: true,
+            pinyin_rerank: true,
+            sense_final_dir: String::new(),
+            live_preview: true,
+            partial_interval_ms: 700,
+            request_timeout_ms: 20_000,
+            max_record_secs: 180,
+        }
+    }
+}
+
+impl VoiceConfig {
+    fn clamp(&mut self) {
+        self.partial_interval_ms = self.partial_interval_ms.clamp(200, 5_000);
+        self.request_timeout_ms = self.request_timeout_ms.clamp(2_000, 120_000);
+        self.max_record_secs = self.max_record_secs.clamp(10, 600);
+    }
+}
+
 /// Root user configuration stored at `~/Library/Application Support/Chime/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
@@ -136,6 +234,9 @@ pub struct ChimeConfig {
     /// (explicit browse keywords such as `emoji` / `yanwenzi` still work).
     #[serde(default)]
     pub suppress_emoji_in_ide: bool,
+    /// Hold-to-talk voice dictation (`[voice]` table).
+    #[serde(default)]
+    pub voice: VoiceConfig,
     /// Enable optional confidence-gated Two-Tier local MLX reranking (`Qwen3-1.7B/4B-Base` 4-bit).
     #[serde(default)]
     pub tier2_enabled: bool,
@@ -201,6 +302,7 @@ impl Default for ChimeConfig {
             emoji_suggestions: true,
             kaomoji_suggestions: true,
             suppress_emoji_in_ide: false,
+            voice: VoiceConfig::default(),
             tier2_enabled: false,
             tier2_model_dir: String::new(),
             tier2_margin_threshold: 3.0,
@@ -219,6 +321,7 @@ impl ChimeConfig {
         let mut cfg: Self = toml::from_str(raw)?;
         cfg.page_size = cfg.page_size.clamp(3, 9);
         cfg.candidate_font_size = cfg.candidate_font_size.clamp(13, 20);
+        cfg.voice.clamp();
         cfg.tier2_margin_threshold = cfg.tier2_margin_threshold.clamp(0.5, 10.0);
         cfg.tier2_alpha = cfg.tier2_alpha.clamp(0.0, 1.0);
         Ok(cfg)
@@ -252,6 +355,7 @@ impl ChimeConfig {
         let mut clean = self.clone();
         clean.page_size = clean.page_size.clamp(3, 9);
         clean.candidate_font_size = clean.candidate_font_size.clamp(13, 20);
+        clean.voice.clamp();
         clean.tier2_margin_threshold = clean.tier2_margin_threshold.clamp(0.5, 10.0);
         clean.tier2_alpha = clean.tier2_alpha.clamp(0.0, 1.0);
         let encoded = toml::to_string_pretty(&clean)?;
@@ -263,6 +367,41 @@ impl ChimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_config_without_voice_table_gets_defaults() {
+        let cfg = ChimeConfig::from_toml_str("scheme = \"full\"\npage_size = 5\n")
+            .unwrap_or_else(|_| std::process::abort());
+        assert_eq!(cfg.voice, VoiceConfig::default());
+        assert!(!cfg.voice.enabled);
+        assert!(cfg.voice.auto_punctuation);
+        // The settings UI exposes these as one switch, so defaults must agree.
+        assert!(
+            cfg.voice.tidy_dictation && cfg.voice.lexicon_suggestions && cfg.voice.pinyin_rerank
+        );
+        assert_eq!(cfg.voice.backend, VoiceBackend::Paraformer);
+        let legacy = ChimeConfig::from_toml_str("[voice]\nbackend = \"bundled\"\n")
+            .unwrap_or_else(|_| std::process::abort());
+        assert_eq!(legacy.voice.backend, VoiceBackend::Paraformer);
+    }
+
+    #[test]
+    fn voice_table_round_trips_and_clamps() {
+        let raw = "[voice]\nenabled = true\nhotkey = \"right_command\"\nbackend = \"http\"\nendpoint = \"http://10.0.0.5:9000/inference\"\npartial_interval_ms = 10\n";
+        let cfg = ChimeConfig::from_toml_str(raw).unwrap_or_else(|_| std::process::abort());
+        assert!(cfg.voice.enabled);
+        assert_eq!(cfg.voice.backend, VoiceBackend::Http);
+        assert_eq!(cfg.voice.hotkey, VoiceHotkey::RightCommand);
+        assert_eq!(cfg.voice.endpoint, "http://10.0.0.5:9000/inference");
+        assert_eq!(cfg.voice.partial_interval_ms, 200);
+        assert_eq!(cfg.voice.language, "zh");
+
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("config.toml");
+        cfg.save(&path).unwrap_or_else(|_| std::process::abort());
+        let back = ChimeConfig::load_or_init(&path).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(back, cfg);
+    }
 
     #[test]
     fn test_tier2_config_defaults_and_clamping() -> Result<(), ConfigError> {

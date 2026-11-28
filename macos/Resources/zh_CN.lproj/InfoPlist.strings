@@ -3,3 +3,4 @@
 "app.tyrchen.inputmethod.Chime" = "Chime 拼音";
 "app.tyrchen.inputmethod.Chime.pinyin" = "Chime 拼音";
 "app.tyrchen.inputmethod.Chime.Pinyin" = "Chime 拼音";
+"NSMicrophoneUsageDescription" = "Chime 语音输入需要使用麦克风：按住快捷键说话时录音，默认在本机离线识别。只有选择自定义服务时才会将音频发送到配置的地址。";

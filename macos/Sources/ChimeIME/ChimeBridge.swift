@@ -152,6 +152,86 @@ public struct ChimeFuzzyDTO: Codable, Sendable, Equatable {
     )
 }
 
+/// Hold-to-talk dictation settings (`[voice]` in `config.toml`).
+public struct ChimeVoiceConfigDTO: Codable, Sendable, Equatable {
+    public var backend: String
+    public var enabled: Bool
+    public var hotkey: String
+    public var endpoint: String
+    public var model: String
+    public var language: String
+    public var prompt: String
+    public var auto_punctuation = true
+    public var tidy_dictation = true
+    public var lexicon_suggestions = true
+    public var pinyin_rerank = true
+    public var sense_final_dir = ""
+    public var live_preview: Bool
+    public var partial_interval_ms: UInt64
+    public var request_timeout_ms: UInt64
+    public var max_record_secs: UInt64
+
+    public static let `default` = ChimeVoiceConfigDTO(
+        enabled: false,
+        hotkey: "right_option",
+        endpoint: "http://127.0.0.1:8000/v1/audio/transcriptions",
+        model: "whisper-1",
+        language: "zh",
+        prompt: "以下是普通话的句子，使用简体中文，并带有标点符号。",
+        live_preview: true,
+        partial_interval_ms: 700,
+        request_timeout_ms: 20_000,
+        max_record_secs: 180
+    )
+
+    public init(
+        enabled: Bool,
+        backend: String = "paraformer",
+        hotkey: String,
+        endpoint: String,
+        model: String,
+        language: String,
+        prompt: String,
+        live_preview: Bool,
+        partial_interval_ms: UInt64,
+        request_timeout_ms: UInt64,
+        max_record_secs: UInt64
+    ) {
+        self.enabled = enabled
+        self.backend = backend
+        self.hotkey = hotkey
+        self.endpoint = endpoint
+        self.model = model
+        self.language = language
+        self.prompt = prompt
+        self.live_preview = live_preview
+        self.partial_interval_ms = partial_interval_ms
+        self.request_timeout_ms = request_timeout_ms
+        self.max_record_secs = max_record_secs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Self.default
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        self.backend = try c.decodeIfPresent(String.self, forKey: .backend) ?? d.backend
+        self.hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? d.hotkey
+        self.endpoint = try c.decodeIfPresent(String.self, forKey: .endpoint) ?? d.endpoint
+        self.model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
+        self.language = try c.decodeIfPresent(String.self, forKey: .language) ?? d.language
+        self.prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? d.prompt
+        self.auto_punctuation = try c.decodeIfPresent(Bool.self, forKey: .auto_punctuation) ?? d.auto_punctuation
+        self.sense_final_dir = try c.decodeIfPresent(String.self, forKey: .sense_final_dir) ?? ""
+        self.pinyin_rerank = try c.decodeIfPresent(Bool.self, forKey: .pinyin_rerank) ?? d.pinyin_rerank
+        self.lexicon_suggestions = try c.decodeIfPresent(Bool.self, forKey: .lexicon_suggestions) ?? d.lexicon_suggestions
+        self.tidy_dictation = try c.decodeIfPresent(Bool.self, forKey: .tidy_dictation) ?? d.tidy_dictation
+        self.live_preview = try c.decodeIfPresent(Bool.self, forKey: .live_preview) ?? d.live_preview
+        self.partial_interval_ms = try c.decodeIfPresent(UInt64.self, forKey: .partial_interval_ms) ?? d.partial_interval_ms
+        self.request_timeout_ms = try c.decodeIfPresent(UInt64.self, forKey: .request_timeout_ms) ?? d.request_timeout_ms
+        self.max_record_secs = try c.decodeIfPresent(UInt64.self, forKey: .max_record_secs) ?? d.max_record_secs
+    }
+}
+
 /// Full engine configuration mirrored for SwiftUI Settings binding.
 public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var scheme: String
@@ -176,6 +256,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var emoji_suggestions: Bool
     public var kaomoji_suggestions: Bool
     public var suppress_emoji_in_ide: Bool
+    public var voice: ChimeVoiceConfigDTO
     public var tier2_enabled: Bool
     public var tier2_model_dir: String
     public var tier2_margin_threshold: Double
@@ -204,6 +285,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         emoji_suggestions: true,
         kaomoji_suggestions: true,
         suppress_emoji_in_ide: false,
+        voice: .default,
         tier2_enabled: false,
         tier2_model_dir: "",
         tier2_margin_threshold: 3.0,
@@ -233,6 +315,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         emoji_suggestions: Bool,
         kaomoji_suggestions: Bool,
         suppress_emoji_in_ide: Bool,
+        voice: ChimeVoiceConfigDTO = .default,
         tier2_enabled: Bool = false,
         tier2_model_dir: String = "",
         tier2_margin_threshold: Double = 3.0,
@@ -260,6 +343,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.emoji_suggestions = emoji_suggestions
         self.kaomoji_suggestions = kaomoji_suggestions
         self.suppress_emoji_in_ide = suppress_emoji_in_ide
+        self.voice = voice
         self.tier2_enabled = tier2_enabled
         self.tier2_model_dir = tier2_model_dir
         self.tier2_margin_threshold = tier2_margin_threshold
@@ -290,6 +374,7 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.emoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .emoji_suggestions) ?? true
         self.kaomoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .kaomoji_suggestions) ?? true
         self.suppress_emoji_in_ide = try c.decodeIfPresent(Bool.self, forKey: .suppress_emoji_in_ide) ?? false
+        self.voice = try c.decodeIfPresent(ChimeVoiceConfigDTO.self, forKey: .voice) ?? .default
         self.tier2_enabled = try c.decodeIfPresent(Bool.self, forKey: .tier2_enabled) ?? false
         self.tier2_model_dir = try c.decodeIfPresent(String.self, forKey: .tier2_model_dir) ?? ""
         self.tier2_margin_threshold = try c.decodeIfPresent(Double.self, forKey: .tier2_margin_threshold) ?? 3.0
@@ -415,6 +500,7 @@ public final class ChimeEngineBridge {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if type == .leftMouseDown || type == .rightMouseDown {
+                    ChimeVoiceController.shared.noteMouseDown()
                     self.keyOrMouseDuringShift = true
                     if self.inlineEnglishModeGlobal, let key = self.activeControllerKey {
                         self.reset(controllerKey: key)
@@ -426,6 +512,7 @@ public final class ChimeEngineBridge {
                     self.syncMenuBarEnBadge()
                     return
                 }
+                ChimeVoiceController.shared.handleFlagsChanged(keyCode: input.keyCode, flags: input.flags)
                 if let resp = self.pollModifierToggle(
                     controllerKey: self.activeControllerKey,
                     keyCode: input.keyCode,
@@ -569,6 +656,38 @@ public final class ChimeEngineBridge {
         return NSRect(x: mouse.x, y: mouse.y - 18, width: 1, height: 18)
     }
 
+    /// Last config pushed to or read from the Rust engine.
+    public var currentConfig: ChimeConfigDTO {
+        cachedConfig
+    }
+
+    /// The text client that currently has Chime's focus, used as the voice dictation target.
+    public func activeTextClient() -> (key: ObjectIdentifier, client: IMKTextInput)? {
+        guard let key = activeControllerKey,
+              let client = slots[key]?.lastClientObject as? IMKTextInput
+        else {
+            return nil
+        }
+        return (key, client)
+    }
+
+    /// Drops any in-progress Pinyin preedit (same as focus loss) before dictation takes over the
+    /// marked-text range.
+    public func discardCompositionForVoice(controllerKey: ObjectIdentifier) {
+        pollTasks.removeValue(forKey: controllerKey)?.cancel()
+        reset(controllerKey: controllerKey)
+        if hadMarkedPreedit(for: controllerKey),
+           let client = slots[controllerKey]?.lastClientObject as? IMKTextInput
+        {
+            client.setMarkedText(
+                "",
+                selectionRange: NSRange(location: 0, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+            )
+        }
+        setHadMarkedPreedit(for: controllerKey, value: false)
+    }
+
     public func isInlineEnglish(controllerKey: ObjectIdentifier?) -> Bool {
         inlineEnglishModeGlobal
     }
@@ -624,6 +743,7 @@ public final class ChimeEngineBridge {
     }
 
     public func deactivate(controllerKey: ObjectIdentifier) {
+        ChimeVoiceController.shared.controllerDeactivated(controllerKey)
         pollTasks.removeValue(forKey: controllerKey)?.cancel()
         if activeControllerKey == controllerKey {
             activeControllerKey = nil
@@ -900,6 +1020,17 @@ public final class ChimeEngineBridge {
         } else {
             CandidatePanel.shared.update(response: resp, caretRect: slot.lastCaretRect)
         }
+    }
+
+    func startVoiceReview(_ text: String) -> OpaquePointer? {
+        guard let handle else { return nil }
+        return text.withCString { chime_voice_review_start(handle, $0) }
+    }
+
+    func voiceLexiconSuggestion(_ text: String) -> String? {
+        guard let handle, let ptr = text.withCString({ chime_voice_lexicon_suggestion(handle, $0) }) else { return nil }
+        defer { chime_string_free(ptr) }
+        return String(cString: ptr)
     }
 
     public func getConfig() -> ChimeConfigDTO? {

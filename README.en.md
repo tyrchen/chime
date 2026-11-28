@@ -150,6 +150,29 @@ rm -rf /tmp/chime_private_personal
 
 ---
 
+## Voice Input (Hold-to-Talk with a Local / Self-Hosted Model)
+
+Enable it under **Preferences… → 语音输入**. **Hold Right `Option`** (or Right `⌘` / Right `⌃` / `Fn`) for about 0.3 s and a small voice HUD appears: recognized text shows up at the caret while you speak, releasing the key commits it, and `Esc` cancels. Grant microphone access on first use. The bilingual **Streaming Paraformer INT8** model is an optional download, not part of the installer. In Voice Input, select Paraformer and click Download (~226 MiB; also required when upgrading from the bundled-model prototype). Chime verifies SHA-256 before installing it in `~/Library/Application Support/Chime/voice-models/`. No server or API key is required. Remove it from the same settings page. Installing, launching or holding the hotkey never initiates a download. The default backend keeps audio on device and exits its helper process after dictation. On release, a bundled CT-Transformer restores punctuation locally. An independent, opt-in cleanup removes repeated starts, duplicate clauses and isolated Mandarin fillers, without rewriting previously committed text. Live previews remain unchanged.
+
+Dictionary suggestions are independent of punctuation and cleanup. On release, a strong phonetic match to a complete couplet or a long entry in the mounted dictionaries can appear in the HUD. When the HUD advertises **Tab**, a plain Tab confirms without indenting or moving focus; release and press again for normal navigation. Shift+Tab and Enter are not confirmation keys. Tab requires macOS Accessibility authorization for Chime and a working event filter for the focused app. Otherwise use the voice modifier or HUD button as indicated; in that mode Tab still belongs to the host. Chime does not prompt for permission. **Esc** keeps the original; continued typing or a four-second timeout also keeps the original. Disable this in Voice Input preferences if desired.
+
+Voice Input has one switch, **Smart final cleanup** (on by default), covering punctuation, removal of repeated phrases and fillers, dictionary suggestions and **local Pinyin reranking**; the separate `[voice]` keys `auto_punctuation`, `tidy_dictation`, `lexicon_suggestions` and `pinyin_rerank` remain available in the config file. For reranking, the keyboard model scores the original final transcript alongside local single-character homophone edits to words of three or more syllables. Whole-verse matches still take priority. Missing models, timeouts and weak scores keep the original. No new weights or network service are needed.
+
+Experimental Mandarin final pass (off by default): select an existing SenseVoice-Small INT8 directory containing `model.int8.onnx` and `tokens.txt` in Voice Input. Once configured, local 4–45 s utterances use Paraformer previews and a whole-audio SenseVoice final; smart cleanup can add paragraphs at timed sentence boundaries and spacing around numbers. Short, oversized, missing-model or failed second passes retain the original. No automatic download or audio file is created.
+
+To use an existing endpoint, explicitly select the custom HTTP backend (`backend = "http"` under `[voice]`). Only this backend sends audio to the configured URL; the optional API key stays in Keychain. Any OpenAI-compatible transcription server works (`POST multipart/form-data` with `file`, `model`, `language`, `prompt`; response `{"text": …}`), for example whisper.cpp:
+
+```bash
+brew install whisper-cpp
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8178 -l zh
+# Preferences endpoint: http://127.0.0.1:8178/inference
+```
+
+For speaches / faster-whisper-server, vLLM or LocalAI, use their `/v1/audio/transcriptions` URL and model name. `cargo run -p chime-voice --example dictate_wav -- speech.wav <endpoint>` checks a server without the IME.
+
+---
+
 ## Workspace Structure & Building from Source
 
 | Path | Description |
@@ -159,6 +182,7 @@ rm -rf /tmp/chime_private_personal
 | `crates/decoder` | Dual-track beam lattice decoder, probability-space separation, context next-verse promotion, and anti-jitter freeze window |
 | `crates/neural` | Apple Silicon Metal `mlx-rs 0.34` mixed-precision BI-18L `Qwen3` transformer, fused `QKV`/`Gate+Up`, dual-proposal Route A neural beam search, Rank-Stacked Multi-LoRA, and Couplet Simplex Router |
 | `crates/core` | 32-slot LRU session state machine, async Route A scheduler, smart punctuation, PII/secret sanitizer, and `.imepack` v2 cartridge manager |
+| `crates/voice` | Hold-to-talk dictation: energy VAD segmentation, live partial transcripts, and a client for local / self-hosted OpenAI-compatible ASR servers |
 | `crates/ffi` | Stateless C ABI boundary bridging Rust engine and Swift 6 host |
 | `apps/cli` | `chime` CLI (`decode`, `dict-build-base`, `dict-compile`, `pack`, `corpus-export`, `eval`, and `bench` suites) |
 | `macos/` | Swift 6 `@MainActor` `InputMethodKit` app bundle (`Chime.app`), session-anchored candidate bar, `5x5` grid, verified zero-telemetry updater, and Settings UI |

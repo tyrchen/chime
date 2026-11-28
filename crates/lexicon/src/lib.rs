@@ -10,6 +10,7 @@ pub(crate) mod generated {
 pub mod importers;
 pub mod poetry;
 pub mod user_store;
+mod voice_match;
 
 use std::{collections::HashMap, path::Path};
 

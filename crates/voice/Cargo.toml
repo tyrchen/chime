@@ -1,0 +1,22 @@
+[package]
+name = "chime-voice"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hold-to-talk voice dictation with bundled streaming and self-hosted HTTP backends"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+
+[target."cfg(unix)".dependencies]
+nix = { version = "0.31", features = ["signal"] }

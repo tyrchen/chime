@@ -90,7 +90,31 @@ pub struct RouteAResult {
     pub elapsed_ms: u64,
 }
 
+struct VoiceBatch {
+    texts: Vec<String>,
+    pinyin: String,
+    expires: Instant,
+    reply: Sender<Vec<f32>>,
+}
+
+impl VoiceBatch {
+    fn run(self, model: &mut SafetensorsReranker) {
+        if !self.reply.is_disconnected() && Instant::now() < self.expires {
+            let scores = model.score_candidates_exact_bayesian_with_pinyin(
+                "",
+                "",
+                &self.pinyin,
+                ShuangpinScheme::Full,
+                &self.texts,
+                ScoringMode::ClosedSentence,
+            );
+            let _ = self.reply.try_send(scores);
+        }
+    }
+}
+
 enum ActorCmd {
+    Voice(VoiceBatch),
     Async(RerankJob),
     TimedOrAsync {
         job: RerankJob,
@@ -190,10 +214,16 @@ impl AsyncRerankHandle {
                     break;
                 };
                 match cmd {
+                    ActorCmd::Voice(batch) => batch.run(&mut reranker),
                     ActorCmd::Async(mut job) => {
                         // Coalesce burst async keystrokes to the newest queued job!
-                        while let Ok(ActorCmd::Async(newer)) = cmd_rx.try_recv() {
-                            job = newer;
+                        while let Ok(next) = cmd_rx.try_recv() {
+                            if let ActorCmd::Async(newer) = next {
+                                job = newer;
+                            } else {
+                                pending_cmd = Some(next);
+                                break;
+                            }
                         }
                         let bonuses = reranker.score_candidates_with_scoring_mode(
                             &job.left_context,
@@ -220,6 +250,7 @@ impl AsyncRerankHandle {
                         // budget!
                         while let Ok(next_cmd) = cmd_rx.try_recv() {
                             match next_cmd {
+                                ActorCmd::Voice(batch) => batch.run(&mut reranker),
                                 ActorCmd::TimedOrAsync {
                                     job: newer_job,
                                     sync_reply_tx: newer_tx,
@@ -328,6 +359,7 @@ impl AsyncRerankHandle {
                         // evaluates the latest keystroke immediately with zero FIFO backlog!
                         while let Ok(next_cmd) = cmd_rx.try_recv() {
                             match next_cmd {
+                                ActorCmd::Voice(batch) => batch.run(&mut reranker),
                                 ActorCmd::RouteADecode {
                                     req: newer_req,
                                     reply_tx: newer_tx,
@@ -382,6 +414,7 @@ impl AsyncRerankHandle {
                         // GPU passes behind earlier keystrokes!
                         while let Ok(next_cmd) = cmd_rx.try_recv() {
                             match next_cmd {
+                                ActorCmd::Voice(batch) => batch.run(&mut reranker),
                                 ActorCmd::RouteATimedOrAsync {
                                     session_id: next_session,
                                     generation_id: next_gen,
@@ -628,6 +661,27 @@ impl AsyncRerankHandle {
     #[must_use]
     pub const fn lora_count(&self) -> usize {
         self.lora_count
+    }
+
+    /// Score a final-only voice batch on the existing GPU actor. Private reply channel; no
+    /// keyboard session, generation or result queue is touched. Never wait for queue space.
+    #[must_use]
+    pub fn try_score_voice(
+        &self,
+        texts: &[String],
+        pinyin: String,
+        expires: Instant,
+    ) -> Option<Receiver<Vec<f32>>> {
+        let (reply, rx) = flume::bounded(1);
+        self.cmd_tx
+            .try_send(ActorCmd::Voice(VoiceBatch {
+                texts: texts.to_vec(),
+                pinyin,
+                expires,
+                reply,
+            }))
+            .ok()?;
+        Some(rx)
     }
 
     /// Enqueues a Stage-2 rerank job without ever blocking the UI thread.

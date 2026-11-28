@@ -37,6 +37,9 @@ serde_json = "1.0"
 smallvec = { version = "1.16", features = ["const_generics", "union"] }
 thiserror = "2.0"
 toml = "1.2"
+# HTTP client for the self-hosted ASR endpoint. `native-tls` uses macOS Security.framework and the
+# system keychain roots, so private deployments signed by an internal CA work out of the box.
+ureq = { version = "3.5", default-features = false, features = ["native-tls-no-default"] }
 
 # Dev / testing
 rstest = "0.29"
@@ -48,3 +51,4 @@ chime-lexicon = { version = "0.16.1", path = "crates/lexicon" }
 chime-neural = { version = "0.16.1", path = "crates/neural" }
 chime-decoder = { version = "0.16.1", path = "crates/decoder" }
 chime-core = { version = "0.16.1", path = "crates/core" }
+chime-voice = { version = "0.16.1", path = "crates/voice" }

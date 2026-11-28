@@ -54,6 +54,40 @@ char *chime_get_status_json(ChimeEngineHandle *engine);
 
 void chime_string_free(char *ptr);
 
+/* Hold-to-talk voice dictation. Thread-safe: audio may be pushed from the AVAudioEngine tap. */
+typedef struct ChimeVoiceHandle ChimeVoiceHandle;
+
+ChimeVoiceHandle *chime_voice_new(void);
+void chime_voice_free(ChimeVoiceHandle *voice);
+/* Returns NULL on success, else an error message to free with chime_string_free. */
+char *chime_voice_start(
+    ChimeVoiceHandle *voice,
+    const char *settings_json,
+    const char *api_key,
+    uint32_t sample_rate
+);
+/* Offline streaming backend: app Contents path, fixed 16 kHz mono f32 input.
+ * NULL/empty sense_dir disables the optional SenseVoice whole-utterance final. */
+char *chime_voice_start_local(ChimeVoiceHandle *voice, const char *contents, const char *model_dir, const char *sense_dir, bool punctuation, bool layout, bool preview, uint64_t seconds);
+void chime_voice_push_pcm(ChimeVoiceHandle *voice, const float *samples, size_t len);
+void chime_voice_stop(ChimeVoiceHandle *voice);
+void chime_voice_cancel(ChimeVoiceHandle *voice);
+void chime_voice_end(ChimeVoiceHandle *voice);
+/* JSON snapshot of the running session, or NULL when idle. */
+char *chime_voice_snapshot(ChimeVoiceHandle *voice);
+/* Final-only, opt-in replacement: null for no suggestion. Free with chime_string_free. */
+char *chime_voice_lexicon_suggestion(const ChimeEngineHandle *engine, const char *text);
+/* Private nonblocking score ticket; free even on cancel. Poll returns true when done;
+ * *suggestion is NULL for abstention. Free non-NULL strings with chime_string_free. */
+typedef struct ChimeVoiceReview ChimeVoiceReview;
+ChimeVoiceReview *chime_voice_review_start(const ChimeEngineHandle *engine, const char *text);
+bool chime_voice_review_poll(const ChimeVoiceReview *review, char **suggestion);
+void chime_voice_review_free(ChimeVoiceReview *review);
+/* Blocking, local, final-only formatting. Free with chime_string_free. */
+char *chime_voice_format_final(const char *contents, const char *text, bool punctuation, bool tidy);
+/* Blocking connectivity probe; call off the main thread. Returns JSON. */
+char *chime_voice_test_endpoint(const char *settings_json, const char *api_key);
+
 #ifdef __cplusplus
 }
 #endif

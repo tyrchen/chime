@@ -34,6 +34,8 @@
     <string>14.0</string>
     <key>LSBackgroundOnly</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Chime 语音输入需要使用麦克风：按住快捷键说话时录音，默认在本机离线识别。只有选择自定义服务时才会将音频发送到配置的地址。</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>TICapsLockLanguageSwitchCapable</key>

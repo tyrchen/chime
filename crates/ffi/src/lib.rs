@@ -8,6 +8,10 @@ use std::{
 
 use chime_core::{ChimeConfig, ChimeEngine, EngineResponse, KeyEvent};
 
+mod voice;
+
+pub use crate::voice::ChimeVoiceHandle;
+
 /// Opaque handle owned by Swift's `@MainActor final class ChimeEngineBridge`.
 #[derive(Debug)]
 pub struct ChimeEngineHandle {
@@ -462,6 +466,92 @@ pub unsafe extern "C" fn chime_get_status_json(engine: *mut ChimeEngineHandle) -
     // SAFETY: `engine` is valid and non-null.
     let eng = unsafe { &*engine };
     encode_json(&eng.inner.status())
+}
+
+/// Suggest a dictionary-backed alternative for a completed voice transcript. Returns null when
+/// there is no unique match. Query on the engine's owner thread, like other dictionary operations.
+///
+/// # Safety
+/// `engine` must be valid and `text` a NUL-terminated UTF-8 string (or null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_lexicon_suggestion(
+    engine: *const ChimeEngineHandle,
+    text: *const c_char,
+) -> *mut c_char {
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    if text.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(text) }).to_str() else {
+        return std::ptr::null_mut();
+    };
+    engine
+        .inner
+        .voice_lexicon_suggestion(text)
+        .and_then(|s| CString::new(s).ok())
+        .map_or(std::ptr::null_mut(), CString::into_raw)
+}
+
+/// Starts a private final-transcript score ticket, or null for no job.
+/// # Safety
+/// Same engine/text requirements as `chime_voice_lexicon_suggestion`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_review_start(
+    engine: *const ChimeEngineHandle,
+    text: *const c_char,
+) -> *mut chime_core::voice_review::VoiceReview {
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    if text.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(text) }).to_str() else {
+        return std::ptr::null_mut();
+    };
+    engine
+        .inner
+        .start_voice_review(text)
+        .map_or(std::ptr::null_mut(), |r| Box::into_raw(Box::new(r)))
+}
+
+/// Poll once; true when complete, including timeout or abstention.
+/// # Safety
+/// `review` is a live ticket and `out` a writable string-pointer slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_review_poll(
+    review: *const chime_core::voice_review::VoiceReview,
+    out: *mut *mut c_char,
+) -> bool {
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return true;
+    };
+    *out = std::ptr::null_mut();
+    let Some(review) = (unsafe { review.as_ref() }) else {
+        return true;
+    };
+    if let std::task::Poll::Ready(result) = review.poll() {
+        *out = result
+            .and_then(|s| CString::new(s).ok())
+            .map_or(std::ptr::null_mut(), CString::into_raw);
+        true
+    } else {
+        false
+    }
+}
+
+/// Drop interest in a voice score batch. No worker wait.
+/// # Safety
+/// Pass a ticket returned by `chime_voice_review_start` at most once, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chime_voice_review_free(
+    review: *mut chime_core::voice_review::VoiceReview,
+) {
+    if !review.is_null() {
+        drop(unsafe { Box::from_raw(review) });
+    }
 }
 
 /// Frees a C string returned by any `chime_*` FFI function.

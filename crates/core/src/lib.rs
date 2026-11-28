@@ -9,6 +9,7 @@ pub mod emoji;
 pub mod personalize;
 pub mod punctuation;
 pub mod sanitize;
+pub mod voice_review;
 
 use std::{
     collections::VecDeque,
@@ -35,7 +36,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::{
-    config::{CandidateLayout, ChimeConfig, ConfigError, EnglishToggleKey, ShiftCommitMode},
+    config::{
+        CandidateLayout, ChimeConfig, ConfigError, EnglishToggleKey, ShiftCommitMode, VoiceBackend,
+        VoiceConfig, VoiceHotkey,
+    },
     personalize::{
         ImePackManifest, InstalledImePack, PackBuildOptions, PersonalizeError, TrainingRecord,
         build_colab_training_jsonl, build_imepack_dir, build_imepack_v2, discover_installed_packs,

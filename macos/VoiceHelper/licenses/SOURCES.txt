@@ -1,0 +1,13 @@
+Streaming Paraformer INT8 (encoder, decoder, tokens): Alibaba / FunASR
+https://modelscope.cn/models/iic/speech_paraformer_asr_nat-zh-cn-16k-common-vocab8404-online
+ONNX conversion by csukuangfj, redistributed without changes under Apache-2.0:
+https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/tree/8e40c43232a1c5c66c82111efc5820d3accca11b
+
+CT-Transformer zh-en punctuation (FunASR / Alibaba), INT8 conversion by ranger810.
+Apache-2.0, redistributed without changes:
+https://huggingface.co/ranger810/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/tree/5cccf43af83e4fc50d1d55b8410312e87709be70
+
+sherpa-onnx 2.0.3 native C API: https://github.com/k2-fsa/sherpa-onnx (Apache-2.0).
+ONNX Runtime 1.28.2: https://github.com/microsoft/onnxruntime (MIT).
+Native libraries come from the sherpa-onnx-core 2.0.3 macOS arm64 wheel.
+See the accompanying license texts and ONNX Runtime third-party notices.
