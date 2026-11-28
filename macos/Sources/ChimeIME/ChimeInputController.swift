@@ -86,10 +86,11 @@ public final class ChimeInputController: IMKInputController {
 
         menu.addItem(NSMenuItem.separator())
 
+        // InputMethodKit exposes this menu in other apps; ⌘, belongs to the host.
         let prefsItem = NSMenuItem(
             title: "偏好设置…",
             action: #selector(openPreferences(_:)),
-            keyEquivalent: ","
+            keyEquivalent: ""
         )
         prefsItem.target = self
         menu.addItem(prefsItem)
