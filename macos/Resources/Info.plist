@@ -39,7 +39,7 @@
     <key>TICapsLockLanguageSwitchCapable</key>
     <true/>
     <key>InputMethodConnectionName</key>
-    <string>Chime_1_Connection</string>
+    <string>app.tyrchen.inputmethod.Chime_Connection</string>
     <key>InputMethodServerControllerClass</key>
     <string>ChimeInputController</string>
     <key>InputMethodServerDelegateClass</key>

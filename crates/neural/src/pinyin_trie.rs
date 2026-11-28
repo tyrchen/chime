@@ -5,8 +5,8 @@ use std::{collections::HashMap, fs, path::Path};
 
 use chime_phonetics::{
     FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact,
-    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_pair,
-    generate_typo_variants, lookup_syllable,
+    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_initial,
+    expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
 };
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -283,14 +283,26 @@ impl TokenPinyinIndex {
         // Build syllable edges for `0..n.min(18)` (suffix of a 2-4 char token is at most 3 syls).
         let cap = n.min(18);
         let mut syl_edges: Vec<Vec<(usize, SyllableId, f32, bool)>> = vec![Vec::new(); cap];
+        let initial_mask = (scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(scheme, bytes));
         for start in 0..cap {
             if bytes[start] == b'\'' {
                 continue;
             }
-            if scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if start + 2 <= cap && bytes[start + 1] != b'\'' {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true));
+                    }
+                }
+                if mask[start] {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((
+                            start + 1,
+                            sid,
+                            chime_phonetics::shuangpin::initial_log_cost(start + 1, n),
+                            false,
+                        ));
                     }
                 }
                 continue;
@@ -531,14 +543,27 @@ impl TokenPinyinIndex {
         // 1. Build syllable-level acoustic channel edges: `(end, SyllableId, channel_cost,
         //    is_exact, is_typo)`
         let mut syl_edges: Vec<Vec<SylEdge>> = vec![Vec::new(); n];
+        let initial_mask = (scheme != ShuangpinScheme::Full)
+            .then(|| chime_phonetics::shuangpin::shuangpin_initial_mask(scheme, bytes));
         for start in 0..n {
             if bytes[start] == b'\'' {
                 continue;
             }
-            if scheme != ShuangpinScheme::Full {
+            if let Some(mask) = &initial_mask {
                 if start + 2 <= n && bytes[start] != b'\'' && bytes[start + 1] != b'\'' {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true, false));
+                    }
+                }
+                if mask[start] {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((
+                            start + 1,
+                            sid,
+                            chime_phonetics::shuangpin::initial_log_cost(start + 1, n),
+                            false,
+                            false,
+                        ));
                     }
                 }
                 continue;

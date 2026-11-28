@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 pub use crate::{
-    shuangpin::{ShuangpinScheme, expand_shuangpin_pair},
+    shuangpin::{ShuangpinScheme, expand_shuangpin_initial, expand_shuangpin_pair},
     syllables::{SyllableId, canonical_syllable, is_valid_syllable, lookup_syllable},
     typo::{TypoEdit, generate_typo_variants, keyboard_substitution_cost},
 };
@@ -352,6 +352,11 @@ pub fn format_segmented_preedit(raw: &str, scheme: ShuangpinScheme) -> String {
     }
     let lower = raw.to_ascii_lowercase();
     if scheme != ShuangpinScheme::Full {
+        let possible_initials = shuangpin::shuangpin_initial_mask(scheme, lower.as_bytes());
+        if raw.contains('\'') || possible_initials[..raw.len() - 1].contains(&true) {
+            // Boundaries depend on the selected candidate; don't show misleading fixed pairs.
+            return raw.to_owned();
+        }
         let mut parts = Vec::new();
         let mut i = 0usize;
         while i < raw.len() {

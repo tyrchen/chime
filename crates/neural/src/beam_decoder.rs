@@ -541,7 +541,8 @@ pub fn decode_constrained_beam(
         bcfg,
         ChannelConfig::default(),
         None,
-        beam_cache,
+        // A new key can change Shuangpin syllable boundaries before the cached prefix.
+        beam_cache.filter(|_| scheme == ShuangpinScheme::Full),
     );
 
     let is_ppl_catastrophic = |out: &SingleDecodeOut| -> bool {
