@@ -580,6 +580,7 @@ impl TokenPinyinIndex {
                 // On a standalone canonical single-syllable input (`gen`), exact-pinyin characters
                 // must strongly lead fuzzy equivalents (`geng -> 更`) so cold-start unigram skew
                 // never usurps Slot #1.
+                let mut has_single_fuzzy = false;
                 if (2..=6).contains(&slice.len()) {
                     let single_syl_exact_extra = if start == 0 && end == n && canonical.is_some() {
                         2.0
@@ -588,6 +589,9 @@ impl TokenPinyinIndex {
                     };
                     for (fid, fcost) in fuzzy.expand(slice) {
                         if Some(fid) != canonical {
+                            if fcost <= fuzzy.fuzzy_penalty + 0.05 {
+                                has_single_fuzzy = true;
+                            }
                             syl_edges[start].push((
                                 end,
                                 fid,
@@ -604,10 +608,14 @@ impl TokenPinyinIndex {
                     // neighbor substitutions whenever strict orthography fails (`suoyicaimeoqu`)
                     // OR inside an on-demand localized surprisal-spike rescue window (e.g.
                     // `qianean` falsely segmenting as `qian+e+an` while intending `qian+wan`).
+                    // Skip cheap non-canonical neighbor substitution when `slice` is already a
+                    // valid 1-edit Southern fuzzy Pinyin syllable (`suang -> shuang`,
+                    // `zuang -> zhuang`, `diang -> dian`) so `suangpin` does not prefer `商品`
+                    // over `双拼`.
                     let in_neighbor_window = cfg
                         .canonical_neighbor_window
                         .is_none_or(|(lo, hi)| end > lo && start < hi);
-                    let allow_neighbor = !full_is_canonical
+                    let allow_neighbor = (!full_is_canonical && !has_single_fuzzy)
                         || (cfg.enable_canonical_neighbor_typos && in_neighbor_window);
                     for (tid_syl, edit) in generate_typo_variants(slice) {
                         let is_swap_or_rep = matches!(

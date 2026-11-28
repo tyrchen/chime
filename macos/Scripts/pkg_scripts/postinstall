@@ -7,7 +7,7 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 LOG_FILE="/tmp/chime-install.log"
 
 {
-    echo "=== Chime postinstall v0.15.1 started at $(date) ==="
+    echo "=== Chime postinstall v0.15.2 started at $(date) ==="
 
     CONSOLE_USER="$(/usr/bin/stat -f "%Su" /dev/console 2>/dev/null || true)"
     CONSOLE_UID=""
@@ -147,7 +147,7 @@ LOG_FILE="/tmp/chime-install.log"
         fi
     fi
 
-    echo "=== Chime postinstall v0.15.1 finished at $(date) ==="
+    echo "=== Chime postinstall v0.15.2 finished at $(date) ==="
 } >> "$LOG_FILE" 2>&1 || true
 
 chmod 644 "$LOG_FILE" 2>/dev/null || true
