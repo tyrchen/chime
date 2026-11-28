@@ -389,8 +389,7 @@ public final class ChimeEngineBridge {
         // over `IMKInputSession` IPC!
         NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             let type = event.type
-            let keyCode = event.keyCode
-            let flags = event.modifierFlags
+            let input = ChimeKeyInput(event)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if type == .leftMouseDown || type == .rightMouseDown {
@@ -400,14 +399,15 @@ public final class ChimeEngineBridge {
                     }
                     return
                 }
+                guard let input else { return }
                 guard Self.isChimeSelectedInTIS() else {
                     self.syncMenuBarEnBadge()
                     return
                 }
                 if let resp = self.pollModifierToggle(
                     controllerKey: self.activeControllerKey,
-                    keyCode: keyCode,
-                    flags: flags
+                    keyCode: input.keyCode,
+                    flags: input.flags
                 ) {
                     if let key = self.activeControllerKey {
                         self.applyResponseToStoredClient(controllerKey: key, resp: resp)
@@ -854,6 +854,14 @@ public final class ChimeEngineBridge {
         slots[controllerKey] = slot
     }
 
+    /// Share the marked-text lifecycle between keyboard and candidate-panel selection.
+    func nextMarkUpdate(controllerKey: ObjectIdentifier, resp: ChimeResponse) -> ClientMarkUpdate {
+        let update = ClientMarkUpdate(previouslyMarked: hadMarkedPreedit(for: controllerKey),
+                                      committed: resp.committed_text, preedit: resp.preedit_text)
+        setHadMarkedPreedit(for: controllerKey, value: !resp.preedit_text.isEmpty)
+        return update
+    }
+
     public func applyResponseToStoredClient(controllerKey: ObjectIdentifier, resp: ChimeResponse) {
         guard let slot = slots[controllerKey], let client = slot.lastClientObject as? IMKTextInput else {
             return
@@ -861,23 +869,10 @@ public final class ChimeEngineBridge {
         if !resp.committed_text.isEmpty {
             client.insertText(
                 resp.committed_text,
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                replacementRange: NSRange(location: NSNotFound, length: 0)
             )
         }
-        if resp.preedit_text.isEmpty {
-            client.setMarkedText(
-                "",
-                selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
-        } else {
-            let nsPreedit = resp.preedit_text as NSString
-            client.setMarkedText(
-                resp.preedit_text,
-                selectionRange: NSRange(location: nsPreedit.length, length: 0),
-                replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-            )
-        }
+        nextMarkUpdate(controllerKey: controllerKey, resp: resp).apply(to: client)
         if resp.candidates.isEmpty && resp.ghost_text.isEmpty {
             CandidatePanel.shared.hide()
         } else {

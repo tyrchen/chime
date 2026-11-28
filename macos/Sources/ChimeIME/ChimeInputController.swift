@@ -199,24 +199,16 @@ public final class ChimeInputController: IMKInputController {
     }
 
     override public func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, let client = sender as? IMKTextInput else {
+        guard let event, let input = ChimeKeyInput(event), let client = sender as? IMKTextInput else {
             return false
         }
         let key = ObjectIdentifier(self)
         nonisolated(unsafe) let unsafeClientObj = sender as AnyObject
-        let type = event.type
-        let keyCode = event.keyCode
-        let flags = event.modifierFlags
+        let type = input.type
+        let keyCode = input.keyCode
+        let flags = input.flags
         let shiftDown = flags.contains(.shift)
-        let ctrlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
-        let hasCmdOrCtrl = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
-        let ascii: UInt8 = {
-            guard let chars = event.characters, let scalar = chars.unicodeScalars.first, scalar.isASCII else {
-                return 0
-            }
-            return UInt8(scalar.value)
-        }()
-        let isCtrlPeriod = ctrlOnly && (keyCode == 0x2F || event.charactersIgnoringModifiers == ".")
+        let hasCmdOrCtrl = !flags.isDisjoint(with: [.command, .control, .option])
         let secure = IsSecureEventInputEnabled()
 
         let observedLeftContext: String? = {
@@ -261,13 +253,13 @@ public final class ChimeInputController: IMKInputController {
             guard type == .keyDown else {
                 return nil
             }
-            if isCtrlPeriod {
+            if input.isControlPeriod {
                 isPunctToggleToast = true
                 return ChimeEngineBridge.shared.togglePunctuation(controllerKey: key)
             }
             return ChimeEngineBridge.shared.processKey(
                 controllerKey: key,
-                asciiChar: ascii,
+                asciiChar: input.ascii,
                 keyCode: keyCode,
                 shift: shiftDown,
                 hasCommandOrCtrl: hasCmdOrCtrl,
@@ -353,58 +345,25 @@ public final class ChimeInputController: IMKInputController {
             } else {
                 client.insertText(
                     resp.committed_text,
-                    replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
+                    replacementRange: NSRange(location: NSNotFound, length: 0)
                 )
             }
         }
 
-        if resp.preedit_text.isEmpty {
-            let shouldClearMarked = MainActor.assumeIsolated {
-                let prev = ChimeEngineBridge.shared.hadMarkedPreedit(for: controllerKey)
-                ChimeEngineBridge.shared.setHadMarkedPreedit(for: controllerKey, value: false)
-                return prev
-            }
-            if shouldClearMarked {
-                client.setMarkedText(
-                    "",
-                    selectionRange: NSRange(location: 0, length: 0),
-                    replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-                )
-            }
-            let validRect = ChimeEngineBridge.queryValidatedCaretRect(from: client)
-            MainActor.assumeIsolated {
-                ChimeEngineBridge.shared.recordObservedCaretRect(controllerKey: controllerKey, rect: validRect)
-                if resp.ghost_text.isEmpty {
-                    CandidatePanel.shared.hide()
-                } else {
-                    ChimeEngineBridge.shared.updateCandidatePanel(
-                        controllerKey: controllerKey,
-                        response: resp,
-                        observedCaretRect: validRect
-                    )
-                }
-            }
-            return validRect
+        let update = MainActor.assumeIsolated {
+            ChimeEngineBridge.shared.nextMarkUpdate(controllerKey: controllerKey, resp: resp)
         }
-
-        // Update marked preedit BEFORE querying `lineHeightRectangle` so Electron, browsers, and
-        // terminals report the current line's rect rather than the stale pre-keystroke position!
-        let nsPreedit = resp.preedit_text as NSString
-        client.setMarkedText(
-            resp.preedit_text,
-            selectionRange: NSRange(location: nsPreedit.length, length: 0),
-            replacementRange: NSRange(location: NSNotFound, length: NSNotFound)
-        )
-        let validRect = ChimeEngineBridge.queryValidatedCaretRect(from: client)
-
+        update.apply(to: client)
+        let rect = ChimeEngineBridge.queryValidatedCaretRect(from: client)
         MainActor.assumeIsolated {
-            ChimeEngineBridge.shared.setHadMarkedPreedit(for: controllerKey, value: true)
-            ChimeEngineBridge.shared.updateCandidatePanel(
-                controllerKey: controllerKey,
-                response: resp,
-                observedCaretRect: validRect
-            )
+            let bridge = ChimeEngineBridge.shared
+            if resp.preedit_text.isEmpty && resp.ghost_text.isEmpty {
+                bridge.recordObservedCaretRect(controllerKey: controllerKey, rect: rect)
+                CandidatePanel.shared.hide()
+            } else {
+                bridge.updateCandidatePanel(controllerKey: controllerKey, response: resp, observedCaretRect: rect)
+            }
         }
-        return validRect
+        return rect
     }
 }
