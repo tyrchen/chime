@@ -136,8 +136,15 @@ enum ChimeBootstrap {
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let bundleId = Bundle.main.bundleIdentifier ?? ChimeInputSourceRegistrar.bundleId
-        server = IMKServer(name: "Chime_1_Connection", bundleIdentifier: bundleId)
+        // imklaunchagent discovers the endpoint from the bundle before a sandboxed
+        // client can send us any events. Advertise and listen on the same name.
+        guard let bundleId = Bundle.main.bundleIdentifier,
+              let connectionName = Bundle.main.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String,
+              !connectionName.isEmpty else {
+            NSLog("Chime requires a bundled input method identifier and connection name")
+            exit(EXIT_FAILURE)
+        }
+        server = IMKServer(name: connectionName, bundleIdentifier: bundleId)
         ChimeInputSourceRegistrar.scheduleDaemonRegistration(tryAutoEnable: tryAutoEnable)
         ChimeUpdateManager.shared.startBackgroundScheduler()
         app.run()
