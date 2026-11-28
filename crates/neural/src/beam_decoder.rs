@@ -41,8 +41,13 @@ pub struct NeuralBeamCandidate {
 pub struct BeamSearchConfig {
     /// Early-sentence funnel multiplier applied during the ambiguous prefix window.
     pub early_funnel_multiplier: usize,
-    /// Upper cap on the widened early funnel beam width.
+    /// Maximum early-funnel beam width.
     pub max_early_beam: usize,
+    /// Dynamic entropy gate for the early funnel: if the top `beam_width` hypotheses at an early
+    /// byte position already span at least `early_funnel_tight_spread` nats (`score[0] -
+    /// score[beam_width - 1] >= spread`), skip expanding extra `#beam_width..#max_early_beam`
+    /// tails and use `late_prune_margin`.
+    pub early_funnel_tight_spread: f32,
     /// Log-prob pruning margin at `pos = 0`.
     pub root_prune_margin: f32,
     /// Log-prob pruning margin during early funnel positions.
@@ -81,6 +86,7 @@ impl Default for BeamSearchConfig {
         Self {
             early_funnel_multiplier: 3,
             max_early_beam: 18,
+            early_funnel_tight_spread: 6.5,
             root_prune_margin: 14.5,
             early_prune_margin: 12.5,
             late_prune_margin: 9.5,
@@ -154,6 +160,18 @@ impl BeamHyp {
 struct SingleDecodeOut {
     cands: Vec<NeuralBeamCandidate>,
     top_spike1: SurprisalSpike,
+    saved_outgoing: Option<Vec<Vec<(usize, BeamHyp)>>>,
+    saved_root_kv: Option<MlxBeamKv>,
+}
+
+/// Lossless prefix snapshot passed from the primary decode into localized rescue passes (`Step 1b`,
+/// `Step 2` neighbor/swap, `Step 3` cross-syllable swap) so clean prefixes `0..resume_pos` pay ZERO
+/// Metal GPU recomputation.
+struct PrefixResume<'a> {
+    resume_pos: usize,
+    max_dst: usize,
+    saved_outgoing: &'a [Vec<(usize, BeamHyp)>],
+    root_kv: &'a MlxBeamKv,
 }
 
 #[inline]
@@ -543,7 +561,26 @@ pub fn decode_constrained_beam(
         None,
         // A new key can change Shuangpin syllable boundaries before the cached prefix.
         beam_cache.filter(|_| scheme == ShuangpinScheme::Full),
+        true,
+        None,
     );
+
+    let make_resume = |resume_pos: usize, max_dst: usize| -> Option<PrefixResume<'_>> {
+        if resume_pos >= 2
+            && let Some(ref snap) = primary_out.saved_outgoing
+            && let Some(ref rkv) = primary_out.saved_root_kv
+            && snap.len() >= resume_pos
+        {
+            Some(PrefixResume {
+                resume_pos,
+                max_dst,
+                saved_outgoing: snap.as_slice(),
+                root_kv: rkv,
+            })
+        } else {
+            None
+        }
+    };
 
     let is_ppl_catastrophic = |out: &SingleDecodeOut| -> bool {
         out.cands.first().is_none_or(|c| {
@@ -614,6 +651,8 @@ pub fn decode_constrained_beam(
             ChannelConfig::default(),
             None,
             None,
+            false,
+            None,
         );
         let prev_top_score = primary_out
             .cands
@@ -662,6 +701,7 @@ pub fn decode_constrained_beam(
         } else {
             Some((0, (n / 2).clamp(8, 14)))
         };
+        let wide_resume = wide_win.and_then(|(lo, _)| make_resume(lo, n));
         let escalated = decode_constrained_beam_single(
             mlx_model,
             kv_cache,
@@ -685,6 +725,8 @@ pub fn decode_constrained_beam(
             ChannelConfig::default(),
             wide_win,
             None,
+            false,
+            wide_resume,
         );
         let prev_top_score = primary_out
             .cands
@@ -730,6 +772,8 @@ pub fn decode_constrained_beam(
             canonical_neighbor_window: neighbor_window,
             ..ChannelConfig::default()
         };
+        let neighbor_resume =
+            neighbor_window.and_then(|(lo, _)| make_resume(lo.saturating_sub(6), n));
         let rescue_out = decode_constrained_beam_single(
             mlx_model,
             kv_cache,
@@ -753,6 +797,8 @@ pub fn decode_constrained_beam(
             rescue_cfg,
             None,
             None,
+            false,
+            neighbor_resume,
         );
         let prev_top_score = primary_out
             .cands
@@ -768,28 +814,36 @@ pub fn decode_constrained_beam(
         merge_into_primary(&mut primary_out.cands, rescue_out.cands);
 
         // Localized adjacent-swap recovery ONLY if neighbor rescue did not already resolve the
-        // surprisal spike!
+        // surprisal spike! Prioritize swaps inside the exact spike span first.
         if is_strict_canonical && is_distressed(&primary_out) {
             let (win_lo, win_hi) = neighbor_window.unwrap_or((0, n));
+            let spike_lo = primary_out.top_spike1.start.max(win_lo);
+            let spike_hi = primary_out.top_spike1.end.min(win_hi);
             let raw_b = lower_input.as_bytes();
-            let mut local_swaps: Vec<String> = Vec::new();
-            for i in win_lo..win_hi.min(n - 1) {
-                if raw_b[i] == raw_b[i + 1] {
-                    continue;
+            let mut local_swaps: Vec<(usize, String)> = Vec::new();
+            let mut try_swap_at = |i: usize| {
+                if i + 1 >= n || raw_b[i] == raw_b[i + 1] || local_swaps.len() >= 2 {
+                    return;
                 }
                 let mut swapped = raw_b.to_vec();
                 swapped.swap(i, i + 1);
                 if let Ok(s) = String::from_utf8(swapped)
                     && chime_phonetics::can_segment_strict_orthography(&s)
-                    && !local_swaps.contains(&s)
+                    && !local_swaps.iter().any(|(_, prev)| prev == &s)
                 {
-                    local_swaps.push(s);
-                    if local_swaps.len() >= 2 {
-                        break;
-                    }
+                    local_swaps.push((i, s));
+                }
+            };
+            for i in spike_lo..spike_hi.min(n - 1) {
+                try_swap_at(i);
+            }
+            for i in win_lo..win_hi.min(n - 1) {
+                if i < spike_lo || i >= spike_hi {
+                    try_swap_at(i);
                 }
             }
-            for rep in local_swaps {
+            for (swap_i, rep) in local_swaps {
+                let swap_resume = make_resume(swap_i.saturating_sub(6), swap_i);
                 let rep_out = decode_constrained_beam_single(
                     mlx_model,
                     kv_cache,
@@ -813,6 +867,8 @@ pub fn decode_constrained_beam(
                     ChannelConfig::default(),
                     None,
                     None,
+                    false,
+                    swap_resume,
                 );
                 let adjusted: Vec<NeuralBeamCandidate> = rep_out
                     .cands
@@ -841,7 +897,7 @@ pub fn decode_constrained_beam(
         && lower_input.bytes().all(|b| b.is_ascii_lowercase())
         && !is_strict_canonical
     {
-        let mut repairs: Vec<String> = Vec::new();
+        let mut repairs: Vec<(usize, String)> = Vec::new();
         let raw_b = lower_input.as_bytes();
         for i in 0..(n - 1) {
             if raw_b[i] == raw_b[i + 1] {
@@ -851,16 +907,17 @@ pub fn decode_constrained_beam(
             swapped.swap(i, i + 1);
             if let Ok(s) = String::from_utf8(swapped)
                 && chime_phonetics::can_segment_strict_orthography(&s)
-                && !repairs.contains(&s)
+                && !repairs.iter().any(|(_, prev)| prev == &s)
             {
-                repairs.push(s);
+                repairs.push((i, s));
                 if repairs.len() >= bcfg.max_swap_repairs {
                     break;
                 }
             }
         }
         if !repairs.is_empty() {
-            for rep in repairs {
+            for (swap_i, rep) in repairs {
+                let swap_resume = make_resume(swap_i.saturating_sub(6), swap_i);
                 let rep_out = decode_constrained_beam_single(
                     mlx_model,
                     kv_cache,
@@ -884,6 +941,8 @@ pub fn decode_constrained_beam(
                     ChannelConfig::default(),
                     None,
                     None,
+                    false,
+                    swap_resume,
                 );
                 let adjusted: Vec<NeuralBeamCandidate> = rep_out
                     .cands
@@ -904,7 +963,11 @@ pub fn decode_constrained_beam(
     primary_out.cands
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::fn_params_excessive_bools
+)]
 fn decode_constrained_beam_single(
     mlx_model: &MlxTransformer,
     kv_cache: &mut MlxPrefixCache,
@@ -928,17 +991,22 @@ fn decode_constrained_beam_single(
     channel_cfg: ChannelConfig,
     wide_beam_window: Option<(usize, usize)>,
     beam_cache: Option<&mut RouteABeamCache>,
+    capture_snapshot: bool,
+    prefix_resume: Option<PrefixResume<'_>>,
 ) -> SingleDecodeOut {
     let empty_out = || SingleDecodeOut {
         cands: Vec::new(),
         top_spike1: SurprisalSpike::default(),
+        saved_outgoing: None,
+        saved_root_kv: None,
     };
     let n = raw_input.len();
 
     // Exact Bayesian Left-Boundary Token Healing (`P(B | A, C) = P(AB | C) / P(A | C)`):
-    // Only needed in text-LM mode (in `pinyin_char_v1` mode, `left_context` is separated from `Y`
-    // by `|~p|X~=`, so BPE never splits across the boundary).
-    let healed_matches: Vec<(u32, String, usize, f32, bool)> = if !is_pinyin_conditioned
+    // Skipped on `prefix_resume` passes because `pos = 0` is already replayed from the primary
+    // pass (avoiding double `kv_cache` thrash on contextual rescue!).
+    let healed_matches: Vec<(u32, String, usize, f32, bool)> = if prefix_resume.is_none()
+        && !is_pinyin_conditioned
         && prefix_ids.len() >= 2
         && let Some(prev_ch) = left_context.trim_end().chars().last()
         && ('\u{4E00}'..='\u{9FA5}').contains(&prev_ch)
@@ -977,18 +1045,23 @@ fn decode_constrained_beam_single(
         }
     };
 
-    if mlx_model
-        .ensure_prefix_cached_with_scales(prefix_ids, lora_scales, kv_cache)
-        .is_err()
-    {
-        return empty_out();
-    }
-
-    let root_kv = kv_cache.to_beam_kv();
-    let root_lps = kv_cache.next_token_log_probs();
-    if root_lps.is_empty() {
-        return empty_out();
-    }
+    let (root_kv, root_lps_owned): (MlxBeamKv, Vec<f32>) = if let Some(ref pr) = prefix_resume {
+        (pr.root_kv.clone(), Vec::new())
+    } else {
+        if mlx_model
+            .ensure_prefix_cached_with_scales(prefix_ids, lora_scales, kv_cache)
+            .is_err()
+        {
+            return empty_out();
+        }
+        let rkv = kv_cache.to_beam_kv();
+        let rlps = kv_cache.next_token_log_probs();
+        if rlps.is_empty() {
+            return empty_out();
+        }
+        (rkv, rlps.to_vec())
+    };
+    let root_lps: &[f32] = &root_lps_owned;
 
     let mut token_edges = pinyin_index.build_token_lattice_with_config(
         raw_input,
@@ -1052,6 +1125,8 @@ fn decode_constrained_beam_single(
                 consumed_bytes: n,
             }],
             top_spike1: SurprisalSpike::default(),
+            saved_outgoing: None,
+            saved_root_kv: None,
         };
     }
 
@@ -1084,6 +1159,8 @@ fn decode_constrained_beam_single(
             return SingleDecodeOut {
                 cands: skel_cands,
                 top_spike1: SurprisalSpike::default(),
+                saved_outgoing: None,
+                saved_root_kv: None,
             };
         }
     }
@@ -1092,21 +1169,31 @@ fn decode_constrained_beam_single(
     let full_is_canonical = scheme == ShuangpinScheme::Full
         && chime_phonetics::can_segment_strict_orthography(lower_input);
 
-    // Check if we can reuse prefix outgoing transitions & KV-Caches from `beam_cache` on TRUE
-    // monotonic keystroke appends (`zhejige` -> `zhejigedou`) OR Backspace shrinks (`zhejigedou`
-    // -> `zhejigedo`). Never cross-contaminate unrelated sentences that merely share a prefix
-    // (`feikuaidesudu...` -> `feikuaidipaoxiang...`), and replay EVERY outgoing edge `(src -> dst)`
-    // with `src < reuse_until && dst >= reuse_until` so cross-boundary multi-char tokens are never
-    // dropped!
+    // Check if we can reuse prefix outgoing transitions & KV-Caches from either an in-flight
+    // `prefix_resume` (lossless rescue pass skipping `0..resume_pos`) OR persistent `beam_cache`
+    // on TRUE monotonic keystroke appends / Backspace shrinks!
     let mut start_pos = 1usize;
     let mut reused_prefix = false;
     let mut next_saved_outgoing: Option<Vec<Vec<(usize, BeamHyp)>>> =
-        if beam_cache.is_some() && n >= 8 {
+        if (beam_cache.is_some() || capture_snapshot) && n >= 8 {
             Some(vec![Vec::new(); n])
         } else {
             None
         };
-    if let Some(cache) = beam_cache.as_deref()
+    if let Some(pr) = prefix_resume
+        && pr.resume_pos >= 2
+        && pr.saved_outgoing.len() >= pr.resume_pos
+    {
+        for src in 0..pr.resume_pos {
+            for &(dst, ref hyp) in &pr.saved_outgoing[src] {
+                if dst >= pr.resume_pos && dst <= pr.max_dst && dst <= n {
+                    buckets[dst].push(hyp.clone());
+                }
+            }
+        }
+        start_pos = pr.resume_pos;
+        reused_prefix = true;
+    } else if let Some(cache) = beam_cache.as_deref()
         && !cache.raw_input.is_empty()
         && cache.left_context == left_context
         && cache.app_bundle_id == app_bundle_id
@@ -1293,12 +1380,19 @@ fn decode_constrained_beam_single(
                 .total_cmp(&a.total_score())
                 .then_with(|| a.text.cmp(&b.text))
         });
-        // Proportional early funnel window keeps garden-path openings alive while tapering cleanly
-        // on long sentences without sacrificing sibling candidates.
+        // Dynamic entropy-gated early funnel: widen to `max_early_beam` inside an explicit rescue
+        // `wide_beam_window` OR when early positions (`pos <= early_limit`) genuinely exhibit tight
+        // ambiguity across the top `beam_width` hypotheses (`score[0] - score[beam_width-1] <
+        // early_funnel_tight_spread`). Clear openings stay at `beam_width` with
+        // `late_prune_margin`, cutting wasted GPU work on unambiguous prefixes.
         let early_limit = (n / 4).clamp(6, 8);
         let in_wide_window = wide_beam_window.is_some_and(|(lo, hi)| pos >= lo && pos <= hi);
-        let in_early_funnel =
-            !is_pinyin_conditioned && pos < n && (pos <= early_limit || in_wide_window);
+        let early_ambiguous = in_wide_window
+            || (pos <= early_limit
+                && active.len() > beam_width
+                && (active[0].total_score() - active[beam_width - 1].total_score())
+                    < bcfg.early_funnel_tight_spread);
+        let in_early_funnel = !is_pinyin_conditioned && pos < n && early_ambiguous;
         let pos_beam_cap = if in_early_funnel {
             (beam_width * bcfg.early_funnel_multiplier).min(bcfg.max_early_beam.max(beam_width))
         } else {
@@ -1341,7 +1435,11 @@ fn decode_constrained_beam_single(
                         .then_with(|| a.text.cmp(&b.text))
                 });
             }
-            if let (Some(cache), Some(snap)) = (beam_cache, next_saved_outgoing) {
+            if let (Some(cache), Some(snap)) = (beam_cache, next_saved_outgoing.as_ref())
+                && (full_is_canonical
+                    || !cache.full_is_canonical
+                    || !raw_input.starts_with(&cache.raw_input))
+            {
                 cache.left_context.clear();
                 cache.left_context.push_str(left_context);
                 cache.app_bundle_id.clear();
@@ -1353,8 +1451,8 @@ fn decode_constrained_beam_single(
                 cache.beam_width = beam_width;
                 cache.raw_input.clear();
                 cache.raw_input.push_str(raw_input);
-                cache.saved_outgoing = snap;
-                cache.saved_root_kv = Some(root_kv);
+                cache.saved_outgoing = snap.clone();
+                cache.saved_root_kv = Some(root_kv.clone());
             }
             let top_spike1 = active
                 .first()
@@ -1375,6 +1473,16 @@ fn decode_constrained_beam_single(
             return SingleDecodeOut {
                 cands: out,
                 top_spike1,
+                saved_outgoing: if capture_snapshot {
+                    next_saved_outgoing
+                } else {
+                    None
+                },
+                saved_root_kv: if capture_snapshot {
+                    Some(root_kv)
+                } else {
+                    None
+                },
             };
         }
 
@@ -1510,6 +1618,8 @@ fn decode_constrained_beam_single(
                 consumed_bytes: n,
             }],
             top_spike1: SurprisalSpike::default(),
+            saved_outgoing: None,
+            saved_root_kv: None,
         };
     }
 

@@ -1608,8 +1608,10 @@ impl ChimeEngine {
         }
 
         // While the user is mid-syllable (`zhejiged`, `shangyib`, `wozijix`), the trailing lone
-        // consonant cannot finish a valid syllable and will be superseded in ~40ms by the next
-        // vowel. Return Stage-1 in < 0.3ms with zero synchronous GPU wait!
+        // consonant after a valid canonical prefix cannot finish a syllable and will be superseded
+        // in ~40ms by the next vowel. Skipping doomed GPU dispatch keeps Stage-1 at < 0.3ms,
+        // prevents wasting Metal GPU cycles on bogus typo rescues, and preserves `RouteABeamCache`
+        // hot for the very next vowel keystroke!
         let last_b = lower_raw.as_bytes().last().copied().unwrap_or(0);
         let is_mid_syllable_partial = self.config.scheme == ShuangpinScheme::Full
             && raw_clone.len() >= 4
@@ -1619,6 +1621,14 @@ impl ChimeEngine {
                 b'a' | b'e' | b'i' | b'o' | b'u' | b'v' | b'n' | b'g' | b'r'
             )
             && !chime_phonetics::can_segment_exact(&lower_raw);
+        let prev_is_canonical = is_mid_syllable_partial
+            && (chime_phonetics::can_segment_exact(&lower_raw[..lower_raw.len() - 1])
+                || (lower_raw.len() >= 5
+                    && matches!(&lower_raw[lower_raw.len() - 2..], "zh" | "ch" | "sh")
+                    && chime_phonetics::can_segment_exact(&lower_raw[..lower_raw.len() - 2])));
+        if prev_is_canonical {
+            return RouteADispatch::NotEligible;
+        }
 
         let sync_budget = if is_mid_syllable_partial {
             Duration::ZERO
@@ -1638,7 +1648,9 @@ impl ChimeEngine {
             } else {
                 ScoringMode::ClosedSentence
             },
-            beam_width: if worker.is_pinyin_conditioned() || worker.config().num_hidden_layers >= 20
+            beam_width: if worker.is_pinyin_conditioned()
+                || worker.config().num_hidden_layers >= 20
+                || raw_clone.len() > 28
             {
                 4
             } else {

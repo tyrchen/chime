@@ -267,6 +267,10 @@ enum Commands {
         /// Beam width for Route A neural beam search.
         #[arg(long, default_value_t = 8)]
         beam_width: usize,
+        /// Simulate keystroke-by-keystroke incremental typing (`RouteABeamCache` warm per key)
+        /// and report realistic per-keystroke `p50/p95/p99` latency alongside final accuracy.
+        #[arg(long, default_value_t = false)]
+        incremental: bool,
     },
 }
 
@@ -672,6 +676,7 @@ fn main() -> Result<()> {
             tag,
             route_a,
             beam_width,
+            incremental,
         } => {
             let tier2_opt = tier2.as_deref().map(|dir| {
                 (
@@ -696,6 +701,7 @@ fn main() -> Result<()> {
                 &tag,
                 route_a,
                 beam_width,
+                incremental,
             )?;
         }
     }
@@ -1559,6 +1565,7 @@ fn run_large_bench(
     tag: &str,
     route_a: bool,
     beam_width: usize,
+    incremental: bool,
 ) -> Result<()> {
     let raw_tsv = fs::read_to_string(tsv_path)
         .with_context(|| format!("failed to read benchmark TSV {}", tsv_path.display()))?;
@@ -1597,6 +1604,7 @@ fn run_large_bench(
     let mut cat_order: Vec<String> = Vec::new();
     let mut cat_map: std::collections::HashMap<String, CatStats> = std::collections::HashMap::new();
     let mut all_latencies: Vec<u64> = Vec::new();
+    let mut keystroke_latencies: Vec<u64> = Vec::new();
     let mut total = 0usize;
     let mut hit1 = 0usize;
     let mut hit3 = 0usize;
@@ -1631,6 +1639,68 @@ fn run_large_bench(
 
         let t0 = Instant::now();
         let eval_owned: Vec<String> = if let Some(slm) = route_a_slm.as_mut() {
+            let fuzzy_cfg = chime_phonetics::FuzzyConfig::default();
+            if incremental && scheme == ShuangpinScheme::Full && keys.len() >= 2 {
+                // Simulate realistic keystroke-by-keystroke typing matching live `ChimeEngine`:
+                // mid-syllable trailing consonants after a valid prefix stay on the <0.3 ms
+                // Stage-1 fast path without clobbering `RouteABeamCache`, while syllable-completing
+                // keystrokes warm `RouteABeamCache` via Tier-1.
+                for pref_len in 1..keys.len() {
+                    if !keys.is_char_boundary(pref_len) {
+                        continue;
+                    }
+                    let prefix_keys = &keys[..pref_len];
+                    let kt0 = Instant::now();
+                    let lower_pref = prefix_keys.to_ascii_lowercase();
+                    let last_b = lower_pref.as_bytes().last().copied().unwrap_or(0);
+                    let is_mid_consonant = prefix_keys.len() >= 4
+                        && !matches!(
+                            last_b,
+                            b'a' | b'e' | b'i' | b'o' | b'u' | b'v' | b'n' | b'g' | b'r'
+                        )
+                        && !chime_phonetics::can_segment_exact(&lower_pref)
+                        && (chime_phonetics::can_segment_exact(
+                            &lower_pref[..lower_pref.len() - 1],
+                        ) || (lower_pref.len() >= 5
+                            && matches!(&lower_pref[lower_pref.len() - 2..], "zh" | "ch" | "sh")
+                            && chime_phonetics::can_segment_exact(
+                                &lower_pref[..lower_pref.len() - 2],
+                            )));
+                    if is_mid_consonant {
+                        let stage1_ctx = DecodeContext {
+                            left_context: left_ctx,
+                            app_bundle_id: app,
+                            scheme,
+                            fuzzy: fuzzy_cfg,
+                            pangu_spacing: true,
+                            uppercase_triggers_english: true,
+                            english_auto_correct: true,
+                            now_epoch_secs: 1_000,
+                        };
+                        let _ = decoder.decode(prefix_keys, &base_lex, &user_store, &stage1_ctx);
+                    } else {
+                        let live_bw = if prefix_keys.len() > 28 {
+                            beam_width.min(4)
+                        } else {
+                            beam_width
+                        };
+                        let _ = slm.decode_constrained_with_proposals_tier1_only(
+                            left_ctx,
+                            app,
+                            prefix_keys,
+                            scheme,
+                            fuzzy_cfg,
+                            true,
+                            chime_neural::ScoringMode::OpenContextual,
+                            live_bw,
+                            &[],
+                        );
+                    }
+                    let kus = u64::try_from(kt0.elapsed().as_micros()).unwrap_or(u64::MAX);
+                    keystroke_latencies.push(kus);
+                }
+            }
+            let final_t0 = Instant::now();
             let is_single_syl_ctx = !left_ctx.trim().is_empty()
                 && scheme == ShuangpinScheme::Full
                 && !keys.contains('\'')
@@ -1640,7 +1710,6 @@ fn run_large_bench(
             } else {
                 chime_neural::ScoringMode::ClosedSentence
             };
-            let fuzzy_cfg = chime_phonetics::FuzzyConfig::default();
             let stage1_ctx = DecodeContext {
                 left_context: left_ctx,
                 app_bundle_id: app,
@@ -1690,6 +1759,10 @@ fn run_large_bench(
                 beam_width,
                 &extra_items,
             );
+            if incremental && scheme == ShuangpinScheme::Full {
+                let kus = u64::try_from(final_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+                keystroke_latencies.push(kus);
+            }
             ncands.into_iter().map(|c| c.text).collect()
         } else {
             let ctx = DecodeContext {
@@ -1824,6 +1897,27 @@ fn run_large_bench(
         "Overall Hits: Top-1={hit1}/{total}, Top-3={hit3}/{total}, Top-5={hit5}/{total} | Latency \
          p50={p50} us, p95={p95} us, p99={p99} us"
     )?;
+    if !keystroke_latencies.is_empty() {
+        keystroke_latencies.sort_unstable();
+        let kn = keystroke_latencies.len();
+        let kp50 = keystroke_latencies.get(kn / 2).copied().unwrap_or(0);
+        let kp95 = keystroke_latencies
+            .get((kn * 95) / 100)
+            .copied()
+            .unwrap_or(0);
+        let kp99 = keystroke_latencies
+            .get((kn * 99) / 100)
+            .copied()
+            .unwrap_or(0);
+        writeln!(
+            out,
+            "Incremental Per-Keystroke Latency ({kn} keystrokes): p50={kp50} us ({:.1} ms), \
+             p95={kp95} us ({:.1} ms), p99={kp99} us ({:.1} ms)",
+            (kp50 as f64) / 1000.0,
+            (kp95 as f64) / 1000.0,
+            (kp99 as f64) / 1000.0
+        )?;
+    }
     if let Some(slm) = route_a_slm.as_ref()
         && let Some((esc, tot_q)) = slm.tier2_stats()
     {
