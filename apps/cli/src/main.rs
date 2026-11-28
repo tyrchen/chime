@@ -96,6 +96,16 @@ enum Commands {
         /// Optional neural reranker directory (`dist/base_neural`) for Stage-2 Metal GPU scoring.
         #[arg(long)]
         neural: Option<PathBuf>,
+        /// Optional local Tier-2 MLX 4-bit Qwen3-Base directory (`Qwen3-1.7B/4B-Base`) for
+        /// confidence-gated Top-K reranking.
+        #[arg(long)]
+        tier2: Option<PathBuf>,
+        /// Confidence margin threshold for escalating to Tier-2 (`score[0] - score[1] < margin`).
+        #[arg(long, default_value_t = 3.0)]
+        tier2_margin: f32,
+        /// Tier-2 LM interpolation weight (`0.65` => `0.35 * Tier1 + 0.65 * Tier2`).
+        #[arg(long, default_value_t = 0.65)]
+        tier2_alpha: f32,
         /// Use Route A (first-principles Pinyin-constrained autoregressive neural beam search).
         #[arg(long, default_value_t = false)]
         route_a: bool,
@@ -228,6 +238,19 @@ enum Commands {
         /// Optional neural reranker directory (`dist/base_neural`).
         #[arg(long)]
         neural: Option<PathBuf>,
+        /// Optional local Tier-2 MLX 4-bit Qwen3-Base directory (`Qwen3-1.7B/4B-Base`) for
+        /// confidence-gated Top-K reranking.
+        #[arg(long)]
+        tier2: Option<PathBuf>,
+        /// Confidence margin threshold for escalating to Tier-2 (`score[0] - score[1] < margin`).
+        #[arg(long, default_value_t = 3.0)]
+        tier2_margin: f32,
+        /// Tier-2 LM interpolation weight (`0.65` => `0.35 * Tier1 + 0.65 * Tier2`).
+        #[arg(long, default_value_t = 0.65)]
+        tier2_alpha: f32,
+        /// Disable the `{的, 地, 得}` grammatical guard on Tier-2 (for ablation).
+        #[arg(long, default_value_t = false)]
+        tier2_no_dedide_guard: bool,
         /// Optional path to write detailed failure rows TSV.
         #[arg(long)]
         failures_out: Option<PathBuf>,
@@ -306,6 +329,9 @@ fn main() -> Result<()> {
             dict,
             pack,
             neural,
+            tier2,
+            tier2_margin,
+            tier2_alpha,
             route_a,
             beam_width,
         } => {
@@ -324,6 +350,16 @@ fn main() -> Result<()> {
                     .context("--route-a requires --neural <model_dir>")?;
                 let mut slm =
                     chime_neural::SafetensorsReranker::load_dir_with_loras(np, &lora_specs)?;
+                if let Some(t2_dir) = tier2.as_deref() {
+                    slm.attach_tier2(
+                        t2_dir,
+                        chime_neural::Tier2Config {
+                            margin_threshold: tier2_margin,
+                            alpha: tier2_alpha,
+                            ..chime_neural::Tier2Config::default()
+                        },
+                    )?;
+                }
                 let sch: ShuangpinScheme = scheme.into();
                 let is_single_syl_ctx = !context.trim().is_empty()
                     && sch == ShuangpinScheme::Full
@@ -627,18 +663,34 @@ fn main() -> Result<()> {
             dict,
             pack,
             neural,
+            tier2,
+            tier2_margin,
+            tier2_alpha,
+            tier2_no_dedide_guard,
             failures_out,
             record,
             tag,
             route_a,
             beam_width,
         } => {
+            let tier2_opt = tier2.as_deref().map(|dir| {
+                (
+                    dir,
+                    chime_neural::Tier2Config {
+                        margin_threshold: tier2_margin,
+                        alpha: tier2_alpha,
+                        guard_de_di_de: !tier2_no_dedide_guard,
+                        ..chime_neural::Tier2Config::default()
+                    },
+                )
+            });
             run_large_bench(
                 &mut stdout,
                 &tsv,
                 dict.as_deref(),
                 &pack,
                 neural.as_deref(),
+                tier2_opt,
                 failures_out.as_deref(),
                 record.as_deref(),
                 &tag,
@@ -1501,6 +1553,7 @@ fn run_large_bench(
     dict_path: Option<&Path>,
     pack_dirs: &[PathBuf],
     neural_path: Option<&Path>,
+    tier2_spec: Option<(&Path, chime_neural::Tier2Config)>,
     failures_out: Option<&Path>,
     record_path: Option<&Path>,
     tag: &str,
@@ -1521,10 +1574,11 @@ fn run_large_bench(
 
     let mut route_a_slm = if route_a {
         let np = neural_path.context("--route-a requires --neural <model_dir>")?;
-        Some(chime_neural::SafetensorsReranker::load_dir_with_loras(
-            np,
-            &lora_specs,
-        )?)
+        let mut slm = chime_neural::SafetensorsReranker::load_dir_with_loras(np, &lora_specs)?;
+        if let Some((t2_dir, t2_cfg)) = tier2_spec {
+            slm.attach_tier2(t2_dir, t2_cfg)?;
+        }
+        Some(slm)
     } else {
         None
     };
@@ -1770,6 +1824,19 @@ fn run_large_bench(
         "Overall Hits: Top-1={hit1}/{total}, Top-3={hit3}/{total}, Top-5={hit5}/{total} | Latency \
          p50={p50} us, p95={p95} us, p99={p99} us"
     )?;
+    if let Some(slm) = route_a_slm.as_ref()
+        && let Some((esc, tot_q)) = slm.tier2_stats()
+    {
+        let rate = if tot_q > 0 {
+            100.0 * (esc as f64) / (tot_q as f64)
+        } else {
+            0.0
+        };
+        writeln!(
+            out,
+            "Tier-2 Reranker Escalations: {esc}/{tot_q} ({rate:.1}%)"
+        )?;
+    }
     if let Some(rec_file) = record_path {
         if let Some(parent) = rec_file.parent() {
             fs::create_dir_all(parent)?;

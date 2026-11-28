@@ -25,7 +25,9 @@ use chime_lexicon::{
     import_macos_text_replacements, parse_bdict_bytes, parse_rime_dict_yaml, parse_scel_bytes,
     parse_tsv_dict,
 };
-use chime_neural::{AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode};
+use chime_neural::{
+    AsyncRerankHandle, LoraMountSpec, RerankJob, RouteADecodeRequest, ScoringMode, Tier2Config,
+};
 use chime_phonetics::{
     ShuangpinScheme, format_segmented_preedit, shuangpin::shuangpin_initial_mask,
 };
@@ -152,6 +154,12 @@ pub struct EngineStatus {
     pub learned_habits: usize,
     /// True if a Stage-2 `Safetensors` neural reranker is active.
     pub neural_loaded: bool,
+    /// True if an optional local Tier-2 MLX reranker (`Qwen3-1.7B/4B-Base` 4-bit) is mounted.
+    #[serde(default)]
+    pub tier2_loaded: bool,
+    /// Resolved path of the mounted or detected local Tier-2 model directory, if any.
+    #[serde(default)]
+    pub tier2_model_dir: String,
     /// Number of installed `.imepack` cartridges mounted from `packs/`.
     #[serde(default)]
     pub installed_packs: usize,
@@ -447,11 +455,52 @@ impl ChimeEngine {
                         worker: worker.clone(),
                     })));
                 self.async_reranker = Some(worker);
+                self.sync_tier2_worker();
             } else {
                 self.decoder.set_reranker(None);
             }
         }
         self.lexicon = lex;
+    }
+
+    fn resolve_tier2_dir(&self, cfg: &ChimeConfig) -> Option<PathBuf> {
+        let configured = cfg.tier2_model_dir.trim();
+        let candidate = if configured.is_empty() {
+            self.app_support_dir
+                .as_ref()
+                .map(|d| d.join("models/tier2"))
+        } else if let Some(rest) = configured.strip_prefix("~/") {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(rest))
+        } else {
+            Some(PathBuf::from(configured))
+        }?;
+        if candidate.join("config.json").is_file()
+            && candidate.join("vocab.json").is_file()
+            && candidate.join("merges.txt").is_file()
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    fn sync_tier2_worker(&self) {
+        let Some(worker) = &self.async_reranker else {
+            return;
+        };
+        let t2_cfg = Tier2Config {
+            margin_threshold: self.config.tier2_margin_threshold,
+            alpha: self.config.tier2_alpha,
+            ..Tier2Config::default()
+        };
+        let target_dir = if self.config.tier2_enabled {
+            self.resolve_tier2_dir(&self.config)
+        } else {
+            None
+        };
+        let _ = worker.configure_tier2(target_dir.as_deref(), t2_cfg);
     }
 
     /// Updates the runtime configuration and persists it if `app_support_dir` is configured.
@@ -460,10 +509,17 @@ impl ChimeEngine {
     ///
     /// Returns [`EngineError::Config`] if saving `config.toml` fails.
     pub fn update_config(&mut self, config: ChimeConfig) -> Result<(), EngineError> {
+        let tier2_changed = self.config.tier2_enabled != config.tier2_enabled
+            || self.config.tier2_model_dir != config.tier2_model_dir
+            || (self.config.tier2_margin_threshold - config.tier2_margin_threshold).abs() > 1e-4
+            || (self.config.tier2_alpha - config.tier2_alpha).abs() > 1e-4;
         if let Some(dir) = &self.app_support_dir {
             config.save(&dir.join("config.toml"))?;
         }
         self.config = config;
+        if tier2_changed {
+            self.sync_tier2_worker();
+        }
         Ok(())
     }
 
@@ -476,12 +532,20 @@ impl ChimeEngine {
     /// Returns a live status snapshot for UI diagnostics.
     #[must_use]
     pub fn status(&self) -> EngineStatus {
+        let detected_t2 = self
+            .resolve_tier2_dir(&self.config)
+            .map_or_default(|p| p.display().to_string());
         EngineStatus {
             scheme: self.config.scheme,
             pinyin_keys: self.lexicon.pinyin_key_count(),
             word_entries: self.lexicon.total_word_entries(),
             learned_habits: self.user_store.habit_count(),
             neural_loaded: self.async_reranker.is_some(),
+            tier2_loaded: self
+                .async_reranker
+                .as_ref()
+                .is_some_and(AsyncRerankHandle::has_tier2),
+            tier2_model_dir: detected_t2,
             installed_packs: self.installed_packs_count,
             active_loras: self
                 .async_reranker

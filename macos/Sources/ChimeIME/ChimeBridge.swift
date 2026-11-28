@@ -176,6 +176,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
     public var emoji_suggestions: Bool
     public var kaomoji_suggestions: Bool
     public var suppress_emoji_in_ide: Bool
+    public var tier2_enabled: Bool
+    public var tier2_model_dir: String
+    public var tier2_margin_threshold: Double
+    public var tier2_alpha: Double
 
     public static let `default` = ChimeConfigDTO(
         scheme: "full",
@@ -199,7 +203,11 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         auto_check_updates: true,
         emoji_suggestions: true,
         kaomoji_suggestions: true,
-        suppress_emoji_in_ide: false
+        suppress_emoji_in_ide: false,
+        tier2_enabled: false,
+        tier2_model_dir: "",
+        tier2_margin_threshold: 3.0,
+        tier2_alpha: 0.65
     )
 
     public init(
@@ -224,7 +232,11 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         auto_check_updates: Bool,
         emoji_suggestions: Bool,
         kaomoji_suggestions: Bool,
-        suppress_emoji_in_ide: Bool
+        suppress_emoji_in_ide: Bool,
+        tier2_enabled: Bool = false,
+        tier2_model_dir: String = "",
+        tier2_margin_threshold: Double = 3.0,
+        tier2_alpha: Double = 0.65
     ) {
         self.scheme = scheme
         self.fuzzy = fuzzy
@@ -248,6 +260,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.emoji_suggestions = emoji_suggestions
         self.kaomoji_suggestions = kaomoji_suggestions
         self.suppress_emoji_in_ide = suppress_emoji_in_ide
+        self.tier2_enabled = tier2_enabled
+        self.tier2_model_dir = tier2_model_dir
+        self.tier2_margin_threshold = tier2_margin_threshold
+        self.tier2_alpha = tier2_alpha
     }
 
     public init(from decoder: Decoder) throws {
@@ -274,6 +290,10 @@ public struct ChimeConfigDTO: Codable, Sendable, Equatable {
         self.emoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .emoji_suggestions) ?? true
         self.kaomoji_suggestions = try c.decodeIfPresent(Bool.self, forKey: .kaomoji_suggestions) ?? true
         self.suppress_emoji_in_ide = try c.decodeIfPresent(Bool.self, forKey: .suppress_emoji_in_ide) ?? false
+        self.tier2_enabled = try c.decodeIfPresent(Bool.self, forKey: .tier2_enabled) ?? false
+        self.tier2_model_dir = try c.decodeIfPresent(String.self, forKey: .tier2_model_dir) ?? ""
+        self.tier2_margin_threshold = try c.decodeIfPresent(Double.self, forKey: .tier2_margin_threshold) ?? 3.0
+        self.tier2_alpha = try c.decodeIfPresent(Double.self, forKey: .tier2_alpha) ?? 0.65
     }
 }
 
@@ -292,6 +312,8 @@ public struct ChimeStatusDTO: Decodable, Sendable, Equatable {
     public let word_entries: Int
     public let learned_habits: Int
     public let neural_loaded: Bool
+    public let tier2_loaded: Bool?
+    public let tier2_model_dir: String?
     public let installed_packs: Int?
     public let active_loras: Int?
     public let pack_details: [ChimeInstalledPackDTO]?

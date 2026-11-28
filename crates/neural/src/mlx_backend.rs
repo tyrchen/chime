@@ -597,6 +597,47 @@ pub struct MlxTransformer {
 }
 
 impl MlxTransformer {
+    /// Loads a model directory containing either a single `model.safetensors` or sharded
+    /// safetensors referenced by `model.safetensors.index.json` onto Apple Silicon Metal unified
+    /// memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if loading or tensor validation fails.
+    pub fn load_safetensors_dir(cfg: &ModelConfig, model_dir: &Path) -> Result<Self, NeuralError> {
+        let single = model_dir.join("model.safetensors");
+        if single.is_file() {
+            return Self::load_safetensors_file(cfg, &single);
+        }
+        let idx_path = model_dir.join("model.safetensors.index.json");
+        let idx_bytes = std::fs::read(&idx_path)?;
+        let idx_val: serde_json::Value = serde_json::from_slice(&idx_bytes)?;
+        let Some(wmap) = idx_val.get("weight_map").and_then(|v| v.as_object()) else {
+            return Err(NeuralError::Safetensors(format!(
+                "missing weight_map in {}",
+                idx_path.display()
+            )));
+        };
+        let mut shards: Vec<String> = wmap
+            .values()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        shards.sort();
+        shards.dedup();
+        let mut raw = HashMap::new();
+        for shard in shards {
+            let shard_path = model_dir.join(&shard);
+            let loaded = Array::load_safetensors(&shard_path).map_err(|e| {
+                NeuralError::Safetensors(format!(
+                    "MLX load_safetensors {} failed: {e}",
+                    shard_path.display()
+                ))
+            })?;
+            raw.extend(loaded);
+        }
+        Self::from_raw_tensors(cfg, raw)
+    }
+
     /// Loads `model.safetensors` (either native 4-bit MLX quantized or `FP16`/`F32`) directly onto
     /// Apple Silicon Metal unified memory via `mlx-rs`.
     ///
@@ -604,9 +645,15 @@ impl MlxTransformer {
     ///
     /// Returns [`NeuralError::Safetensors`] if loading or tensor validation fails.
     pub fn load_safetensors_file(cfg: &ModelConfig, st_path: &Path) -> Result<Self, NeuralError> {
-        let mut raw = Array::load_safetensors(st_path)
+        let raw = Array::load_safetensors(st_path)
             .map_err(|e| NeuralError::Safetensors(format!("MLX load_safetensors failed: {e}")))?;
+        Self::from_raw_tensors(cfg, raw)
+    }
 
+    fn from_raw_tensors(
+        cfg: &ModelConfig,
+        mut raw: HashMap<String, Array>,
+    ) -> Result<Self, NeuralError> {
         let qcfg = cfg.quantization;
         let embed_qcfg = qcfg.map(|qc| QuantizationConfig {
             group_size: qc.embed_group_size.unwrap_or(qc.group_size),

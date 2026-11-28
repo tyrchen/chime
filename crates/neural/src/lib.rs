@@ -6,6 +6,7 @@
 pub mod beam_decoder;
 pub mod mlx_backend;
 pub mod pinyin_trie;
+pub mod tier2;
 pub mod transformer;
 pub mod worker;
 
@@ -23,6 +24,7 @@ pub use crate::{
         LoraMountSpec, LoraRouting, MlxBeamKv, MlxLoraAdapter, MlxPrefixCache, MlxTransformer,
     },
     pinyin_trie::{ChannelConfig, TokenEdge, TokenPinyinIndex},
+    tier2::{HfBpeTokenizer, Tier2Config, Tier2Reranker},
     transformer::{
         ModelConfig, PrefixKvCache, QuantizationConfig, TinyModelBuilder, TransformerWeights,
     },
@@ -135,6 +137,7 @@ pub struct SafetensorsReranker {
     kv_cache: MlxPrefixCache,
     beam_cache: RouteABeamCache,
     pinyin_index: Option<TokenPinyinIndex>,
+    tier2: Option<Tier2Reranker>,
     closure_token_ids: Vec<u32>,
     closure_weight: f32,
     weight_scale: f32,
@@ -239,10 +242,40 @@ impl SafetensorsReranker {
             kv_cache,
             beam_cache: RouteABeamCache::default(),
             pinyin_index,
+            tier2: None,
             closure_token_ids,
             closure_weight,
             weight_scale: 1.02,
         })
+    }
+
+    /// Mounts an optional local Tier-2 MLX reranker (`Qwen3-1.7B/4B-Base` 4-bit) for
+    /// confidence-gated Top-K rescoring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError`] if loading the Tier-2 bundle fails.
+    pub fn attach_tier2(&mut self, model_dir: &Path, cfg: Tier2Config) -> Result<(), NeuralError> {
+        let t2 = Tier2Reranker::load_dir(model_dir, cfg)?;
+        self.tier2 = Some(t2);
+        Ok(())
+    }
+
+    /// Unloads any currently mounted Tier-2 reranker and releases its unified memory.
+    pub fn detach_tier2(&mut self) {
+        self.tier2 = None;
+    }
+
+    /// Returns `true` when an optional Tier-2 local reranker is mounted.
+    #[must_use]
+    pub const fn has_tier2(&self) -> bool {
+        self.tier2.is_some()
+    }
+
+    /// Returns `(escalations, total_queries)` for the mounted Tier-2 reranker, if any.
+    #[must_use]
+    pub fn tier2_stats(&self) -> Option<(u64, u64)> {
+        self.tier2.as_ref().map(Tier2Reranker::stats)
     }
 
     /// Returns true if `token_pinyin.json` was loaded and Route A constrained neural beam
@@ -336,9 +369,37 @@ impl SafetensorsReranker {
     }
 
     /// Runs Route A (First-Principles Pinyin-Constrained Autoregressive Neural Beam Search)
-    /// directly inside the on-device MLX Transformer + Multi-LoRA!
+    /// directly inside the on-device MLX Transformer + Multi-LoRA, optionally refined by Tier-2.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_constrained(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+    ) -> Vec<NeuralBeamCandidate> {
+        let mut cands = self.decode_constrained_inner(
+            left_context,
+            app_bundle_id,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+        );
+        if let Some(t2) = &mut self.tier2 {
+            t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut cands);
+        }
+        cands
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_constrained_inner(
         &mut self,
         left_context: &str,
         app_bundle_id: &str,
@@ -408,7 +469,7 @@ impl SafetensorsReranker {
         beam_width: usize,
         extra_stage1_candidates: &[(String, f32, bool)],
     ) -> Vec<NeuralBeamCandidate> {
-        let mut ncands = self.decode_constrained(
+        let mut ncands = self.decode_constrained_inner(
             left_context,
             app_bundle_id,
             raw_input,
@@ -419,6 +480,9 @@ impl SafetensorsReranker {
             beam_width,
         );
         if extra_stage1_candidates.is_empty() {
+            if let Some(t2) = &mut self.tier2 {
+                t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
+            }
             return ncands;
         }
 
@@ -530,6 +594,9 @@ impl SafetensorsReranker {
                 ncands.sort_by(|a, b| b.score.total_cmp(&a.score));
                 beam_decoder::apply_pronoun_symmetry(left_context, &mut ncands);
             }
+        }
+        if let Some(t2) = &mut self.tier2 {
+            t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
         }
         ncands
     }

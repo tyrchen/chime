@@ -136,6 +136,20 @@ pub struct ChimeConfig {
     /// (explicit browse keywords such as `emoji` / `yanwenzi` still work).
     #[serde(default)]
     pub suppress_emoji_in_ide: bool,
+    /// Enable optional confidence-gated Two-Tier local MLX reranking (`Qwen3-1.7B/4B-Base` 4-bit).
+    #[serde(default)]
+    pub tier2_enabled: bool,
+    /// Optional local directory containing an MLX 4-bit Qwen3-Base bundle (`config.json`,
+    /// `vocab.json`, `merges.txt`, `model.safetensors`). Empty defaults to
+    /// `~/Library/Application Support/Chime/models/tier2`.
+    #[serde(default)]
+    pub tier2_model_dir: String,
+    /// Escalate to Tier-2 only when Tier-1 `score[0] - score[1] < tier2_margin_threshold`.
+    #[serde(default = "default_tier2_margin")]
+    pub tier2_margin_threshold: f32,
+    /// Interpolation weight for Tier-2 LM log-probability (`0.65` => `0.35 * T1 + 0.65 * T2`).
+    #[serde(default = "default_tier2_alpha")]
+    pub tier2_alpha: f32,
 }
 
 const fn default_true() -> bool {
@@ -152,6 +166,14 @@ const fn default_page_size() -> usize {
 
 const fn default_candidate_font_size() -> u32 {
     15
+}
+
+const fn default_tier2_margin() -> f32 {
+    3.0
+}
+
+const fn default_tier2_alpha() -> f32 {
+    0.65
 }
 
 impl Default for ChimeConfig {
@@ -179,6 +201,10 @@ impl Default for ChimeConfig {
             emoji_suggestions: true,
             kaomoji_suggestions: true,
             suppress_emoji_in_ide: false,
+            tier2_enabled: false,
+            tier2_model_dir: String::new(),
+            tier2_margin_threshold: 3.0,
+            tier2_alpha: 0.65,
         }
     }
 }
@@ -193,6 +219,8 @@ impl ChimeConfig {
         let mut cfg: Self = toml::from_str(raw)?;
         cfg.page_size = cfg.page_size.clamp(3, 9);
         cfg.candidate_font_size = cfg.candidate_font_size.clamp(13, 20);
+        cfg.tier2_margin_threshold = cfg.tier2_margin_threshold.clamp(0.5, 10.0);
+        cfg.tier2_alpha = cfg.tier2_alpha.clamp(0.0, 1.0);
         Ok(cfg)
     }
 
@@ -224,8 +252,38 @@ impl ChimeConfig {
         let mut clean = self.clone();
         clean.page_size = clean.page_size.clamp(3, 9);
         clean.candidate_font_size = clean.candidate_font_size.clamp(13, 20);
+        clean.tier2_margin_threshold = clean.tier2_margin_threshold.clamp(0.5, 10.0);
+        clean.tier2_alpha = clean.tier2_alpha.clamp(0.0, 1.0);
         let encoded = toml::to_string_pretty(&clean)?;
         std::fs::write(path, encoded)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tier2_config_defaults_and_clamping() -> Result<(), ConfigError> {
+        let defaults = ChimeConfig::from_toml_str("")?;
+        assert!(!defaults.tier2_enabled);
+        assert_eq!(defaults.tier2_model_dir, "");
+        assert!((defaults.tier2_margin_threshold - 3.0).abs() < 1e-6);
+        assert!((defaults.tier2_alpha - 0.65).abs() < 1e-6);
+
+        let clamped = ChimeConfig::from_toml_str(
+            r#"
+tier2_enabled = true
+tier2_model_dir = "~/models/qwen3-4b"
+tier2_margin_threshold = 99.0
+tier2_alpha = -0.5
+"#,
+        )?;
+        assert!(clamped.tier2_enabled);
+        assert_eq!(clamped.tier2_model_dir, "~/models/qwen3-4b");
+        assert!((clamped.tier2_margin_threshold - 10.0).abs() < 1e-6);
+        assert!((clamped.tier2_alpha - 0.0).abs() < 1e-6);
         Ok(())
     }
 }
