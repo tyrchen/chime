@@ -38,6 +38,12 @@ for m in para sense; do $P benchmarks/voice/compare.py "$D" "$m" > "$D/$m.jsonl"
 - `errors/chars` 是归一化后编辑距离除以参考字符数：简繁统一、大小写折叠、剔除空格和标点；数字没有做语义归一化（`三` → `3` 算一处差异）。英文按字母计。计数反映这组样本，而非生产准确率。`deleted` 是相邻预览最长共同前缀之后被撤回的旧字符数之和（含最终修订）；只数追加不算回改。
 - `cpu_s` 是整个识别进程的 CPU 秒数，跨线程求和，非实际录音时长。`peak_mib` 是整段测试截至该样例的进程峰值 RSS，包括 Python、ONNX Runtime、模型和临时张量，不是模型净内存，也不是卸载后残留内存。
 
+## 快语速最终稿对照
+
+沿用上面的 `$P`、`$D`：`$P benchmarks/voice/fast_speech.py "$D"`。固定 6 句普通话、2 种 macOS 合成音色、3 个 `say -r` 档位。对每段相同 PCM 比较 Paraformer 流式收尾和 SenseVoice 整句离线解码；不模拟键盘、录音或 UI。`fast-synthetic.jsonl` 保存逐条原始结果。最快档 12 段共 220 个参考字，两个后端分别有 29 和 16 个字符编辑错误（忽略标点）。个别音色两者都错，不能外推到真人快语音。`sense_ms_loaded` 是模型已加载时的整句处理耗时，不是产品松键延迟。
+
+若有自愿提供的本地录音，可用 `$P benchmarks/voice/fast_speech.py "$D" --audio /path/to/speech.m4a --reference '实际说的原句'`。不会开麦或上传；结果打到标准输出，私人录音和转写不要提交到仓库。
+
 ## 安装包内置后端冒烟测试
 
 构建 `make macos-installer` 后，用包内原生 helper、动态库和包外模型目录验证 Rust 会话，不启动 IMK 或麦克风。使用上面 `prepare` 生成的语音：
