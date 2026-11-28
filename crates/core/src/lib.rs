@@ -1609,8 +1609,7 @@ impl ChimeEngine {
         ncands: Vec<chime_neural::NeuralBeamCandidate>,
     ) -> Vec<Candidate> {
         let lower_raw = raw_clone.to_ascii_lowercase();
-        let has_left_ctx = !effective_left.trim().is_empty();
-        let is_single_syl_ctx = has_left_ctx
+        let is_single_syl_ctx = !effective_left.trim().is_empty()
             && self.config.scheme == ShuangpinScheme::Full
             && !raw_clone.contains('\'')
             && chime_phonetics::is_valid_syllable(&lower_raw);
@@ -1643,6 +1642,12 @@ impl ChimeEngine {
 
         let mut merged_full: Vec<Candidate> = Vec::with_capacity(ncands.len() + stage1_full.len());
         let mut min_neural_score = f32::INFINITY;
+        // A missing final on the last pair is intentional, not a spelling correction.
+        let pending_shuangpin_final = self.config.scheme != ShuangpinScheme::Full
+            && lower_raw
+                .rsplit('\'')
+                .next()
+                .is_some_and(|tail| tail.len() % 2 == 1);
         for nc in ncands {
             let habit_bonus = if nc.is_exact && nc.text.chars().count() >= 2 {
                 self.user_store
@@ -1659,6 +1664,8 @@ impl ChimeEngine {
                 consumed_bytes: raw_clone.len(),
                 kind: if nc.is_exact {
                     MatchKind::Exact
+                } else if pending_shuangpin_final {
+                    MatchKind::Abbreviation
                 } else {
                     MatchKind::TypoCorrected
                 },

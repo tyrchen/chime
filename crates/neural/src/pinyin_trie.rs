@@ -5,8 +5,8 @@ use std::{collections::HashMap, fs, path::Path};
 
 use chime_phonetics::{
     FuzzyConfig, ShuangpinScheme, SyllableId, TypoEdit, can_segment_exact,
-    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_pair,
-    generate_typo_variants, lookup_syllable,
+    can_segment_strict_orthography, canonical_syllable, expand_shuangpin_initial,
+    expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
 };
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -292,6 +292,10 @@ impl TokenPinyinIndex {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true));
                     }
+                } else if start + 1 == n {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((n, sid, -1.35, false));
+                    }
                 }
                 continue;
             }
@@ -511,6 +515,10 @@ impl TokenPinyinIndex {
                 if start + 2 <= n && bytes[start] != b'\'' && bytes[start + 1] != b'\'' {
                     for sid in expand_shuangpin_pair(scheme, bytes[start], bytes[start + 1]) {
                         syl_edges[start].push((start + 2, sid, 0.0, true, false));
+                    }
+                } else if start + 1 == n {
+                    for sid in expand_shuangpin_initial(scheme, bytes[start]) {
+                        syl_edges[start].push((n, sid, -1.35, false, false));
                     }
                 }
                 continue;

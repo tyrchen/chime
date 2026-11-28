@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use chime_lexicon::{Lexicon, UserStore, WordEntry, annotate_chinese_word};
 use chime_phonetics::{
     CodeSwitchSignal, FuzzyConfig, ShuangpinScheme, SyllableId, classify_code_switch,
-    expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
+    expand_shuangpin_initial, expand_shuangpin_pair, generate_typo_variants, lookup_syllable,
 };
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -344,7 +344,14 @@ impl LatticeDecoder {
             && cache.raw_input.len() > 20;
 
         let reuse_until = if can_reuse {
-            cache.raw_input.len().saturating_sub(20)
+            // A 16-syllable word (with optional separators) may have consumed the old
+            // trailing initial. Rebuild its edge when the final arrives.
+            let lookback = if ctx.scheme == ShuangpinScheme::Full {
+                20
+            } else {
+                16 * 2 + 15
+            };
+            cache.raw_input.len().saturating_sub(lookback)
         } else {
             0
         };
@@ -1478,6 +1485,10 @@ impl LatticeDecoder {
                             spans[i].push((i + 2, fid, -pen, MatchKind::Fuzzy));
                         }
                     }
+                } else {
+                    for id in expand_shuangpin_initial(ctx.scheme, bytes[i]) {
+                        spans[i].push((n, id, -1.35, MatchKind::Abbreviation));
+                    }
                 }
                 continue;
             }
@@ -1994,6 +2005,8 @@ const fn combine_beam_kind(prev: MatchKind, next: MatchKind) -> MatchKind {
         MatchKind::TypoCorrected
     } else if matches!(prev, MatchKind::Fuzzy) || matches!(next, MatchKind::Fuzzy) {
         MatchKind::Fuzzy
+    } else if matches!(prev, MatchKind::Abbreviation) || matches!(next, MatchKind::Abbreviation) {
+        MatchKind::Abbreviation
     } else if matches!(prev, MatchKind::CodeSwitch) && matches!(next, MatchKind::CodeSwitch) {
         MatchKind::CodeSwitch
     } else {
@@ -2006,6 +2019,8 @@ const fn merge_match_kind(a: MatchKind, b: MatchKind) -> MatchKind {
         MatchKind::TypoCorrected
     } else if matches!(a, MatchKind::Fuzzy) || matches!(b, MatchKind::Fuzzy) {
         MatchKind::Fuzzy
+    } else if matches!(a, MatchKind::Abbreviation) || matches!(b, MatchKind::Abbreviation) {
+        MatchKind::Abbreviation
     } else {
         MatchKind::Exact
     }
@@ -2833,6 +2848,45 @@ pub fn apply_anti_jitter_freeze_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shuangpin_trailing_initial_is_selectable_until_the_final_is_typed() {
+        let mut lex = Lexicon::default();
+        for (text, pinyin) in [
+            ("的", "de"),
+            ("大", "da"),
+            ("时候", "shi hou"),
+            ("其他", "qi ta"),
+        ] {
+            lex.insert_pinyin_word(text, pinyin, -2.0, false);
+        }
+        let dec = LatticeDecoder::new();
+        let store = UserStore::new();
+        for scheme in [
+            ShuangpinScheme::Xiaohe,
+            ShuangpinScheme::Ziranma,
+            ShuangpinScheme::Microsoft,
+        ] {
+            let ctx = DecodeContext {
+                scheme,
+                ..Default::default()
+            };
+            for (keys, expected) in [("d", "的"), ("d", "大"), ("uih", "时候"), ("qit", "其他")]
+            {
+                let cands = dec.decode(keys, &lex, &store, &ctx);
+                assert!(
+                    cands.iter().take(5).any(|c| c.text == expected
+                        && c.consumed_bytes == keys.len()
+                        && c.kind == MatchKind::Abbreviation),
+                    "{scheme:?}: {keys} -> {cands:?}"
+                );
+            }
+            let complete = dec.decode("de", &lex, &store, &ctx);
+            assert_eq!(complete[0].text, "的");
+            assert_eq!(complete[0].kind, MatchKind::Exact);
+            assert!(!complete.iter().any(|c| c.text == "大"));
+        }
+    }
 
     #[test]
     fn test_should_decode_modeless_chinese_english_mixed_sentence() {

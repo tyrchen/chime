@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 pub use crate::{
-    shuangpin::{ShuangpinScheme, expand_shuangpin_pair},
+    shuangpin::{ShuangpinScheme, expand_shuangpin_initial, expand_shuangpin_pair},
     syllables::{SyllableId, canonical_syllable, is_valid_syllable, lookup_syllable},
     typo::{TypoEdit, generate_typo_variants, keyboard_substitution_cost},
 };

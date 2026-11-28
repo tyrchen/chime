@@ -56,6 +56,21 @@ pub fn expand_shuangpin_pair(scheme: ShuangpinScheme, c1: u8, c2: u8) -> SmallVe
     out
 }
 
+/// Possible syllables while waiting for the second key of the last pair. Use the
+/// layout itself so retroflex initials, zero initials and Microsoft's `;` agree with exact input.
+#[must_use]
+pub fn expand_shuangpin_initial(scheme: ShuangpinScheme, first: u8) -> SmallVec<[SyllableId; 32]> {
+    let mut ids = SmallVec::new();
+    for &second in b"abcdefghijklmnopqrstuvwxyz;" {
+        for id in expand_shuangpin_pair(scheme, first, second) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 fn zero_initial_pair(scheme: ShuangpinScheme, c1: u8, c2: u8) -> Option<&'static str> {
     match scheme {
         ShuangpinScheme::Xiaohe | ShuangpinScheme::Ziranma => match (c1, c2) {
