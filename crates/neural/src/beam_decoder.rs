@@ -420,6 +420,40 @@ pub(crate) fn apply_left_context_cache_bonus(
     }
 }
 
+/// Cross-window session entity hot-memory prior: boosts exact-pinyin candidates that reuse a
+/// recently committed non-function entity (`2..=6` chars, e.g. colleague name or project codename
+/// typed in another app within the last 30 minutes) without polluting the Transformer's
+/// `left_context` attention window.
+pub fn apply_session_entity_bonus(entities: &[String], cands: &mut [NeuralBeamCandidate]) {
+    if entities.is_empty() || cands.len() < 2 {
+        return;
+    }
+    let mut any_boost = false;
+    for cand in cands.iter_mut() {
+        if !cand.is_exact {
+            continue;
+        }
+        let mut boost = 0.0_f32;
+        for ent in entities {
+            if ent.chars().count() >= 2 && cand.text.contains(ent.as_str()) {
+                boost += 1.40;
+                if boost >= 2.10 {
+                    boost = 2.10;
+                    break;
+                }
+            }
+        }
+        if boost > 0.0 {
+            cand.lm_log_prob += boost;
+            cand.score += boost;
+            any_boost = true;
+        }
+    }
+    if any_boost {
+        cands.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+}
+
 pub(crate) fn apply_pronoun_symmetry(left_context: &str, cands: &mut [NeuralBeamCandidate]) {
     if cands.len() < 2 {
         return;
@@ -1673,8 +1707,8 @@ fn apply_closure_bonus(
         .map(|h| h.parent_kv.as_ref().unwrap_or(root_kv))
         .collect();
     let step_toks: Vec<u32> = active.iter().map(|h| h.pending_token).collect();
-    let Ok((lps_flat, _)) =
-        mlx_model.step_beams_gather_lps(&parents, &step_toks, closure_token_ids, lora_scales)
+    let Ok(lps_flat) =
+        mlx_model.step_beams_gather_lps_no_kv(&parents, &step_toks, closure_token_ids, lora_scales)
     else {
         return;
     };
@@ -1748,5 +1782,15 @@ mod tests {
             &mut cands2,
         );
         assert_eq!(cands2[0].text, "我一直想同她和好");
+    }
+
+    #[test]
+    fn test_session_entity_bonus_promotes_recently_committed_entity() {
+        let mut cands = vec![
+            mk_cand("中天正今天开会", -12.0, true),
+            mk_cand("钟天正今天开会", -12.9, true),
+        ];
+        apply_session_entity_bonus(&["钟天正".to_string()], &mut cands);
+        assert_eq!(cands[0].text, "钟天正今天开会");
     }
 }

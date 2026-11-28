@@ -300,6 +300,9 @@ pub struct ChimeEngine {
     inline_english_mode: bool,
     sessions: VecDeque<InputSession>,
     next_session_id: u64,
+    /// RAM-only cross-window entity hot-memory `(entity, last_committed_at)` (max 64 entries,
+    /// 30-min TTL, zero disk persistence).
+    recent_entities: VecDeque<(String, Instant)>,
 }
 
 impl Default for ChimeEngine {
@@ -326,6 +329,7 @@ impl ChimeEngine {
             inline_english_mode: false,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
+            recent_entities: VecDeque::with_capacity(64),
         }
     }
 
@@ -363,6 +367,7 @@ impl ChimeEngine {
             inline_english_mode: false,
             sessions: VecDeque::with_capacity(MAX_ACTIVE_SESSIONS),
             next_session_id: 1,
+            recent_entities: VecDeque::with_capacity(64),
         };
         engine.reload_assets();
         Ok(engine)
@@ -1657,6 +1662,7 @@ impl ChimeEngine {
                 6
             },
             extra_stage1_candidates,
+            session_entities: self.active_session_entities(),
         };
         let Some(ncands) =
             worker.decode_route_a_timed_or_async(session_id, generation_id, req, sync_budget)
@@ -2094,6 +2100,7 @@ impl ChimeEngine {
         self.sessions[idx]
             .last_committed_word
             .clone_from(&final_text);
+        self.record_session_entity(&final_text);
 
         if self.config.record_training_samples {
             self.user_store.record_typing_sample(
@@ -2126,6 +2133,91 @@ impl ChimeEngine {
         } else {
             self.config.page_size.max(1)
         }
+    }
+
+    fn record_session_entity(&mut self, text: &str) {
+        let trimmed = text.trim();
+        let char_len = trimmed.chars().count();
+        if !(2..=6).contains(&char_len) {
+            return;
+        }
+        let has_cjk = trimmed
+            .chars()
+            .any(|c| ('\u{4E00}'..='\u{9FA5}').contains(&c));
+        if !has_cjk {
+            return;
+        }
+        // Skip purely functional short words (`我们`, `这个`, `可以`, `不是`, `什么`, etc.).
+        if trimmed.chars().all(|c| {
+            matches!(
+                c,
+                '的' | '地'
+                    | '得'
+                    | '了'
+                    | '在'
+                    | '是'
+                    | '有'
+                    | '和'
+                    | '不'
+                    | '也'
+                    | '就'
+                    | '都'
+                    | '我'
+                    | '你'
+                    | '他'
+                    | '她'
+                    | '它'
+                    | '们'
+                    | '这'
+                    | '那'
+                    | '个'
+                    | '一'
+                    | '么'
+                    | '什'
+                    | '可'
+                    | '以'
+                    | '要'
+                    | '会'
+                    | '能'
+                    | '到'
+                    | '上'
+                    | '下'
+                    | '里'
+                    | '去'
+                    | '来'
+                    | '对'
+                    | '说'
+                    | '看'
+                    | '好'
+                    | '很'
+                    | '把'
+                    | '被'
+                    | '给'
+                    | '吗'
+                    | '呢'
+                    | '吧'
+                    | '啊'
+            )
+        }) {
+            return;
+        }
+        let now = Instant::now();
+        self.recent_entities.retain(|(e, ts)| {
+            e != trimmed && now.saturating_duration_since(*ts) < Duration::from_mins(30)
+        });
+        if self.recent_entities.len() >= 64 {
+            self.recent_entities.pop_front();
+        }
+        self.recent_entities.push_back((trimmed.to_string(), now));
+    }
+
+    fn active_session_entities(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.recent_entities
+            .iter()
+            .filter(|(_, ts)| now.saturating_duration_since(*ts) < Duration::from_mins(30))
+            .map(|(e, _)| e.clone())
+            .collect()
     }
 
     fn compute_ghost_for_session(&self, idx: usize) -> Option<String> {

@@ -42,6 +42,9 @@ pub struct RouteADecodeRequest {
     /// acoustic_channel_cost, is_exact)` scored strictly on the exact same Bayesian
     /// `log P_LM(Y | C) + channel_cost` scale (zero static unigram bias).
     pub extra_stage1_candidates: Vec<(String, f32, bool)>,
+    /// Recently committed cross-window session entities (`2..=6` chars, RAM-only) boosted cleanly
+    /// on exact-pinyin matches without polluting Transformer `left_context`.
+    pub session_entities: Vec<String>,
 }
 
 /// Asynchronous rerank job dispatched off the synchronous keystroke hot path.
@@ -180,10 +183,30 @@ impl AsyncRerankHandle {
                 }
             };
 
+            let idle_limit = Duration::from_mins(5);
+            let mut tier2_saved_spec: Option<(PathBuf, Tier2Config)> = None;
+            let mut tier2_last_used = Instant::now();
             let mut pending_cmd: Option<ActorCmd> = None;
             loop {
                 let cmd = if let Some(c) = pending_cmd.take() {
                     c
+                } else if reranker.has_tier2() {
+                    let elapsed = tier2_last_used.elapsed();
+                    if elapsed >= idle_limit {
+                        reranker.detach_tier2();
+                        continue;
+                    }
+                    match cmd_rx.recv_timeout(idle_limit.saturating_sub(elapsed)) {
+                        Ok(c) => c,
+                        Err(flume::RecvTimeoutError::Timeout) => {
+                            // Auto-unload optional Tier-2 after 5 min typing idle to return 1-2.3
+                            // GB of unified memory; lazily re-attached on the next paused
+                            // escalation!
+                            reranker.detach_tier2();
+                            continue;
+                        }
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                    }
                 } else if let Ok(c) = cmd_rx.recv() {
                     c
                 } else {
@@ -279,6 +302,8 @@ impl AsyncRerankHandle {
                                     apply_configure_tier2(
                                         &mut reranker,
                                         &tier2_flag,
+                                        &mut tier2_saved_spec,
+                                        &mut tier2_last_used,
                                         model_dir.as_deref(),
                                         config,
                                         &reply_tx,
@@ -358,6 +383,8 @@ impl AsyncRerankHandle {
                                     apply_configure_tier2(
                                         &mut reranker,
                                         &tier2_flag,
+                                        &mut tier2_saved_spec,
+                                        &mut tier2_last_used,
                                         model_dir.as_deref(),
                                         config,
                                         &t2_tx,
@@ -425,6 +452,8 @@ impl AsyncRerankHandle {
                                     apply_configure_tier2(
                                         &mut reranker,
                                         &tier2_flag,
+                                        &mut tier2_saved_spec,
+                                        &mut tier2_last_used,
                                         model_dir.as_deref(),
                                         config,
                                         &t2_tx,
@@ -446,15 +475,29 @@ impl AsyncRerankHandle {
                                 elapsed_ms,
                             });
                         }
-                        // Phase 2 (Two-Tier typing-pause debounce): if optional Tier-2 is mounted
-                        // and Tier-1 is uncertain, wait briefly (80 ms) for a typing pause. If the
-                        // user keeps typing, skip Tier-2 on the stale prefix immediately!
-                        if reranker.should_escalate_tier2(&out) {
+                        // Phase 2 (Two-Tier typing-pause debounce + lazy wake after idle unload):
+                        // if optional Tier-2 is configured and Tier-1 is uncertain, wait briefly
+                        // (80 ms) for a typing pause. If the user keeps typing, skip Tier-2 on the
+                        // stale prefix immediately!
+                        let can_tier2 = if reranker.has_tier2() {
+                            reranker.should_escalate_tier2(&out)
+                        } else if let Some((_, cfg)) = tier2_saved_spec.as_ref() {
+                            out.len() >= 2 && (out[0].score - out[1].score) < cfg.margin_threshold
+                        } else {
+                            false
+                        };
+                        if can_tier2 {
                             match cmd_rx.recv_timeout(Duration::from_millis(80)) {
                                 Ok(next_cmd) => {
                                     pending_cmd = Some(next_cmd);
                                 }
                                 Err(flume::RecvTimeoutError::Timeout) => {
+                                    if !reranker.has_tier2()
+                                        && let Some((ref dir, cfg)) = tier2_saved_spec
+                                    {
+                                        let _ = reranker.attach_tier2(dir, cfg);
+                                    }
+                                    tier2_last_used = Instant::now();
                                     let prev_top = out.first().map(|c| c.text.clone());
                                     if reranker.rerank_with_tier2(
                                         &req.left_context,
@@ -488,6 +531,8 @@ impl AsyncRerankHandle {
                         apply_configure_tier2(
                             &mut reranker,
                             &tier2_flag,
+                            &mut tier2_saved_spec,
+                            &mut tier2_last_used,
                             model_dir.as_deref(),
                             config,
                             &reply_tx,
@@ -739,6 +784,8 @@ impl AsyncRerankHandle {
 fn apply_configure_tier2(
     reranker: &mut SafetensorsReranker,
     flag: &AtomicBool,
+    saved_spec: &mut Option<(PathBuf, Tier2Config)>,
+    last_used: &mut Instant,
     model_dir: Option<&Path>,
     config: Tier2Config,
     reply_tx: &Sender<Result<bool, String>>,
@@ -746,16 +793,22 @@ fn apply_configure_tier2(
     let res = if let Some(dir) = model_dir {
         match reranker.attach_tier2(dir, config) {
             Ok(()) => {
+                *saved_spec = Some((dir.to_path_buf(), config));
+                *last_used = Instant::now();
                 flag.store(true, Ordering::Relaxed);
                 Ok(true)
             }
             Err(e) => {
+                if !reranker.has_tier2() {
+                    *saved_spec = None;
+                }
                 flag.store(reranker.has_tier2(), Ordering::Relaxed);
                 Err(e.to_string())
             }
         }
     } else {
         reranker.detach_tier2();
+        *saved_spec = None;
         flag.store(false, Ordering::Relaxed);
         Ok(false)
     };
@@ -766,7 +819,7 @@ fn run_route_a_request(
     reranker: &mut SafetensorsReranker,
     req: &RouteADecodeRequest,
 ) -> Vec<NeuralBeamCandidate> {
-    reranker.decode_constrained_with_proposals(
+    let mut out = reranker.decode_constrained_with_proposals(
         &req.left_context,
         &req.app_bundle_id,
         &req.raw_input,
@@ -776,14 +829,16 @@ fn run_route_a_request(
         req.scoring_mode,
         req.beam_width,
         &req.extra_stage1_candidates,
-    )
+    );
+    crate::apply_session_entity_bonus(&req.session_entities, &mut out);
+    out
 }
 
 fn run_route_a_tier1_only(
     reranker: &mut SafetensorsReranker,
     req: &RouteADecodeRequest,
 ) -> Vec<NeuralBeamCandidate> {
-    reranker.decode_constrained_with_proposals_tier1_only(
+    let mut out = reranker.decode_constrained_with_proposals_tier1_only(
         &req.left_context,
         &req.app_bundle_id,
         &req.raw_input,
@@ -793,5 +848,7 @@ fn run_route_a_tier1_only(
         req.scoring_mode,
         req.beam_width,
         &req.extra_stage1_candidates,
-    )
+    );
+    crate::apply_session_entity_bonus(&req.session_entities, &mut out);
+    out
 }

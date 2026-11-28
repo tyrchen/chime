@@ -130,7 +130,7 @@ pub fn generate_typo_variants(token: &str) -> SmallVec<[(SyllableId, TypoEdit); 
             && let Some(id) = lookup_syllable(candidate)
             && !out.iter().any(|(existing, _)| *existing == id)
         {
-            out.push((id, TypoEdit::AdjacentSwap { cost: 1.05 }));
+            out.push((id, TypoEdit::AdjacentSwap { cost: 0.85 }));
         }
         buf.swap(i, i + 1);
     }

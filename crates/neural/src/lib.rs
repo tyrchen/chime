@@ -18,7 +18,8 @@ use thiserror::Error;
 
 pub use crate::{
     beam_decoder::{
-        BeamSearchConfig, NeuralBeamCandidate, RouteABeamCache, decode_constrained_beam,
+        BeamSearchConfig, NeuralBeamCandidate, RouteABeamCache, apply_session_entity_bonus,
+        decode_constrained_beam,
     },
     mlx_backend::{
         LoraMountSpec, LoraRouting, MlxBeamKv, MlxLoraAdapter, MlxPrefixCache, MlxTransformer,

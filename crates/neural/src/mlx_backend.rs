@@ -16,7 +16,7 @@ use mlx_rs::{
     nn::{log_softmax, silu},
     ops::{
         DequantizeOptions, QuantizedMatmulOptions, broadcast_to, concatenate, dequantize,
-        indexing::TryIndexOp, quantized_matmul, zeros,
+        indexing::TryIndexOp, logsumexp_axis, quantized_matmul, zeros,
     },
     transforms::eval,
 };
@@ -1486,6 +1486,52 @@ impl MlxTransformer {
         allowed_next_ids: &[u32],
         lora_scales: &[f32],
     ) -> Result<(Vec<f32>, Vec<MlxBeamKv>), NeuralError> {
+        self.step_beams_gather_lps_inner(
+            beam_parents,
+            step_tokens,
+            allowed_next_ids,
+            lora_scales,
+            true,
+        )
+    }
+
+    /// Evaluates next-token log-probabilities for `allowed_next_ids` WITHOUT constructing or
+    /// materializing child KV tensors (used by final right-boundary closure scoring to skip 100%
+    /// of dead child-KV concatenations and GPU copies).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralError::Safetensors`] if any MLX Metal kernel fails.
+    pub fn step_beams_gather_lps_no_kv(
+        &self,
+        beam_parents: &[&MlxBeamKv],
+        step_tokens: &[u32],
+        allowed_next_ids: &[u32],
+        lora_scales: &[f32],
+    ) -> Result<Vec<f32>, NeuralError> {
+        let (lps, _) = self.step_beams_gather_lps_inner(
+            beam_parents,
+            step_tokens,
+            allowed_next_ids,
+            lora_scales,
+            false,
+        )?;
+        Ok(lps)
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::too_many_lines
+    )]
+    fn step_beams_gather_lps_inner(
+        &self,
+        beam_parents: &[&MlxBeamKv],
+        step_tokens: &[u32],
+        allowed_next_ids: &[u32],
+        lora_scales: &[f32],
+        need_child_kvs: bool,
+    ) -> Result<(Vec<f32>, Vec<MlxBeamKv>), NeuralError> {
         let b_usize = beam_parents.len();
         if b_usize == 0 || b_usize != step_tokens.len() || allowed_next_ids.is_empty() {
             return Ok((Vec::new(), Vec::new()));
@@ -1498,6 +1544,8 @@ impl MlxTransformer {
             max_len = max_len.max(p.seq_len);
         }
         let is_hetero = min_len < max_len;
+        let all_same_parent =
+            b_usize > 1 && beam_parents.windows(2).all(|w| std::ptr::eq(w[0], w[1]));
         let vocab_max = i32::try_from(self.config.vocab_size.saturating_sub(1)).unwrap_or(0);
         let d = self.config.hidden_size as i32;
         let n_heads = self.config.num_attention_heads as i32;
@@ -1540,14 +1588,48 @@ impl MlxTransformer {
         };
 
         let num_layers = self.config.num_hidden_layers;
-        let mut stacked_keys_out = Vec::with_capacity(num_layers);
-        let mut stacked_vals_out = Vec::with_capacity(num_layers);
-        let mut new_keys_step = Vec::with_capacity(if is_hetero { num_layers } else { 0 });
-        let mut new_vals_step = Vec::with_capacity(if is_hetero { num_layers } else { 0 });
+        let mut stacked_keys_out = Vec::with_capacity(if need_child_kvs && !is_hetero {
+            num_layers
+        } else {
+            0
+        });
+        let mut stacked_vals_out = Vec::with_capacity(if need_child_kvs && !is_hetero {
+            num_layers
+        } else {
+            0
+        });
+        let mut new_keys_step = Vec::with_capacity(if need_child_kvs && is_hetero {
+            num_layers
+        } else {
+            0
+        });
+        let mut new_vals_step = Vec::with_capacity(if need_child_kvs && is_hetero {
+            num_layers
+        } else {
+            0
+        });
+        // Share zero-pad tensors per distinct `pad` length across all layers instead of allocating
+        // `num_layers * B` redundant zero arrays!
+        let mut pad_zeros_cache: HashMap<usize, Array> = HashMap::new();
+        if is_hetero && max_len > 0 && !beam_parents[0].keys.is_empty() {
+            let kv_dtype = beam_parents[0].keys[0].dtype();
+            for p in beam_parents {
+                let pad = max_len - p.seq_len;
+                if pad > 0 && !pad_zeros_cache.contains_key(&pad) {
+                    let z = zeros::<f32>(&[1, n_kv, pad as i32, head_dim])
+                        .map_err(mlx_err)?
+                        .as_dtype(kv_dtype)
+                        .map_err(mlx_err)?;
+                    pad_zeros_cache.insert(pad, z);
+                }
+            }
+        }
 
         for (l_idx, layer) in self.layers.iter().enumerate() {
             let past_kv_pair: Option<(Array, Array)> = if max_len > 0 {
-                if b_usize == 1 {
+                if b_usize == 1 || all_same_parent {
+                    // Zero-copy shared-parent fast path: `forward_layer` broadcasts `[1, n_kv,
+                    // seq_len, head_dim]` across `batch_size` without concatenating `B` copies!
                     Some((
                         beam_parents[0].keys[l_idx].clone(),
                         beam_parents[0].vals[l_idx].clone(),
@@ -1560,7 +1642,6 @@ impl MlxTransformer {
                         concatenate(&vs, 0).map_err(mlx_err)?,
                     ))
                 } else {
-                    let kv_dtype = beam_parents[0].keys[l_idx].dtype();
                     let mut padded_keys: Vec<Array> = Vec::with_capacity(b_usize);
                     let mut padded_vals: Vec<Array> = Vec::with_capacity(b_usize);
                     for p in beam_parents {
@@ -1568,15 +1649,11 @@ impl MlxTransformer {
                         if pad == 0 {
                             padded_keys.push(p.keys[l_idx].clone());
                             padded_vals.push(p.vals[l_idx].clone());
-                        } else {
-                            let z = zeros::<f32>(&[1, n_kv, pad as i32, head_dim])
-                                .map_err(mlx_err)?
-                                .as_dtype(kv_dtype)
-                                .map_err(mlx_err)?;
+                        } else if let Some(z) = pad_zeros_cache.get(&pad) {
                             padded_keys
-                                .push(concatenate(&[&p.keys[l_idx], &z], 2).map_err(mlx_err)?);
+                                .push(concatenate(&[&p.keys[l_idx], z], 2).map_err(mlx_err)?);
                             padded_vals
-                                .push(concatenate(&[&p.vals[l_idx], &z], 2).map_err(mlx_err)?);
+                                .push(concatenate(&[&p.vals[l_idx], z], 2).map_err(mlx_err)?);
                         }
                     }
                     let k_refs: Vec<&Array> = padded_keys.iter().collect();
@@ -1727,8 +1804,10 @@ impl MlxTransformer {
                     lora_scales,
                 )?;
                 hidden = after_attn.add(&down).map_err(mlx_err)?;
-                new_keys_step.push(k_rope);
-                new_vals_step.push(v_heads);
+                if need_child_kvs {
+                    new_keys_step.push(k_rope);
+                    new_vals_step.push(v_heads);
+                }
             } else {
                 let past_ref = past_kv_pair.as_ref().map(|(k, v)| (k, v));
                 let (h, k_full, v_full) = self.forward_layer(
@@ -1742,8 +1821,10 @@ impl MlxTransformer {
                     lora_scales,
                 )?;
                 hidden = h;
-                stacked_keys_out.push(k_full);
-                stacked_vals_out.push(v_full);
+                if need_child_kvs {
+                    stacked_keys_out.push(k_full);
+                    stacked_vals_out.push(v_full);
+                }
             }
         }
 
@@ -1756,7 +1837,6 @@ impl MlxTransformer {
             .map_err(mlx_err)?
             .as_dtype(MlxDtype::Float32)
             .map_err(mlx_err)?;
-        let lps = log_softmax(&logits, -1).map_err(mlx_err)?;
 
         let m_usize = allowed_next_ids.len();
         let m_i32 = m_usize as i32;
@@ -1766,11 +1846,21 @@ impl MlxTransformer {
             .collect();
         let allowed_1d = Array::from_slice(&allowed_row, &[1, m_i32]);
         let allowed_2d = broadcast_to(&allowed_1d, &[batch_size, m_i32]).map_err(mlx_err)?;
-        let gathered = lps
+        // Compute exact `log_softmax(logits)[allowed_ids] = logits[allowed_ids] -
+        // logsumexp(logits)` without allocating a full `[B, vocab_size]` float32 subtracted buffer!
+        let lse = logsumexp_axis(&logits, -1, true).map_err(mlx_err)?;
+        let gathered = logits
             .take_along_axis(&allowed_2d, -1)
+            .map_err(mlx_err)?
+            .subtract(&lse)
             .map_err(mlx_err)?
             .reshape(&[batch_size * m_i32])
             .map_err(mlx_err)?;
+
+        if !need_child_kvs {
+            eval([&gathered]).map_err(mlx_err)?;
+            return Ok((gathered.as_slice::<f32>().to_vec(), Vec::new()));
+        }
 
         // Build compact unpadded per-beam child KV tensors BEFORE `eval()` so every child cache
         // is materialized in ONE single GPU sync barrier — completely severing cross-step lazy DAG
@@ -1889,9 +1979,14 @@ impl MlxTransformer {
             .forward(&out_norm)?
             .as_dtype(MlxDtype::Float32)
             .map_err(mlx_err)?;
-        let lps = log_softmax(&logits, -1).map_err(mlx_err)?;
+        // Avoid allocating a `[B, L, vocab_size]` float32 buffer (36.5 MB on Qwen3-4B 152K vocab!)
+        // by subtracting `[B, L, 1]` `logsumexp` after gathering only the `gather_width` targets.
+        let lse = logsumexp_axis(&logits, -1, true).map_err(mlx_err)?;
         let gather_arr = Array::from_slice(gather_flat, &[batch_size, step_len, gather_width]);
-        lps.take_along_axis(&gather_arr, -1)
+        logits
+            .take_along_axis(&gather_arr, -1)
+            .map_err(mlx_err)?
+            .subtract(&lse)
             .map_err(mlx_err)?
             .reshape(&[batch_size * step_len * gather_width])
             .map_err(mlx_err)

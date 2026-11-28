@@ -1312,6 +1312,7 @@ fn run_golden_eval(
                     },
                     beam_width: 8,
                     extra_stage1_candidates: extra,
+                    session_entities: Vec::new(),
                 };
                 route_a_worker
                     .decode_route_a_with_budget(req, std::time::Duration::from_millis(250))
