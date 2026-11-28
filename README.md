@@ -12,22 +12,22 @@
 
 **Chime** 是一款专为 **macOS 15+（Apple Silicon）** 打造的 **100% 本地离线、零遥测**中文神经拼音输入法，使用 **Rust** 编写核心解码与推理引擎、**Swift 6** 编写原生 `InputMethodKit` 界面。
 
-在 **`v0.15.0`** 中，Chime 采用**零延迟快路径 + 第一性原理双提案贝叶斯 Route A 神经束搜索**架构：敲击任意按键时由 `< 0.8 ms` 的无损瘦身 `mmap` 双轨词图（`CHIMED02`，`19.7 MB`）瞬间出字不卡手；后台异步线程在 Apple Silicon 统一内存上运行经 **`Qwen3-14B-Base` 精确尾桶 Soft-KL 蒸馏**的 **BI-18L 混合精度 MLX `Qwen3`（`e8_l4`：8-bit 词表嵌入 + 4-bit 18 层，`190.3 MB`，无损 `36,864` 全中文词表）**，配合**局部惊异度尖峰纠错救援**与可热插拔的 **18L Rank-8 Multi-LoRA `.imepack` 卡带**，在安装包瘦身 **25%（`257 MB → 192 MB`）**、万条推理 `p50` 提速 **3.01×** 的同时，将严格盲测整句首项准确率推升至 **`90.59%`**（万条开放域严格盲测 **`80.93%`**，`Hit@5 90.58%`）。
+在 **`v0.16.0`** 中，Chime 采用**零延迟快路径 + 第一性原理双提案贝叶斯 Route A 神经束搜索 + 可选置信度门控 Two-Tier 本地重排**架构：敲击任意按键时由 `< 0.8 ms` 的无损瘦身 `mmap` 双轨词图（`CHIMED02`，`19.7 MB`）瞬间出字不卡手；后台异步线程在 Apple Silicon 统一内存上运行经 **`Qwen3-14B-Base` 精确尾桶 Soft-KL 蒸馏**的 **BI-18L 混合精度 MLX `Qwen3`（`e8_l4`：8-bit 词表嵌入 + 4-bit 18 层，`190.3 MB`，无损 `36,864` 全中文词表）**、无损跨边界 `RouteABeamCache` 与可热插拔 **18L Rank-8 Multi-LoRA `.imepack` 卡带**，默认单模型即可达到 **`95.31%` Dev / `92.28%` 盲测 / `81.55%` 万条盲测**；针对 16 GB+ 内存 Mac，还可在偏好设置中按需热挂载本地 4-bit `Qwen3-1.7B/4B-Base` 作为可选 Tier-2 重排器（默认关闭、不增加安装包体积，仅对 ~19% 纠结句触发单次 batched Metal 打分，带「的/地/得」语法护栏），将严格盲测整句首项准确率进一步推升至 **`94.36%`**（万条开放域严格盲测 **`84.58%`**，`Hit@3 90.32%`，`Hit@5 91.05%`）。
 
 - **在线交互体验与下载中心**：[https://tyrchen.github.io/chime/](https://tyrchen.github.io/chime/)
-- **学术论文预印本（PDF）**：[*Chime: Sub-3ms On-Device Neural Pinyin Input via Manifold-Aligned Distillation and Rank-Stacked Multi-LoRA Cartridges*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 与 arXiv LaTeX 源码位于 [`paper/`](paper/)）
-- **最新发布版本（`v0.15.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
+- **学术论文预印本（v2 PDF）**：[*Chime: High-Accuracy On-Device Neural Pinyin Input via Bayesian Pinyin-Constrained Beam Search, Block-Influence Compression, and Confidence-Gated Two-Tier Reranking*](https://tyrchen.github.io/chime/chime-paper.pdf)（Typst 源码位于 [`paper/`](paper/)）
+- **最新发布版本（`v0.16.0`）**：[GitHub Releases](https://github.com/tyrchen/chime/releases/latest)
 
 ---
 
-## 下载与安装（`v0.15.0`）
+## 下载与安装（`v0.16.0`）
 
-系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4`）** 的 Mac。
+系统要求：**macOS 15.0（Sequoia）及以上**，搭载 **Apple Silicon（`M1` / `M2` / `M3` / `M4` / `M5`）** 的 Mac。
 
 | 发布产物 | 下载直链 | 体积 | 说明 |
 | :--- | :--- | ---: | :--- |
-| **macOS 安装包（`.pkg`）** | [**`Chime-v0.15.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `192 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
-| **便携版应用包（`.zip`）** | [**`Chime-v0.15.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `192 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
+| **macOS 安装包（`.pkg`）** | [**`Chime-v0.16.0-macos-arm64.pkg`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.pkg) | `192 MB` | 自动安装并迁移至用户态 `~/Library/Input Methods/Chime.app`（清理旧系统目录副本），此后所有应用内升级**无需密码/指纹、静默完成** |
+| **便携版应用包（`.zip`）** | [**`Chime-v0.16.0-macos-arm64.zip`**](https://github.com/tyrchen/chime/releases/latest/download/Chime-macos-arm64.zip) | `192 MB` | 解压后将 `Chime.app` 拖入 `~/Library/Input Methods/` 双击即可自动注册 |
 | **古诗词曲赋与古文卡带** | [**`classics-poetry.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/classics-poetry.imepack.zip) | `17 MB` | `266,816` 古典词条 + `231,593` 条全篇 `Tab` 续写链 + 18L Rank-8 古文 LoRA（`6.21 MB`） |
 | **开发者中英双语卡带** | [**`tech-developer.imepack.zip`**](https://github.com/tyrchen/chime/releases/latest/download/tech-developer.imepack.zip) | `5.8 MB` | 系统/AI/云原生中英术语 + 精确驼峰大小写 + 18L Rank-8 技术 LoRA（`6.21 MB`） |
 | **SHA-256 校验清单** | [**`SHA256SUMS.txt`**](https://github.com/tyrchen/chime/releases/latest/download/SHA256SUMS.txt) | `555 B` | 安装包与卡带完整性哈希校验值 |
@@ -101,12 +101,14 @@
 | `v0.12.2` · 8L `Qwen3-4B` 蒸馏 Rerank (36K) | `87.8 MB` | — | `89.51%` | `75.84%` | — | `66.45%` |
 | `v0.13.0` · 8L `Qwen3-4B` 蒸馏 + Route A | `87.8 MB` | — | `91.49%` | `83.66%` | `77.00%` | `75.31%` |
 | `v0.14.0` · 28L `Qwen3-14B` 蒸馏 + 4× 融合 Route A | `256.7 MB` | `93.33%` (`Hit@3 98.3%`) | `93.16%` (`Hit@5 97.9%`) | `90.00%` (`+6.34%`) | `81.34%` (`+4.34%`) | `79.70%` (`+4.39%`) |
-| **`v0.15.0` · BI-18L `e8_l4` 混合精度 + 贝叶斯双提案 Route A** | **`190.3 MB` (`-26%`)** | **`93.33%+`** | **`93.80%`** (`Hit@5 98.4%`) | **`90.59%`** (`Hit@5 95.5%`) | **`81.82%`** (`Hit@5 91.5%`) | **`80.93%`** (**`+1.23%`**, `Hit@5 90.6%`) |
+| `v0.15.0` · BI-18L `e8_l4` 混合精度 + 贝叶斯双提案 Route A | `190.3 MB` (`-26%`) | `93.33%+` | `93.80%` (`Hit@5 98.4%`) | `90.59%` (`Hit@5 95.5%`) | `81.82%` (`Hit@5 91.5%`) | `80.93%` (`Hit@5 90.6%`) |
+| `v0.15.5` · 无损 `RouteABeamCache` + 解码器深挖 + 双拼省韵 | `190.3 MB` | `95.0%+` | `95.31%` (`Hit@5 98.9%`) | `92.28%` (`Hit@5 96.3%`) | — | `81.55%` (`Hit@5 91.1%`) |
+| **`v0.16.0` · + 可选本地 Two-Tier `Qwen3-4B 4-bit`（门控 18.7%）** | `190.3 MB` (+2.27 GB 可选) | **`96.7%+`** | **`95.63%`** (`Hit@5 98.9%`) | **`94.36%`** (**`+2.08%`**) | — | **`84.58%`** (**`+3.03%`**, `Hit@3 90.3%`) |
 
-- **`v0.15.0` 细分维度亮点**：
-  - `test_holdout.tsv`（1,010 盲测）：**6 个子类满分 `100%`**（QWERTY 错键纠错 `100%`、多音字语境 `100%`、三大双拼 `100%`、成语古典 `100%`、科学医疗法律 `100%`、金融商业 `100%`），`Hit@3 94.95% (+3.07%)`、`Hit@5 95.54% (+3.16%)`、`MRR 0.9282`。
-  - `test_holdout_10k.tsv`（10,000 严格盲测）：首项准确率首次突破 `80%`（**`80.93%`**, `+1.23%`），`Hit@5` 首次突破 `90%`（**`90.58%`**, `+3.22%`），`MRR 0.8518 (+0.0215)`。
-  - **体积与速度双飞跃**：`.pkg` 安装包 `257 MB → 192 MB`（`-25.3%`），解压 `.app` `315 MB → 232 MB`（`-26.3%`），`core.imedict` 无损瘦身 `36.8 MB → 19.7 MB`（`-46.5%`）；万条盲测 `p50 293.4 ms → 97.6 ms`（**3.01× 提速**）、`p99 1044 ms → 484.9 ms`（**2.15× 提速**）。
+- **`v0.16.0` 细分维度亮点（Two-Tier 4B 纯 Rust 实测）**：
+  - `test_holdout.tsv`（1,010 盲测）：总体 **`94.36%`**（`+2.08%`，仅触发 `18.7%`，`p50` 仅增加 `+8.3 ms`），其中技术工程类 **`68.33% → 80.00%`（`+11.67%`）**、上下文对话 **`90.00% → 95.00%`**、散文随笔 **`86.67% → 90.67%`**、`的/地/得` 语法 **`94.00% → 96.00%`**，5 个子类满分 `100%`。
+  - `test_holdout_10k.tsv`（10,000 严格盲测）：首项准确率跃升 **`+3.03%` 至 `84.58%`**（`Hit@3` 首破 90% 达 **`90.32%`**，`Hit@5 91.05%`，`MRR 0.8762`，触发率 `33.5%`）。
+  - **零膨胀体积与双拼增强**：默认安装包保持 **`192 MB`**（`-25.3%` vs v0.14），核心词典 `core.imedict` `19.7 MB`；内置小鹤/自然码/微软双拼省略韵母混输、无损 `RouteABeamCache` 增量缓存及纯 Rust 可选 Two-Tier 热挂载。
 
 ---
 

@@ -452,6 +452,27 @@ impl Tier2Reranker {
         (self.escalations, self.total_queries)
     }
 
+    /// Returns `true` if Tier-2 should escalate for `cands` based on the configured confidence
+    /// margin and `{的, 地, 得}` grammatical guard (microsecond CPU check, zero GPU work).
+    #[must_use]
+    pub fn should_escalate(&self, cands: &[NeuralBeamCandidate]) -> bool {
+        let k = cands.len().min(self.config.top_k);
+        if k < 2 {
+            return false;
+        }
+        let margin = cands[0].score - cands[1].score;
+        if !margin.is_finite() || margin >= self.config.margin_threshold {
+            return false;
+        }
+        if self.config.guard_de_di_de
+            && is_pure_de_di_de_pair(&cands[0].text, &cands[1].text)
+            && (k < 3 || cands[0].score - cands[2].score >= self.config.margin_threshold)
+        {
+            return false;
+        }
+        true
+    }
+
     /// Conditionally reranks `cands` in place when Tier-1's Top-1/Top-2 margin falls below
     /// `config.margin_threshold`. Returns `true` if Tier-2 ran on this query.
     #[allow(clippy::too_many_lines)]
@@ -465,28 +486,18 @@ impl Tier2Reranker {
     ) -> bool {
         self.total_queries += 1;
         let k = cands.len().min(self.config.top_k);
-        if k < 2 {
-            return false;
-        }
-        let margin = cands[0].score - cands[1].score;
-        if !margin.is_finite() || margin >= self.config.margin_threshold {
-            return false;
-        }
-        // Skip GPU escalation entirely when Top-1 and Top-2 differ solely in `{的, 地, 得}` and
-        // Top-3 is safely separated.
-        if self.config.guard_de_di_de
-            && is_pure_de_di_de_pair(&cands[0].text, &cands[1].text)
-            && (k < 3 || cands[0].score - cands[2].score >= self.config.margin_threshold)
-        {
+        if !self.should_escalate(cands) {
             return false;
         }
 
+        // Keep the most recent 48 chars (~2-3 clauses) of left context so cold-prefix prefill on
+        // 36-layer 4B stays fast without losing local discourse cues.
         let trimmed_ctx = left_context.trim();
         let prefix_str = if trimmed_ctx.is_empty() {
             "。，".to_string()
         } else {
             let chars: Vec<char> = trimmed_ctx.chars().collect();
-            let start = chars.len().saturating_sub(96);
+            let start = chars.len().saturating_sub(48);
             let slice: String = chars[start..].iter().collect();
             if slice.starts_with('。') {
                 slice
@@ -519,16 +530,29 @@ impl Tier2Reranker {
             self.config.closure_weight
         };
 
+        // Fast-path candidate tokenization: when `prefix_str` ends with sentence punctuation or
+        // whitespace, Qwen3's pre-tokenizer never merges across the boundary, avoiding 5x full
+        // re-tokenization of `prefix_str`.
+        let boundary_isolated = prefix_str.chars().last().is_some_and(|ch| {
+            matches!(
+                ch,
+                '。' | '，' | '！' | '？' | '；' | '：' | '、' | '”' | '）' | '】' | '》'
+            ) || ch.is_whitespace()
+        });
         let mut cand_seqs: Vec<Vec<u32>> = Vec::with_capacity(k);
         for cand in &cands[..k] {
-            let combined = format!("{prefix_str}{}", cand.text);
-            let full_ids = self.tokenizer.encode(&combined);
-            let seq = if full_ids.len() > prefix_ids.len()
-                && full_ids[..prefix_ids.len()] == prefix_ids[..]
-            {
-                full_ids[prefix_ids.len()..].to_vec()
-            } else {
+            let seq = if boundary_isolated {
                 self.tokenizer.encode(&cand.text)
+            } else {
+                let combined = format!("{prefix_str}{}", cand.text);
+                let full_ids = self.tokenizer.encode(&combined);
+                if full_ids.len() > prefix_ids.len()
+                    && full_ids[..prefix_ids.len()] == prefix_ids[..]
+                {
+                    full_ids[prefix_ids.len()..].to_vec()
+                } else {
+                    self.tokenizer.encode(&cand.text)
+                }
             };
             cand_seqs.push(seq);
         }

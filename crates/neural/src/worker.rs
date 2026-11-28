@@ -204,8 +204,15 @@ impl AsyncRerankHandle {
                 }
             };
 
-            let mut deferred = None;
-            while let Some(cmd) = deferred.take().or_else(|| cmd_rx.recv().ok()) {
+            let mut pending_cmd: Option<ActorCmd> = None;
+            loop {
+                let cmd = if let Some(c) = pending_cmd.take() {
+                    c
+                } else if let Ok(c) = cmd_rx.recv() {
+                    c
+                } else {
+                    break;
+                };
                 match cmd {
                     ActorCmd::Voice(batch) => batch.run(&mut reranker),
                     ActorCmd::Async(mut job) => {
@@ -214,7 +221,7 @@ impl AsyncRerankHandle {
                             if let ActorCmd::Async(newer) = next {
                                 job = newer;
                             } else {
-                                deferred = Some(next);
+                                pending_cmd = Some(next);
                                 break;
                             }
                         }
@@ -459,16 +466,51 @@ impl AsyncRerankHandle {
                                 ActorCmd::Async(_) | ActorCmd::TimedOrAsync { .. } => {}
                             }
                         }
-                        let out = run_route_a_request(&mut reranker, &req);
+                        // Phase 1: emit fast Tier-1 Route A candidates immediately (0 ms Tier-2
+                        // blocking while typing!).
+                        let mut out = run_route_a_tier1_only(&mut reranker, &req);
                         if sync_reply_tx.send(out.clone()).is_err() {
                             let elapsed_ms = u64::try_from(dispatched_at.elapsed().as_millis())
                                 .unwrap_or(u64::MAX);
                             let _ = route_a_result_tx.try_send(RouteAResult {
                                 session_id,
                                 generation_id,
-                                candidates: out,
+                                candidates: out.clone(),
                                 elapsed_ms,
                             });
+                        }
+                        // Phase 2 (Two-Tier typing-pause debounce): if optional Tier-2 is mounted
+                        // and Tier-1 is uncertain, wait briefly (80 ms) for a typing pause. If the
+                        // user keeps typing, skip Tier-2 on the stale prefix immediately!
+                        if reranker.should_escalate_tier2(&out) {
+                            match cmd_rx.recv_timeout(Duration::from_millis(80)) {
+                                Ok(next_cmd) => {
+                                    pending_cmd = Some(next_cmd);
+                                }
+                                Err(flume::RecvTimeoutError::Timeout) => {
+                                    let prev_top = out.first().map(|c| c.text.clone());
+                                    if reranker.rerank_with_tier2(
+                                        &req.left_context,
+                                        &req.raw_input,
+                                        req.scheme,
+                                        req.scoring_mode,
+                                        &mut out,
+                                    ) && out.first().map(|c| c.text.as_str())
+                                        != prev_top.as_deref()
+                                    {
+                                        let elapsed_ms =
+                                            u64::try_from(dispatched_at.elapsed().as_millis())
+                                                .unwrap_or(u64::MAX);
+                                        let _ = route_a_result_tx.try_send(RouteAResult {
+                                            session_id,
+                                            generation_id,
+                                            candidates: out,
+                                            elapsed_ms,
+                                        });
+                                    }
+                                }
+                                Err(flume::RecvTimeoutError::Disconnected) => break,
+                            }
                         }
                     }
                     ActorCmd::ConfigureTier2 {
@@ -779,6 +821,23 @@ fn run_route_a_request(
     req: &RouteADecodeRequest,
 ) -> Vec<NeuralBeamCandidate> {
     reranker.decode_constrained_with_proposals(
+        &req.left_context,
+        &req.app_bundle_id,
+        &req.raw_input,
+        req.scheme,
+        req.fuzzy,
+        req.pangu_spacing,
+        req.scoring_mode,
+        req.beam_width,
+        &req.extra_stage1_candidates,
+    )
+}
+
+fn run_route_a_tier1_only(
+    reranker: &mut SafetensorsReranker,
+    req: &RouteADecodeRequest,
+) -> Vec<NeuralBeamCandidate> {
+    reranker.decode_constrained_with_proposals_tier1_only(
         &req.left_context,
         &req.app_bundle_id,
         &req.raw_input,

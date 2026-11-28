@@ -469,6 +469,37 @@ impl SafetensorsReranker {
         beam_width: usize,
         extra_stage1_candidates: &[(String, f32, bool)],
     ) -> Vec<NeuralBeamCandidate> {
+        let mut ncands = self.decode_constrained_with_proposals_tier1_only(
+            left_context,
+            app_bundle_id,
+            raw_input,
+            scheme,
+            fuzzy,
+            pangu_spacing,
+            mode,
+            beam_width,
+            extra_stage1_candidates,
+        );
+        self.rerank_with_tier2(left_context, raw_input, scheme, mode, &mut ncands);
+        ncands
+    }
+
+    /// Runs Tier-1 Route A + Stage-1 proposal fusion WITHOUT invoking optional Tier-2 reranking,
+    /// enabling the live async worker to emit fast Tier-1 candidates immediately and defer Tier-2
+    /// until a brief typing pause.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn decode_constrained_with_proposals_tier1_only(
+        &mut self,
+        left_context: &str,
+        app_bundle_id: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        fuzzy: chime_phonetics::FuzzyConfig,
+        pangu_spacing: bool,
+        mode: ScoringMode,
+        beam_width: usize,
+        extra_stage1_candidates: &[(String, f32, bool)],
+    ) -> Vec<NeuralBeamCandidate> {
         let mut ncands = self.decode_constrained_inner(
             left_context,
             app_bundle_id,
@@ -480,9 +511,6 @@ impl SafetensorsReranker {
             beam_width,
         );
         if extra_stage1_candidates.is_empty() {
-            if let Some(t2) = &mut self.tier2 {
-                t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
-            }
             return ncands;
         }
 
@@ -595,10 +623,29 @@ impl SafetensorsReranker {
                 beam_decoder::apply_pronoun_symmetry(left_context, &mut ncands);
             }
         }
-        if let Some(t2) = &mut self.tier2 {
-            t2.rerank_candidates(left_context, raw_input, scheme, mode, &mut ncands);
-        }
         ncands
+    }
+
+    /// Returns `true` if a mounted Tier-2 reranker would escalate for `cands` (zero GPU work).
+    #[must_use]
+    pub fn should_escalate_tier2(&self, cands: &[NeuralBeamCandidate]) -> bool {
+        self.tier2
+            .as_ref()
+            .is_some_and(|t2| t2.should_escalate(cands))
+    }
+
+    /// Runs mounted Tier-2 reranking in place on `cands`. Returns `true` if Tier-2 ran.
+    pub fn rerank_with_tier2(
+        &mut self,
+        left_context: &str,
+        raw_input: &str,
+        scheme: ShuangpinScheme,
+        mode: ScoringMode,
+        cands: &mut [NeuralBeamCandidate],
+    ) -> bool {
+        self.tier2
+            .as_mut()
+            .is_some_and(|t2| t2.rerank_candidates(left_context, raw_input, scheme, mode, cands))
     }
 
     /// Computes exact unnormalized Bayesian log-likelihoods `log P_LM(Y | C) (+ closure)` on the
